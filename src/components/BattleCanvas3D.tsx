@@ -169,8 +169,10 @@ function buildTankVisual(tank: TankRuntime): TankVisual {
   });
 
   const chassisId = tank.blueprint.assembly.chassis;
-  const scaleW = chassisId === 'light' ? 0.85 : chassisId === 'heavy' ? 1.2 : 1.0;
-  const scaleL = chassisId === 'light' ? 0.92 : chassisId === 'heavy' ? 1.18 : 1.0;
+  const scaleW =
+    chassisId === 'light' ? 0.85 : chassisId === 'heavy' ? 1.2 : chassisId === 'destroyer' ? 1.28 : 1.0;
+  const scaleL =
+    chassisId === 'light' ? 0.92 : chassisId === 'heavy' ? 1.18 : chassisId === 'destroyer' ? 1.25 : 1.0;
 
   // Treads (left & right)
   const treadGeo = new THREE.BoxGeometry(8 * scaleW, 8, 38 * scaleL);
@@ -492,6 +494,8 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     const tankVisuals = new Map<string, TankVisual>();
     const projectileMeshes = new Map<string, THREE.Mesh>();
     const mineMeshes = new Map<string, THREE.Mesh>();
+    const smokeMeshes = new Map<string, THREE.Mesh>();
+    const decoyMeshes = new Map<string, THREE.Mesh>();
     const explosionMeshes = new Map<string, THREE.Mesh>();
 
     const shellGeo = new THREE.SphereGeometry(4.2, 10, 10);
@@ -800,6 +804,64 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
           scene.remove(mesh);
           (mesh.material as THREE.Material).dispose();
           explosionMeshes.delete(id);
+        }
+      }
+
+      // Sync Smokes
+      const activeSmokeIds = new Set<string>();
+      for (const smoke of st.smokes ?? []) {
+        activeSmokeIds.add(smoke.id);
+        let mesh = smokeMeshes.get(smoke.id);
+        if (!mesh) {
+          const mat = new THREE.MeshBasicMaterial({
+            color: 0x94a3b8,
+            transparent: true,
+            opacity: 0.35,
+            depthWrite: false,
+          });
+          mesh = new THREE.Mesh(expGeo, mat);
+          smokeMeshes.set(smoke.id, mesh);
+          scene.add(mesh);
+        }
+        const fade = Math.min(1, smoke.ttl / 25);
+        mesh.position.set(smoke.x - halfW, 18, smoke.y - halfH);
+        mesh.scale.set(smoke.radius, 36, smoke.radius);
+        (mesh.material as THREE.MeshBasicMaterial).opacity = 0.35 * fade;
+      }
+      for (const [id, mesh] of smokeMeshes.entries()) {
+        if (!activeSmokeIds.has(id)) {
+          scene.remove(mesh);
+          (mesh.material as THREE.Material).dispose();
+          smokeMeshes.delete(id);
+        }
+      }
+
+      // Sync Decoys
+      const activeDecoyIds = new Set<string>();
+      for (const decoy of st.decoys ?? []) {
+        activeDecoyIds.add(decoy.id);
+        let mesh = decoyMeshes.get(decoy.id);
+        if (!mesh) {
+          const geo = new THREE.BoxGeometry(28, 16, 36);
+          const mat = new THREE.MeshBasicMaterial({
+            color: new THREE.Color(decoy.color),
+            wireframe: true,
+            transparent: true,
+            opacity: 0.75,
+          });
+          mesh = new THREE.Mesh(geo, mat);
+          decoyMeshes.set(decoy.id, mesh);
+          scene.add(mesh);
+        }
+        mesh.position.set(decoy.x - halfW, 10, decoy.y - halfH);
+        mesh.rotation.y += 0.03;
+      }
+      for (const [id, mesh] of decoyMeshes.entries()) {
+        if (!activeDecoyIds.has(id)) {
+          scene.remove(mesh);
+          mesh.geometry.dispose();
+          (mesh.material as THREE.Material).dispose();
+          decoyMeshes.delete(id);
         }
       }
 

@@ -15,10 +15,18 @@ import {
   SubWeaponId,
 } from '../types/game';
 
-export const ALLOWED_CHASSIS_IDS: ChassisId[] = ['light', 'standard', 'heavy'];
+export const ALLOWED_CHASSIS_IDS: ChassisId[] = ['light', 'standard', 'heavy', 'destroyer'];
 export const ALLOWED_RADAR_IDS: RadarId[] = ['wide', 'balanced', 'long'];
 export const ALLOWED_MAIN_GUN_IDS: MainGunId[] = ['rapid', 'standard', 'cannon'];
-export const ALLOWED_SUB_WEAPON_IDS: SubWeaponId[] = ['none', 'missile', 'mine', 'shield'];
+export const ALLOWED_SUB_WEAPON_IDS: SubWeaponId[] = [
+  'none',
+  'missile',
+  'mine',
+  'shield',
+  'smoke',
+  'boost',
+  'decoy',
+];
 
 export const MAX_BATTLE_TANKS = 8;
 
@@ -410,15 +418,39 @@ function parseConditionLine(expr: string): {
       },
     };
   }
-  if (/^wall_near\((.*)\)$/.test(e)) {
-    const m = e.match(/^wall_near\((.*)\)$/);
+  // 旧壁センサー (wall_near) は近接センサー (proximity_near) へ移行のため無効化
+  // if (/^wall_near\((.*)\)$/.test(e)) {
+  //   const m = e.match(/^wall_near\((.*)\)$/);
+  //   const { kw, pos } = parseKwOrPosArgs(m?.[1] ?? '');
+  //   return {
+  //     type: 'cond_wall_ahead',
+  //     params: {
+  //       direction: String(kw.dir ?? kw.direction ?? pos[0] ?? 'front'),
+  //       angle: Number(kw.angle ?? 0),
+  //       dist: Number(kw.dist ?? pos[1] ?? 110),
+  //     },
+  //   };
+  // }
+  if (/^proximity_near\((.*)\)$/.test(e)) {
+    const m = e.match(/^proximity_near\((.*)\)$/);
     const { kw, pos } = parseKwOrPosArgs(m?.[1] ?? '');
     return {
-      type: 'cond_wall_ahead',
+      type: 'cond_proximity',
       params: {
-        direction: String(kw.dir ?? kw.direction ?? pos[0] ?? 'front'),
-        angle: Number(kw.angle ?? 0),
-        dist: Number(kw.dist ?? pos[1] ?? 110),
+        mode: String(kw.mode ?? pos[0] ?? 'approaching'),
+        target: String(kw.target ?? pos[1] ?? 'all'),
+        dist: Number(kw.dist ?? pos[2] ?? 90),
+      },
+    };
+  }
+  if (/^hit_from\((.*)\)$/.test(e)) {
+    const m = e.match(/^hit_from\((.*)\)$/);
+    const { kw, pos } = parseKwOrPosArgs(m?.[1] ?? '');
+    return {
+      type: 'cond_hit_from',
+      params: {
+        zone: String(kw.zone ?? pos[0] ?? 'any'),
+        ticks: Number(kw.ticks ?? pos[1] ?? 20),
       },
     };
   }

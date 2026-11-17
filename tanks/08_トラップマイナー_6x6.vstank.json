@@ -29,10 +29,10 @@
         },
         {
           "id": "c_1_1_0",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
+            "mode": "approaching",
+            "target": "all",
             "dist": 140
           },
           "next": null,
@@ -131,8 +131,8 @@
           "id": "c_5_2_2",
           "type": "act_turn_radar",
           "params": {
-            "mode": "sweep",
-            "angle": 90
+            "mode": "delta",
+            "angle": 10
           },
           "next": null,
           "yes": null,

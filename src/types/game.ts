@@ -1,10 +1,10 @@
-export type ChassisId = 'light' | 'standard' | 'heavy';
+export type ChassisId = 'light' | 'standard' | 'heavy' | 'destroyer';
 export type MainGunId = 'rapid' | 'standard' | 'cannon';
 export type RadarId = 'wide' | 'balanced' | 'long';
 export type GridSize = 4 | 6 | 8 | 12;
 export const ALLOWED_GRID_SIZES: GridSize[] = [4, 6, 8, 12];
 export type CpuId = 'mini_4x4' | 'compact_6x6' | 'standard_8x8' | 'large_12x12';
-export type SubWeaponId = 'none' | 'missile' | 'mine' | 'shield';
+export type SubWeaponId = 'none' | 'missile' | 'mine' | 'shield' | 'smoke' | 'boost' | 'decoy';
 
 export type CoordinateMode = 'relative' | 'absolute';
 export type ObstacleMode = 'none' | 'few' | 'many' | 'maze';
@@ -28,6 +28,8 @@ export interface ChassisSpec {
   accel: number; // px per tick^2
   turnRate: number; // deg per tick at 0 speed
   radius: number; // collision radius
+  fixedTurret?: boolean; // turret locked to hull front
+  coolingMultiplier?: number; // multiplier applied to main gun coolingRate
 }
 
 export interface MainGunSpec {
@@ -92,6 +94,8 @@ export type ChipType =
   | 'cond_enemy_dist'
   | 'cond_enemy_sector'
   | 'cond_wall_ahead'
+  | 'cond_proximity'
+  | 'cond_hit_from'
   | 'cond_gun_ready'
   | 'cond_sub_ready'
   | 'cond_hp_below'
@@ -228,6 +232,7 @@ export interface TankRuntime {
   subAmmo: number;
   subCooldown: number;
   shieldTicks: number;
+  boostTicks: number;
   recoil: number;
   radarLock: boolean;
   radarSweepDir?: 1 | -1;
@@ -235,6 +240,9 @@ export interface TankRuntime {
   detectedEnemy: DetectedTarget | null;
   enemyDist: number | null;
   lastHitTick: number;
+  lastAttackHitTick: number;
+  lastHitAngle: number | null;
+  wallHitCooldown: number;
   lastHitZone?: 'front' | 'side' | 'rear';
   killedById?: string | null;
   counters: Record<string, number>;
@@ -311,12 +319,37 @@ export interface ArenaConfig {
   teamBattle?: boolean;
 }
 
+export interface SmokeCloud {
+  id: string;
+  ownerId: string;
+  x: number;
+  y: number;
+  radius: number;
+  ttl: number;
+  maxTtl: number;
+}
+
+export interface DecoyEntity {
+  id: string;
+  ownerId: string;
+  team: 'player' | 'enemy';
+  x: number;
+  y: number;
+  radius: number;
+  hp: number;
+  ttl: number;
+  maxTtl: number;
+  color: string;
+}
+
 export interface BattleState {
   tick: number;
   arena: ArenaConfig;
   tanks: TankRuntime[];
   projectiles: Projectile[];
   mines: Mine[];
+  smokes?: SmokeCloud[];
+  decoys?: DecoyEntity[];
   explosions: BattleExplosion[];
   status: 'running' | 'finished';
   winnerId: string | null;
@@ -349,6 +382,7 @@ export interface TutorialStage {
   enemy: TankBlueprint;
   enemies?: TankBlueprint[];
   enemySpawns?: SpawnPoint[];
+  enemyHpScale?: number;
   allowedChips?: ChipType[];
 }
 

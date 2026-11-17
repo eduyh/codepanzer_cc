@@ -15,8 +15,10 @@ import {
 } from 'lucide-react';
 import { CHIP_CATEGORY_LABELS, CHIP_DEFINITIONS, CHIP_LIST } from '../data/chips';
 import {
+  calculateAssemblyWeight,
   CHASSIS_SPECS,
   CPU_SPECS,
+  cpuIdForGridSize,
   MAIN_GUN_SPECS,
   RADAR_SPECS,
   SUB_WEAPON_SPECS,
@@ -185,6 +187,11 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
       if (p.direction === 'front_left') return lang === 'en' ? `FL${p.dist}` : `左前${p.dist}px`;
       if (p.direction === 'front_right') return lang === 'en' ? `FR${p.dist}` : `右前${p.dist}px`;
       return `${p.dist}px`;
+    case 'cond_proximity':
+      if (p.mode === 'left_closer') return lang === 'en' ? 'L<R' : '左<右';
+      return `${p.dist ?? 90}px`;
+    case 'cond_hit_from':
+      return `${p.zone ?? 'any'}`;
     case 'cond_hp_below':
       return `<=${p.percent}%`;
     case 'cond_counter': {
@@ -237,6 +244,10 @@ function formatPythonConditionExpr(type: ChipType, params: Record<string, string
       return `enemy_in_sector(ref="${p.ref ?? 'turret'}", center=${p.centerAngle ?? 0}, width=${p.halfWidth ?? 20}, dist=${p.maxDist ?? 700})`;
     case 'cond_wall_ahead':
       return `wall_near(dir="${p.direction ?? 'front'}", dist=${p.dist ?? 110})`;
+    case 'cond_proximity':
+      return `proximity_near(mode="${p.mode ?? 'approaching'}", target="${p.target ?? 'all'}", dist=${p.dist ?? 90})`;
+    case 'cond_hit_from':
+      return `hit_from(zone="${p.zone ?? 'any'}", ticks=${p.ticks ?? 20})`;
     case 'cond_gun_ready':
       return 'main_cooldown == 0';
     case 'cond_sub_ready':
@@ -782,10 +793,9 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   const safeChassisId = isAllowedChassisId(chassisId) ? chassisId : STANDARD_SETUP.chassis;
   const safeRadarId = isAllowedRadarId(radarId) ? radarId : STANDARD_SETUP.radar;
   const safeMainGunId = isAllowedMainGunId(mainGunId) ? mainGunId : STANDARD_SETUP.mainGun;
-  const safeSubWeaponId =
-    isAllowedSubWeaponId(subWeaponId) && subWeaponId !== 'none'
-      ? subWeaponId
-      : STANDARD_SETUP.subWeapon;
+  const safeSubWeaponId = isAllowedSubWeaponId(subWeaponId)
+    ? subWeaponId
+    : STANDARD_SETUP.subWeapon;
 
   useEffect(() => {
     const corrected: string[] = [];
@@ -1480,8 +1490,12 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     });
   }, [program.cells, size, activeEdgeSet, inspectFocusCoord]);
 
+  const isFixedTurret = Boolean(CHASSIS_SPECS[safeChassisId]?.fixedTurret);
   const hasChipLimit = Boolean(allowedChips && allowedChips.length > 0);
   const filteredPaletteChips = CHIP_LIST.filter((c) => {
+    if (isFixedTurret && (c.type === 'act_turn_turret' || c.type === 'act_aim_enemy')) {
+      return false;
+    }
     if (hasChipLimit && !showAllTutorialChips && !allowedChips!.includes(c.type)) {
       return false;
     }
@@ -1699,7 +1713,6 @@ export const GridEditor: React.FC<GridEditorProps> = ({
               title="自戦車の名前（Pythonソース内の tank_name にも反映されます）"
             >
               <span className="tank-name-prefix">自機名</span>
-              <code className="tank-name-code">tank_name =</code>
               <input
                 type="text"
                 className="editor-tank-name-input"
@@ -1756,7 +1769,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                     const sp = CHASSIS_SPECS[cid];
                     return {
                       value: cid,
-                      label: `${sp.name} (HP${sp.maxHp} / 速${sp.maxSpeed} / 旋回${sp.turnRate}°)`,
+                      label: `${sp.name} (HP${sp.maxHp} / 速${sp.maxSpeed} / 旋回${sp.turnRate}° / 重${sp.baseWeight}t / 積載${sp.weightLimit}t)`,
                     };
                   }),
                   onChange: (val: string) => {
@@ -1774,7 +1787,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                     const sp = RADAR_SPECS[rid];
                     return {
                       value: rid,
-                      label: `${sp.name} (角${sp.fovDeg}° / 射程${sp.range}px / 旋回${sp.turnRate}°)`,
+                      label: `${sp.name} (角${sp.fovDeg}° / 射程${sp.range}px / 旋回${sp.turnRate}° / ${sp.weight}t)`,
                     };
                   }),
                   onChange: (val: string) => {
@@ -1792,7 +1805,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                     const sp = MAIN_GUN_SPECS[gid];
                     return {
                       value: gid,
-                      label: `${sp.name} (威力x${sp.damageMultiplier} / 冷却${sp.coolingRate} / 旋回${sp.turretTurnRate}°)`,
+                      label: `${sp.name} (威力x${sp.damageMultiplier} / 冷却${sp.coolingRate} / 旋回${sp.turretTurnRate}° / ${sp.weight}t)`,
                     };
                   }),
                   onChange: (val: string) => {
@@ -1807,9 +1820,13 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                   title: '搭載Special兵装の選択（Pythonソース内の special スペックにも反映されます）',
                   value: safeSubWeaponId,
                   options: [
-                    { value: 'missile', label: '誘導ミサイル（4発 / クールダウン150t）' },
-                    { value: 'mine', label: '地雷（5発 / クールダウン90t）' },
-                    { value: 'shield', label: 'バリア（3回 / クールダウン240t）' },
+                    { value: 'none', label: `装備なし (${SUB_WEAPON_SPECS.none.weight}t)` },
+                    { value: 'smoke', label: `煙幕 (3回 / CD180t / ${SUB_WEAPON_SPECS.smoke.weight}t)` },
+                    { value: 'boost', label: `緊急ブースト (3回 / CD160t / ${SUB_WEAPON_SPECS.boost.weight}t)` },
+                    { value: 'decoy', label: `デコイ (2回 / CD220t / ${SUB_WEAPON_SPECS.decoy.weight}t)` },
+                    { value: 'mine', label: `地雷 (5発 / CD90t / ${SUB_WEAPON_SPECS.mine.weight}t)` },
+                    { value: 'shield', label: `バリア (3回 / CD240t / ${SUB_WEAPON_SPECS.shield.weight}t)` },
+                    { value: 'missile', label: `誘導ミサイル (4発 / CD150t / ${SUB_WEAPON_SPECS.missile.weight}t)` },
                   ],
                   onChange: (val: string) => {
                     const resolved = isAllowedSubWeaponId(val) ? val : STANDARD_SETUP.subWeapon;
@@ -1832,7 +1849,6 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                 title={cfg.title}
               >
                 <span className="tank-name-prefix">{cfg.label}</span>
-                <code className="tank-name-code">{cfg.code}</code>
                 <select
                   className="editor-radar-select"
                   value={cfg.value}
@@ -1850,6 +1866,65 @@ export const GridEditor: React.FC<GridEditorProps> = ({
               </label>
             ))}
           </div>
+
+          {(() => {
+            const cpuId = cpuIdForGridSize(size);
+            const cpuSpec = CPU_SPECS[cpuId];
+            const w = calculateAssemblyWeight({
+              chassis: safeChassisId,
+              mainGun: safeMainGunId,
+              radar: safeRadarId,
+              cpu: cpuId,
+              subWeapon: safeSubWeaponId,
+            });
+            const pct = Math.min(100, Math.round((w.totalWeight / Math.max(1, w.weightLimit)) * 100));
+            const penaltyPct = Math.round((1 - w.mobilityMultiplier) * 100);
+            return (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '10px',
+                  padding: '6px 10px',
+                  marginBottom: '8px',
+                  borderRadius: '6px',
+                  background: w.overweight ? 'rgba(244, 63, 94, 0.12)' : 'rgba(15, 23, 42, 0.55)',
+                  border: `1px solid ${w.overweight ? 'rgba(244, 63, 94, 0.45)' : 'rgba(51, 65, 85, 0.7)'}`,
+                  fontSize: '12px',
+                }}
+              >
+                <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                  積載重量 (CPU {cpuSpec.weight}t含む)
+                </span>
+                <div
+                  style={{
+                    flex: 1,
+                    height: '6px',
+                    borderRadius: '999px',
+                    background: 'rgba(51, 65, 85, 0.7)',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      width: `${pct}%`,
+                      height: '100%',
+                      background: w.overweight ? '#f43f5e' : '#06b6d4',
+                      transition: 'width 0.15s ease',
+                    }}
+                  />
+                </div>
+                <strong style={{ color: w.overweight ? '#fda4af' : '#e2e8f0', whiteSpace: 'nowrap' }}>
+                  {w.totalWeight} / {w.weightLimit} t
+                </strong>
+                {w.overweight && (
+                  <span style={{ color: '#fda4af', fontWeight: 600, whiteSpace: 'nowrap' }}>
+                    超過 +{w.overweightAmount}t（移動・旋回 -{penaltyPct}%）
+                  </span>
+                )}
+              </div>
+            );
+          })()}
 
           <div
             className={`chip-grid grid-size-${size}`}

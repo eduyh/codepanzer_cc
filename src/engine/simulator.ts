@@ -1,4 +1,5 @@
 import {
+  calculateAssemblyWeight,
   CHASSIS_SPECS,
   MAIN_GUN_SPECS,
   RADAR_MEMORY_TICKS,
@@ -17,6 +18,7 @@ import {
   TankBlueprint,
   TankRuntime,
 } from '../types/game';
+import { validateAndRepairBlueprint } from '../utils/blueprintGatekeeper';
 import { getAutoTankColor, MAX_BATTLE_TANKS } from '../utils/codeParser';
 import { runTankChipProgram } from './chipRunner';
 import {
@@ -237,14 +239,17 @@ function makeEntityId(prefix: string): string {
 export function createTankRuntime(
   id: string,
   team: 'player' | 'enemy',
-  blueprint: TankBlueprint,
-  spawn: SpawnPoint
+  rawBlueprint: TankBlueprint,
+  spawn: SpawnPoint,
+  hpScale = 1
 ): TankRuntime {
+  const blueprint = validateAndRepairBlueprint(rawBlueprint).blueprint;
   const chassis = CHASSIS_SPECS[blueprint.assembly.chassis];
   const sub = SUB_WEAPON_SPECS[blueprint.assembly.subWeapon];
   const bodyAngle = normalizeAngle360(spawn.bodyAngle);
   const turretAngle = normalizeAngle360(spawn.turretAngle ?? bodyAngle);
   const radarAngle = normalizeAngle360(spawn.radarAngle ?? turretAngle);
+  const maxHp = Math.max(1, Math.round(chassis.maxHp * hpScale));
 
   return {
     id,
@@ -258,12 +263,13 @@ export function createTankRuntime(
     bodyAngle,
     turretAngle,
     radarAngle,
-    hp: chassis.maxHp,
-    maxHp: chassis.maxHp,
+    hp: maxHp,
+    maxHp,
     gunHeat: 0,
     subAmmo: sub.maxAmmo,
     subCooldown: 0,
     shieldTicks: 0,
+    boostTicks: 0,
     recoil: 0,
     radarLock: false,
     radarSweepDir: 1,
@@ -271,6 +277,9 @@ export function createTankRuntime(
     detectedEnemy: null,
     enemyDist: null,
     lastHitTick: -999,
+    lastAttackHitTick: -999,
+    lastHitAngle: null,
+    wallHitCooldown: 0,
     killedById: null,
     counters: { A: 0, B: 0 },
     loopCounters: {},
@@ -306,6 +315,7 @@ export function createBattleState(options: {
   playerSpawn?: SpawnPoint;
   enemySpawn?: SpawnPoint;
   enemySpawns?: SpawnPoint[];
+  enemyHpScale?: number;
   teamBattle?: boolean;
 }): BattleState {
   const sizeSpec = ARENA_SIZE_SPECS[options.arenaSize ?? 'large'] ?? ARENA_SIZE_SPECS.large;
@@ -351,7 +361,7 @@ export function createBattleState(options: {
         ? eSpawn
         : defaultSpawns[slot]);
     const tankId = slot === 1 ? 'enemy' : `enemy_${slot}`;
-    tanks.push(createTankRuntime(tankId, 'enemy', enemyBp, spawn));
+    tanks.push(createTankRuntime(tankId, 'enemy', enemyBp, spawn, options.enemyHpScale ?? 1));
   });
 
   return {
@@ -360,6 +370,8 @@ export function createBattleState(options: {
     tanks,
     projectiles: [],
     mines: [],
+    smokes: [],
+    decoys: [],
     explosions: [],
     status: 'running',
     winnerId: null,
@@ -374,7 +386,18 @@ function updateRadarScan(
   state: BattleState
 ): void {
   const radar = RADAR_SPECS[tank.blueprint.assembly.radar];
-  let bestEnemy: TankRuntime | null = null;
+  const smokes = state.smokes ?? [];
+  const decoys = state.decoys ?? [];
+  let bestTarget: {
+    id: string;
+    x: number;
+    y: number;
+    vx: number;
+    vy: number;
+    speed: number;
+    heading: number;
+    hp: number;
+  } | null = null;
   let bestDist = Infinity;
   let bestBearing = 0;
 
@@ -388,16 +411,53 @@ function updateRadarScan(
     const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
     if (diff > radar.fovDeg / 2) continue;
 
-    if (!hasLineOfSight(tank.x, tank.y, other.x, other.y, state.arena.obstacles)) {
+    if (!hasLineOfSight(tank.x, tank.y, other.x, other.y, state.arena.obstacles, smokes)) {
       continue;
     }
 
-    bestEnemy = other;
+    bestTarget = {
+      id: other.id,
+      x: other.x,
+      y: other.y,
+      vx: other.vx,
+      vy: other.vy,
+      speed: other.speed,
+      heading: other.bodyAngle,
+      hp: other.hp,
+    };
     bestDist = dist;
     bestBearing = absBearing;
   }
 
-  if (!bestEnemy) {
+  for (const decoy of decoys) {
+    if (decoy.ownerId === tank.id || decoy.hp <= 0 || decoy.ttl <= 0) continue;
+    if (state.arena.teamBattle && decoy.team === tank.team) continue;
+    const dist = distanceBetween(tank.x, tank.y, decoy.x, decoy.y);
+    if (dist > radar.range || dist >= bestDist) continue;
+
+    const absBearing = vectorToAngle(decoy.x - tank.x, decoy.y - tank.y);
+    const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
+    if (diff > radar.fovDeg / 2) continue;
+
+    if (!hasLineOfSight(tank.x, tank.y, decoy.x, decoy.y, state.arena.obstacles, smokes)) {
+      continue;
+    }
+
+    bestTarget = {
+      id: decoy.id,
+      x: decoy.x,
+      y: decoy.y,
+      vx: 0,
+      vy: 0,
+      speed: 0,
+      heading: 0,
+      hp: decoy.hp,
+    };
+    bestDist = dist;
+    bestBearing = absBearing;
+  }
+
+  if (!bestTarget) {
     tank.radarLock = false;
     if (!tank.detectedEnemy || state.tick - tank.detectedEnemy.lastSeenTick > RADAR_MEMORY_TICKS) {
       tank.detectedEnemy = null;
@@ -411,18 +471,18 @@ function updateRadarScan(
   tank.enemyDist = roundedDist;
   tank.counters.ENEMY_DIST = roundedDist;
   tank.detectedEnemy = {
-    id: bestEnemy.id,
-    x: bestEnemy.x,
-    y: bestEnemy.y,
-    vx: bestEnemy.vx,
-    vy: bestEnemy.vy,
-    speed: bestEnemy.speed,
-    heading: bestEnemy.bodyAngle,
+    id: bestTarget.id,
+    x: bestTarget.x,
+    y: bestTarget.y,
+    vx: bestTarget.vx,
+    vy: bestTarget.vy,
+    speed: bestTarget.speed,
+    heading: bestTarget.heading,
     distance: bestDist,
     bearingFromBody: normalizeAngle180(bestBearing - tank.bodyAngle),
     bearingFromTurret: normalizeAngle180(bestBearing - tank.turretAngle),
     absoluteBearing: bestBearing,
-    hp: bestEnemy.hp,
+    hp: bestTarget.hp,
     lastSeenTick: state.tick,
   };
 }
@@ -431,16 +491,18 @@ function resolveObstaclePush(
   tank: TankRuntime,
   radius: number,
   obstacles: ArenaObstacle[]
-): boolean {
+): { hit: boolean; nx: number; ny: number } {
   let hit = false;
+  let totalNx = 0;
+  let totalNy = 0;
   for (const obs of obstacles) {
     if (!circleIntersectsRect(tank.x, tank.y, radius, obs)) continue;
     hit = true;
     const closestX = clamp(tank.x, obs.x, obs.x + obs.width);
     const closestY = clamp(tank.y, obs.y, obs.y + obs.height);
-    let dx = tank.x - closestX;
-    let dy = tank.y - closestY;
-    let d = Math.hypot(dx, dy);
+    const dx = tank.x - closestX;
+    const dy = tank.y - closestY;
+    const d = Math.hypot(dx, dy);
 
     if (d < 1e-5) {
       // Tank center is inside obstacle: push out nearest edge
@@ -449,17 +511,30 @@ function resolveObstaclePush(
       const topPen = tank.y - obs.y;
       const bottomPen = obs.y + obs.height - tank.y;
       const minPen = Math.min(leftPen, rightPen, topPen, bottomPen);
-      if (minPen === leftPen) tank.x = obs.x - radius;
-      else if (minPen === rightPen) tank.x = obs.x + obs.width + radius;
-      else if (minPen === topPen) tank.y = obs.y - radius;
-      else tank.y = obs.y + obs.height + radius;
+      if (minPen === leftPen) {
+        tank.x = obs.x - radius;
+        totalNx -= 1;
+      } else if (minPen === rightPen) {
+        tank.x = obs.x + obs.width + radius;
+        totalNx += 1;
+      } else if (minPen === topPen) {
+        tank.y = obs.y - radius;
+        totalNy -= 1;
+      } else {
+        tank.y = obs.y + obs.height + radius;
+        totalNy += 1;
+      }
     } else {
+      const nx = dx / d;
+      const ny = dy / d;
       const overlap = radius - d;
-      tank.x += (dx / d) * overlap;
-      tank.y += (dy / d) * overlap;
+      tank.x += nx * overlap;
+      tank.y += ny * overlap;
+      totalNx += nx;
+      totalNy += ny;
     }
   }
-  return hit;
+  return { hit, nx: totalNx, ny: totalNy };
 }
 
 export type ArmorHitZone = 'front' | 'side' | 'rear';
@@ -540,13 +615,21 @@ export function stepBattleTick(state: BattleState): BattleState {
     const sub = SUB_WEAPON_SPECS[tank.blueprint.assembly.subWeapon];
 
     // Decay timers & cooling
-    tank.gunHeat = Math.max(0, tank.gunHeat - gun.coolingRate);
+    tank.gunHeat = Math.max(0, tank.gunHeat - gun.coolingRate * (chassis.coolingMultiplier ?? 1));
     tank.subCooldown = Math.max(0, tank.subCooldown - 1);
     tank.shieldTicks = Math.max(0, tank.shieldTicks - 1);
+    tank.boostTicks = Math.max(0, tank.boostTicks - 1);
     tank.recoil = Math.max(0, tank.recoil - 0.12);
+    tank.wallHitCooldown = Math.max(0, tank.wallHitCooldown - 1);
 
     // Run 2D chip program
-    const { commands, trace } = runTankChipProgram(tank, tick, state.arena, state.projectiles);
+    const { commands, trace } = runTankChipProgram(
+      tank,
+      tick,
+      state.arena,
+      state.projectiles,
+      state.tanks
+    );
     tank.trace = trace;
     tank.lastCommands = commands;
     if (trace.printOutputs && trace.printOutputs.length > 0) {
@@ -555,26 +638,36 @@ export function stepBattleTick(state: BattleState): BattleState {
       tank.activePrintSpeech = null;
     }
 
-    // 3-Axis Independent Rotations
-    const speedFactor = 1 - 0.35 * (Math.abs(tank.speed) / Math.max(0.1, chassis.maxSpeed));
-    const maxBodyTurn = chassis.turnRate * speedFactor;
+    // 3-Axis Independent Rotations & Weight / Boost Modifiers
+    const { mobilityMultiplier } = calculateAssemblyWeight(tank.blueprint.assembly);
+    const boostFactor = tank.boostTicks > 0 ? 1.7 : 1.0;
+    const effectiveMaxSpeed = chassis.maxSpeed * mobilityMultiplier * boostFactor;
+    const effectiveAccel = chassis.accel * mobilityMultiplier * boostFactor;
+    const effectiveTurnRate = chassis.turnRate * mobilityMultiplier * boostFactor;
+
+    const speedFactor = 1 - 0.35 * (Math.abs(tank.speed) / Math.max(0.1, effectiveMaxSpeed));
+    const maxBodyTurn = effectiveTurnRate * speedFactor;
     const actualBodyTurn = clamp(commands.bodyTurnDelta, -maxBodyTurn, maxBodyTurn);
     tank.bodyAngle = normalizeAngle360(tank.bodyAngle + actualBodyTurn);
 
-    const actualTurretTurn = clamp(
-      commands.turretTurnDelta,
-      -gun.turretTurnRate,
-      gun.turretTurnRate
-    );
-    tank.turretAngle = normalizeAngle360(tank.turretAngle + actualTurretTurn);
+    if (chassis.fixedTurret) {
+      tank.turretAngle = tank.bodyAngle;
+    } else {
+      const actualTurretTurn = clamp(
+        commands.turretTurnDelta,
+        -gun.turretTurnRate,
+        gun.turretTurnRate
+      );
+      tank.turretAngle = normalizeAngle360(tank.turretAngle + actualTurretTurn);
+    }
 
     const actualRadarTurn = clamp(commands.radarTurnDelta, -radar.turnRate, radar.turnRate);
     tank.radarAngle = normalizeAngle360(tank.radarAngle + actualRadarTurn);
 
     // Acceleration & movement
-    const targetSpeed = commands.targetSpeedRatio * chassis.maxSpeed;
+    const targetSpeed = commands.targetSpeedRatio * effectiveMaxSpeed;
     const speedDiff = targetSpeed - tank.speed;
-    const accelStep = clamp(speedDiff, -chassis.accel, chassis.accel);
+    const accelStep = clamp(speedDiff, -effectiveAccel, effectiveAccel);
     tank.speed += accelStep;
 
     const moveVec = angleToVector(tank.bodyAngle);
@@ -585,32 +678,75 @@ export function stepBattleTick(state: BattleState): BattleState {
 
     // Wall & obstacle collisions
     let collidedWall = false;
+    let wallNx = 0;
+    let wallNy = 0;
     const r = chassis.radius;
     if (tank.x < r) {
       tank.x = r;
       collidedWall = true;
+      wallNx += 1;
     } else if (tank.x > state.arena.width - r) {
       tank.x = state.arena.width - r;
       collidedWall = true;
+      wallNx -= 1;
     }
     if (tank.y < r) {
       tank.y = r;
       collidedWall = true;
+      wallNy += 1;
     } else if (tank.y > state.arena.height - r) {
       tank.y = state.arena.height - r;
       collidedWall = true;
+      wallNy -= 1;
     }
 
-    if (resolveObstaclePush(tank, r, state.arena.obstacles)) {
+    const obsPush = resolveObstaclePush(tank, r, state.arena.obstacles);
+    if (obsPush.hit) {
       collidedWall = true;
+      wallNx += obsPush.nx;
+      wallNy += obsPush.ny;
     }
 
-    if (collidedWall && Math.abs(tank.speed) > 1.2) {
-      tank.stats.wallHits += 1;
-      if (tank.hp > 1) {
-        applyDamage(tank, Math.min(tank.hp - 1, Math.abs(tank.speed) * 0.12), undefined, tick);
+    if (collidedWall) {
+      const nLen = Math.hypot(wallNx, wallNy);
+      if (nLen > 1e-6) {
+        const nx = wallNx / nLen;
+        const ny = wallNy / nLen;
+        const preImpactSpeed = Math.abs(tank.speed);
+        const intoWallSpeed = Math.max(0, -(tank.vx * nx + tank.vy * ny));
+
+        // Slide along the wall by removing the inward normal velocity component
+        const slideVx = tank.vx + intoWallSpeed * nx;
+        const slideVy = tank.vy + intoWallSpeed * ny;
+        tank.vx = slideVx;
+        tank.vy = slideVy;
+        tank.speed = (tank.speed >= 0 ? 1 : -1) * Math.hypot(slideVx, slideVy);
+
+        if (intoWallSpeed > 1.2) {
+          const isHeadOn = preImpactSpeed > 0.6 && intoWallSpeed >= preImpactSpeed * 0.75;
+          const rand = mulberry32((tick + 1) * 2654435761 ^ Math.round(tank.x * 13 + tank.y * 31));
+
+          if (tank.wallHitCooldown <= 0) {
+            tank.stats.wallHits += 1;
+            if (tank.hp > 1) {
+              applyDamage(tank, Math.min(tank.hp - 1, intoWallSpeed * 0.12), undefined, tick);
+            }
+            tank.wallHitCooldown = 18;
+            if (isHeadOn) {
+              const sign = rand() < 0.5 ? -1 : 1;
+              tank.bodyAngle = normalizeAngle360(tank.bodyAngle + sign * (12 + rand() * 14));
+            }
+          } else if (tank.wallHitCooldown % 6 === 0) {
+            // Consecutive collision while cooldown is active: slightly nudge angle to unstick
+            const sign = rand() < 0.5 ? -1 : 1;
+            tank.bodyAngle = normalizeAngle360(tank.bodyAngle + sign * (10 + rand() * 10));
+          }
+        }
       }
-      tank.speed *= 0.25;
+    }
+
+    if (chassis.fixedTurret) {
+      tank.turretAngle = tank.bodyAngle;
     }
 
     // Main gun firing
@@ -654,6 +790,34 @@ export function stepBattleTick(state: BattleState): BattleState {
 
       if (tank.blueprint.assembly.subWeapon === 'shield') {
         tank.shieldTicks = 120;
+      } else if (tank.blueprint.assembly.subWeapon === 'boost') {
+        tank.boostTicks = 28;
+      } else if (tank.blueprint.assembly.subWeapon === 'smoke') {
+        if (!state.smokes) state.smokes = [];
+        state.smokes.push({
+          id: makeEntityId('smoke'),
+          ownerId: tank.id,
+          x: tank.x,
+          y: tank.y,
+          radius: 95,
+          ttl: 100,
+          maxTtl: 100,
+        });
+      } else if (tank.blueprint.assembly.subWeapon === 'decoy') {
+        if (!state.decoys) state.decoys = [];
+        const sideDir = angleToVector(tank.bodyAngle + 45);
+        state.decoys.push({
+          id: makeEntityId('decoy'),
+          ownerId: tank.id,
+          team: tank.team,
+          x: clamp(tank.x + sideDir.dx * (r + 24), r + 10, state.arena.width - r - 10),
+          y: clamp(tank.y + sideDir.dy * (r + 24), r + 10, state.arena.height - r - 10),
+          radius: r,
+          hp: 1,
+          ttl: 150,
+          maxTtl: 150,
+          color: tank.blueprint.color,
+        });
       } else if (tank.blueprint.assembly.subWeapon === 'mine') {
         tank.stats.shotsFired += 1;
         const backDir = angleToVector(tank.bodyAngle + 180);
@@ -806,6 +970,8 @@ export function stepBattleTick(state: BattleState): BattleState {
       const incomingBearing = normalizeAngle360(proj.angle + 180);
       const armor = getDirectionalArmorMultiplier(hitTank.bodyAngle, incomingBearing);
       hitTank.lastHitZone = armor.zone;
+      hitTank.lastAttackHitTick = tick;
+      hitTank.lastHitAngle = incomingBearing;
       applyDamage(hitTank, proj.damage * armor.multiplier, attacker, tick);
       const sparkRadius =
         armor.zone === 'front'
@@ -834,9 +1000,43 @@ export function stepBattleTick(state: BattleState): BattleState {
       continue;
     }
 
+    // Decoy hit
+    let hitDecoy = false;
+    for (const decoy of state.decoys ?? []) {
+      if (decoy.ownerId === proj.ownerId || decoy.hp <= 0) continue;
+      if (state.arena.teamBattle && attacker && decoy.team === attacker.team) continue;
+      if (distanceBetween(proj.x, proj.y, decoy.x, decoy.y) <= decoy.radius + 4) {
+        decoy.hp = 0;
+        hitDecoy = true;
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: decoy.x,
+          y: decoy.y,
+          radius: 26,
+          color: decoy.color,
+          age: 0,
+          maxAge: 20,
+        });
+        break;
+      }
+    }
+    if (hitDecoy) continue;
+
     survivingProjectiles.push(proj);
   }
   state.projectiles = survivingProjectiles;
+
+  // Update Smokes & Decoys
+  if (state.smokes && state.smokes.length > 0) {
+    state.smokes = state.smokes
+      .map((s) => ({ ...s, ttl: s.ttl - 1 }))
+      .filter((s) => s.ttl > 0);
+  }
+  if (state.decoys && state.decoys.length > 0) {
+    state.decoys = state.decoys
+      .map((d) => ({ ...d, ttl: d.ttl - 1 }))
+      .filter((d) => d.hp > 0 && d.ttl > 0);
+  }
 
   // 6. Update Mines
   const survivingMines: Mine[] = [];

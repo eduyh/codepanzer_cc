@@ -11,11 +11,14 @@ import {
   TankTickCommands,
 } from '../types/game';
 import {
+  angleToVector,
   calculateLeadAngle,
   clamp,
   distanceBetween,
   normalizeAngle180,
+  ProximityTarget,
   raycastWallDistance,
+  scanProximity,
   vectorToAngle,
 } from './math';
 
@@ -69,7 +72,8 @@ export function runTankChipProgram(
   tank: TankRuntime,
   tick: number,
   arena: ArenaConfig,
-  projectiles: Projectile[]
+  projectiles: Projectile[],
+  tanks: TankRuntime[] = []
 ): { commands: TankTickCommands; trace: ExecutionTrace } {
   const program = tank.blueprint.program;
   const cpu = CPU_SPECS[tank.blueprint.assembly.cpu];
@@ -182,7 +186,7 @@ export function runTankChipProgram(
 
     if (def.isCondition) {
       const coordKey = `${current.x},${current.y}`;
-      const result = evaluateCondition(cell, coordKey, tank, tick, arena, projectiles);
+      const result = evaluateCondition(cell, coordKey, tank, tick, arena, projectiles, tanks, commands);
       if (Number(cell.params._print ?? 0) === 1 && cell.type !== 'start') {
         pushPrintOutput(formatChipDebugPrint(cell, tank, result, coordKey));
       }
@@ -303,6 +307,11 @@ function formatChipDebugPrint(
     case 'cond_wall_ahead':
       if (p.direction === 'left_closer') return `wall(L<=R): ${tf}`;
       return `wall_near(${p.dist ?? 110}): ${tf}`;
+    case 'cond_proximity':
+      if (p.mode === 'left_closer') return `prox(L<=R): ${tf}`;
+      return `prox(${p.dist ?? 90}): ${tf}`;
+    case 'cond_hit_from':
+      return `hit_from(${p.zone ?? 'any'}): ${tf}`;
     case 'cond_gun_ready':
       return `main_cd==0: ${tf} (${tank.gunHeat.toFixed(2)})`;
     case 'cond_sub_ready':
@@ -400,7 +409,9 @@ function evaluateCondition(
   tank: TankRuntime,
   tick: number,
   arena: ArenaConfig,
-  projectiles: Projectile[]
+  projectiles: Projectile[],
+  tanks: TankRuntime[],
+  commands: TankTickCommands
 ): boolean {
   const p = cell.params;
   const coordMode = tank.blueprint.program.coordinateMode;
@@ -487,53 +498,115 @@ function evaluateCondition(
       const halfWidth = Number(p.halfWidth ?? 20);
       return Math.abs(normalizeAngle180(measuredAngle - centerAngle)) <= halfWidth;
     }
-    case 'cond_wall_ahead': {
-      const direction = String(p.direction ?? 'front');
-      const distCheck = Number(p.dist ?? 110);
-      if (direction === 'left_closer') {
-        const probeMax = Math.max(distCheck, 360) + chassis.radius + 5;
-        const leftDist = raycastWallDistance(
-          tank.x,
-          tank.y,
-          tank.bodyAngle - 45,
-          probeMax,
-          arena.width,
-          arena.height,
-          arena.obstacles
-        );
-        const rightDist = raycastWallDistance(
-          tank.x,
-          tank.y,
-          tank.bodyAngle + 45,
-          probeMax,
-          arena.width,
-          arena.height,
-          arena.obstacles
-        );
-        return leftDist <= rightDist;
-      }
+    // 旧壁センサー (cond_wall_ahead) は近接センサー (cond_proximity) へ移行のため無効化
+    // case 'cond_wall_ahead': {
+    //   const direction = String(p.direction ?? 'front');
+    //   const distCheck = Number(p.dist ?? 110);
+    //   if (direction === 'left_closer') {
+    //     const probeMax = Math.max(distCheck, 360) + chassis.radius + 5;
+    //     const leftDist = raycastWallDistance(
+    //       tank.x,
+    //       tank.y,
+    //       tank.bodyAngle - 45,
+    //       probeMax,
+    //       arena.width,
+    //       arena.height,
+    //       arena.obstacles
+    //     );
+    //     const rightDist = raycastWallDistance(
+    //       tank.x,
+    //       tank.y,
+    //       tank.bodyAngle + 45,
+    //       probeMax,
+    //       arena.width,
+    //       arena.height,
+    //       arena.obstacles
+    //     );
+    //     return leftDist <= rightDist;
+    //   }
+    //
+    //   let worldAngle = tank.bodyAngle;
+    //   if (direction === 'front_left') worldAngle = tank.bodyAngle - 45;
+    //   else if (direction === 'front_right') worldAngle = tank.bodyAngle + 45;
+    //   else if (direction === 'back') worldAngle = tank.bodyAngle + 180;
+    //   else if (direction === 'left') worldAngle = tank.bodyAngle - 90;
+    //   else if (direction === 'right') worldAngle = tank.bodyAngle + 90;
+    //   else if (direction === 'angle') {
+    //     const ang = Number(p.angle ?? 0);
+    //     worldAngle = coordMode === 'absolute' ? ang : tank.bodyAngle + ang;
+    //   }
+    //
+    //   const rayDist = raycastWallDistance(
+    //     tank.x,
+    //     tank.y,
+    //     worldAngle,
+    //     distCheck + chassis.radius + 5,
+    //     arena.width,
+    //     arena.height,
+    //     arena.obstacles
+    //   );
+    //   return rayDist <= distCheck + chassis.radius;
+    // }
+    case 'cond_proximity': {
+      const mode = String(p.mode ?? 'approaching');
+      const rawTarget = String(p.target ?? 'all');
+      const target: ProximityTarget =
+        rawTarget === 'walls' || rawTarget === 'tanks' ? rawTarget : 'all';
+      const distCheck = clamp(Number(p.dist ?? 90), 20, 300);
 
-      let worldAngle = tank.bodyAngle;
-      if (direction === 'front_left') worldAngle = tank.bodyAngle - 45;
-      else if (direction === 'front_right') worldAngle = tank.bodyAngle + 45;
-      else if (direction === 'back') worldAngle = tank.bodyAngle + 180;
-      else if (direction === 'left') worldAngle = tank.bodyAngle - 90;
-      else if (direction === 'right') worldAngle = tank.bodyAngle + 90;
-      else if (direction === 'angle') {
-        const ang = Number(p.angle ?? 0);
-        worldAngle = coordMode === 'absolute' ? ang : tank.bodyAngle + ang;
-      }
+      const otherTanks = tanks.map((t) => ({
+        id: t.id,
+        x: t.x,
+        y: t.y,
+        radius: CHASSIS_SPECS[t.blueprint.assembly.chassis].radius,
+        hp: t.hp,
+      }));
 
-      const rayDist = raycastWallDistance(
-        tank.x,
-        tank.y,
-        worldAngle,
-        distCheck + chassis.radius + 5,
+      const { nearestDist, nearestPoint } = scanProximity(
+        { id: tank.id, x: tank.x, y: tank.y, radius: chassis.radius },
         arena.width,
         arena.height,
-        arena.obstacles
+        arena.obstacles,
+        otherTanks,
+        target
       );
-      return rayDist <= distCheck + chassis.radius;
+
+      if (!nearestPoint) return false;
+
+      if (mode === 'left_closer') {
+        const relAngle = normalizeAngle180(
+          vectorToAngle(nearestPoint.x - tank.x, nearestPoint.y - tank.y) - tank.bodyAngle
+        );
+        return relAngle <= 0;
+      }
+
+      if (nearestDist > distCheck) return false;
+      if (mode === 'any') return true;
+
+      // mode === 'approaching': True only when moving/facing toward the nearest obstacle
+      const toX = nearestPoint.x - tank.x;
+      const toY = nearestPoint.y - tank.y;
+      const toLen = Math.hypot(toX, toY);
+      if (toLen < 1e-6) return true;
+
+      let moveSign = 1;
+      if (Math.abs(tank.speed) > 0.1) {
+        moveSign = tank.speed >= 0 ? 1 : -1;
+      } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
+        moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
+      }
+      const fwd = angleToVector(tank.bodyAngle);
+      const dirX = fwd.dx * moveSign;
+      const dirY = fwd.dy * moveSign;
+      const dot = (dirX * toX + dirY * toY) / toLen;
+      return dot > 0.15;
+    }
+    case 'cond_hit_from': {
+      const zone = String(p.zone ?? 'any');
+      const windowTicks = Math.max(1, Number(p.ticks ?? 20));
+      if (tick - tank.lastAttackHitTick > windowTicks) return false;
+      if (zone === 'any') return true;
+      return tank.lastHitZone === zone;
     }
     case 'cond_gun_ready': {
       return tank.gunHeat <= 0.0001;
@@ -658,6 +731,10 @@ function executeActionCell(
         }
       } else if (effectiveMode === 'turret_rel') {
         commands.bodyTurnDelta = normalizeAngle180(tank.turretAngle + ang - tank.bodyAngle);
+      } else if (effectiveMode === 'last_hit') {
+        if (tank.lastHitAngle !== null) {
+          commands.bodyTurnDelta = normalizeAngle180(tank.lastHitAngle + ang - tank.bodyAngle);
+        }
       } else if (effectiveMode === 'heading') {
         commands.bodyTurnDelta = normalizeAngle180(ang - tank.bodyAngle);
       } else {
@@ -685,6 +762,8 @@ function executeActionCell(
         const offset = Number(p.offset ?? 0);
         let desiredAbsAngle: number;
         if (String(p.lead ?? 'direct') === 'lead') {
+          const age = Math.max(0, tick - enemy.lastSeenTick);
+          const velocityFreshness = age <= 4 ? 1 : Math.max(0, 1 - (age - 4) / 16);
           const nominalPower = commands.firePower ?? 2.0;
           const bulletSpeed = Math.max(4.5, (14.5 - 1.8 * nominalPower + gunSpeedBonus) * 0.65);
           desiredAbsAngle = calculateLeadAngle(
@@ -692,8 +771,8 @@ function executeActionCell(
             tank.y,
             enemy.x,
             enemy.y,
-            enemy.vx,
-            enemy.vy,
+            enemy.vx * velocityFreshness,
+            enemy.vy * velocityFreshness,
             bulletSpeed
           );
         } else {
@@ -719,6 +798,12 @@ function executeActionCell(
           commands.radarTurnDelta = normalizeAngle180(absBearing - tank.radarAngle);
         } else {
           commands.radarTurnDelta = computeRadarSweepDelta(tank, 60);
+        }
+      } else if (effectiveMode === 'last_hit') {
+        if (tank.lastHitAngle !== null) {
+          commands.radarTurnDelta = normalizeAngle180(tank.lastHitAngle - tank.radarAngle);
+        } else {
+          commands.radarTurnDelta = computeRadarSweepDelta(tank, ang);
         }
       } else if (effectiveMode === 'heading') {
         commands.radarTurnDelta = normalizeAngle180(ang - tank.radarAngle);

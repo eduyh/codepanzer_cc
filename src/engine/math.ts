@@ -135,15 +135,42 @@ export function segmentIntersectsRect(
   return t0 <= t1;
 }
 
+export function segmentIntersectsCircle(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  cx: number,
+  cy: number,
+  radius: number
+): boolean {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-8) {
+    return (cx - x1) ** 2 + (cy - y1) ** 2 <= radius * radius;
+  }
+  const t = clamp(((cx - x1) * dx + (cy - y1) * dy) / lenSq, 0, 1);
+  const px = x1 + t * dx;
+  const py = y1 + t * dy;
+  return (cx - px) ** 2 + (cy - py) ** 2 <= radius * radius;
+}
+
 export function hasLineOfSight(
   x1: number,
   y1: number,
   x2: number,
   y2: number,
-  obstacles: ArenaObstacle[]
+  obstacles: ArenaObstacle[],
+  smokes: Array<{ x: number; y: number; radius: number }> = []
 ): boolean {
   for (const obs of obstacles) {
     if (segmentIntersectsRect(x1, y1, x2, y2, obs)) {
+      return false;
+    }
+  }
+  for (const smoke of smokes) {
+    if (segmentIntersectsCircle(x1, y1, x2, y2, smoke.x, smoke.y, smoke.radius)) {
       return false;
     }
   }
@@ -223,5 +250,63 @@ export function circleIntersectsRect(
   const closestY = clamp(cy, rect.y, rect.y + rect.height);
   const distSq = (cx - closestX) ** 2 + (cy - closestY) ** 2;
   return distSq < radius * radius;
+}
+
+export type ProximityTarget = 'all' | 'walls' | 'tanks';
+
+export interface ProximityScanResult {
+  nearestDist: number;
+  nearestPoint: { x: number; y: number } | null;
+}
+
+/**
+ * 360-degree proximity scan around a circular tank against arena bounds,
+ * rectangular obstacles, and other active tanks.
+ * Returns surface-to-surface clearance distance (>= 0) and nearest point.
+ */
+export function scanProximity(
+  tank: { id: string; x: number; y: number; radius: number },
+  arenaWidth: number,
+  arenaHeight: number,
+  obstacles: ArenaObstacle[],
+  otherTanks: Array<{ id: string; x: number; y: number; radius: number; hp: number }>,
+  target: ProximityTarget = 'all'
+): ProximityScanResult {
+  let nearestDist = Infinity;
+  let nearestPoint: { x: number; y: number } | null = null;
+
+  const considerPoint = (px: number, py: number, clearance: number) => {
+    const c = Math.max(0, clearance);
+    if (c < nearestDist) {
+      nearestDist = c;
+      nearestPoint = { x: px, y: py };
+    }
+  };
+
+  if (target !== 'tanks') {
+    // Arena outer walls
+    considerPoint(0, tank.y, tank.x - tank.radius);
+    considerPoint(arenaWidth, tank.y, arenaWidth - tank.x - tank.radius);
+    considerPoint(tank.x, 0, tank.y - tank.radius);
+    considerPoint(tank.x, arenaHeight, arenaHeight - tank.y - tank.radius);
+
+    // Rectangular obstacles
+    for (const obs of obstacles) {
+      const cx = clamp(tank.x, obs.x, obs.x + obs.width);
+      const cy = clamp(tank.y, obs.y, obs.y + obs.height);
+      const d = Math.hypot(tank.x - cx, tank.y - cy);
+      considerPoint(cx, cy, d - tank.radius);
+    }
+  }
+
+  if (target !== 'walls') {
+    for (const other of otherTanks) {
+      if (other.id === tank.id || other.hp <= 0) continue;
+      const d = Math.hypot(other.x - tank.x, other.y - tank.y);
+      considerPoint(other.x, other.y, d - (tank.radius + other.radius));
+    }
+  }
+
+  return { nearestDist, nearestPoint };
 }
 

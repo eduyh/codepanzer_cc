@@ -850,16 +850,16 @@ export const DEFAULT_PLAYER_BLUEPRINT: TankBlueprint = {
       x: 1,
       y: 0,
       type: 'cond_enemy_detected',
-      params: { maxAgeTicks: 25 },
+      params: { maxAgeTicks: 28 },
       yes: { x: 2, y: 0 },
       no: { x: 1, y: 1 },
     },
-    { x: 1, y: 1, type: 'act_turn_radar', params: { mode: 'sweep', angle: 60 }, next: { x: 1, y: 2 } },
+    { x: 1, y: 1, type: 'act_turn_radar', params: { mode: 'delta', angle: 10 }, next: { x: 1, y: 2 } },
     {
       x: 1,
       y: 2,
-      type: 'cond_wall_ahead',
-      params: { direction: 'front', dist: 120 },
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'all', dist: 90 },
       yes: { x: 0, y: 2 },
       no: { x: 1, y: 3 },
     },
@@ -871,8 +871,8 @@ export const DEFAULT_PLAYER_BLUEPRINT: TankBlueprint = {
     {
       x: 4,
       y: 1,
-      type: 'cond_wall_ahead',
-      params: { direction: 'front', dist: 130 },
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'all', dist: 90 },
       yes: { x: 5, y: 1 },
       no: { x: 4, y: 2 },
     },
@@ -932,6 +932,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_1',
     number: 1,
+    enemyHpScale: 0.45,
     title: 'はじめての砲撃 (4×4)',
     subtitle: '順次処理と if main_cooldown == 0:',
     description:
@@ -971,6 +972,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_2',
     number: 2,
+    enemyHpScale: 0.45,
     title: '前進・旋回と print() デバッグ (4×4)',
     subtitle: 'move() / turn_body() と吹き出しデバッグ',
     description:
@@ -1029,6 +1031,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_3',
     number: 3,
+    enemyHpScale: 0.45,
     title: '視界スキャンと照準 (4×4)',
     subtitle: 'if / else と射角確認 (enemy_in_sector)',
     description:
@@ -1086,6 +1089,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_4',
     number: 4,
+    enemyHpScale: 0.45,
     title: '壁の迂回と斜めセンサー (4×4)',
     subtitle: 'wall_near(dir="front_left") で壁沿いに回避',
     description:
@@ -1152,6 +1156,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_5',
     number: 5,
+    enemyHpScale: 0.65,
     title: '迷路回廊の突破（最奥の敵） (4×4)',
     subtitle: 'wall_near(dir="left_closer") による左右クリアランス判断',
     description:
@@ -1231,6 +1236,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_6',
     number: 6,
+    enemyHpScale: 0.65,
     title: '車体と砲塔の連携（正面装甲） (4×4)',
     subtitle: 'turn_turret(body_rel) と turn_body(turret_rel)',
     description:
@@ -1289,6 +1295,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_7',
     number: 7,
+    enemyHpScale: 0.65,
     title: '距離センサーと間合い管理 (4×4)',
     subtitle: '変数 enemy_dist の比較 (<= / >=)',
     description:
@@ -1358,6 +1365,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_8',
     number: 8,
+    enemyHpScale: 0.65,
     title: '絶対座標ルート移動と偏差射撃 (4×4)',
     subtitle: '北=0°の座標系と aim_enemy(lead="lead")',
     description:
@@ -1417,6 +1425,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_9',
     number: 9,
+    enemyHpScale: 0.65,
     title: '回数ループと条件ループ (4×4)',
     subtitle: 'for i in range(N): と while not enemy_detected():',
     description:
@@ -1478,6 +1487,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_10',
     number: 10,
+    enemyHpScale: 0.65,
     title: '変数カウンタとランダム機動 (4×4)',
     subtitle: 'a += 1 / 剰余判定 (%) / random.randint()',
     description:
@@ -1539,6 +1549,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_11',
     number: 11,
+    enemyHpScale: 1,
     title: '被ロックオン察知と緊急旋回 (4×4)',
     subtitle: 'if under_lock(): で死角からの捕捉を警戒',
     description:
@@ -1594,6 +1605,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_12',
     number: 12,
+    enemyHpScale: 1,
     title: '敵弾接近と Special (SP) 兵装 (4×4)',
     subtitle: 'if incoming_shell(): と sp_cooldown == 0 / fire_sp()',
     description:
@@ -1656,6 +1668,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_13',
     number: 13,
+    enemyHpScale: 1,
     title: 'サブルーチン：迷路探索と戦闘 (6×6)',
     subtitle: 'def sub_a(): (迷路走行) と def sub_b(): (攻撃)',
     description:
@@ -1739,6 +1752,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_14',
     number: 14,
+    enemyHpScale: 1,
     title: 'ステートマシン戦車（1対1決戦） (6×6)',
     subtitle: '状態変数 mode とサブルーチンによる総合戦術',
     description:
@@ -1829,6 +1843,7 @@ export const TUTORIAL_STAGES: TutorialStage[] = [
   {
     id: 'tut_15',
     number: 15,
+    enemyHpScale: 1,
     title: '卒業試験：複数敵チーム戦 (6×6)',
     subtitle: '1 vs 2 チームバトル（固定要塞マップ）',
     description:

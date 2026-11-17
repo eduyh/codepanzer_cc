@@ -42,10 +42,10 @@
         },
         {
           "id": "c_2_2_0",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
+            "mode": "approaching",
+            "target": "all",
             "dist": 130
           },
           "next": null,

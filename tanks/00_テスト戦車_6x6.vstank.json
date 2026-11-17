@@ -31,7 +31,7 @@
           "id": "c_1_1_0",
           "type": "cond_enemy_detected",
           "params": {
-            "maxAgeTicks": 25
+            "maxAgeTicks": 28
           },
           "next": null,
           "yes": {
@@ -92,8 +92,8 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "sweep",
-            "angle": 60
+            "mode": "delta",
+            "angle": 10
           },
           "next": {
             "x": 1,
@@ -106,11 +106,11 @@
         null,
         {
           "id": "c_9_4_1",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
-            "dist": 130
+            "mode": "approaching",
+            "target": "all",
+            "dist": 90
           },
           "next": null,
           "yes": {
@@ -151,11 +151,11 @@
         },
         {
           "id": "c_3_1_2",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
-            "dist": 120
+            "mode": "approaching",
+            "target": "all",
+            "dist": 90
           },
           "next": null,
           "yes": {

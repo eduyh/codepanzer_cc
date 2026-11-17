@@ -50,6 +50,21 @@ export const CHASSIS_SPECS: Record<ChassisId, ChassisSpec> = {
     turnRate: 3.0,
     radius: 23,
   },
+  destroyer: {
+    id: 'destroyer',
+    name: '超重シャシー',
+    description:
+      '砲塔が旋回しない固定砲塔の駆逐戦車フレーム。車体ごと狙う必要があるが、高いHPと積載量に加え主砲冷却が20%速い。',
+    weightLimit: 160,
+    baseWeight: 55,
+    maxHp: 210,
+    maxSpeed: 2.2,
+    accel: 0.25,
+    turnRate: 2.8,
+    radius: 24,
+    fixedTurret: true,
+    coolingMultiplier: 1.2,
+  },
 };
 
 export const MAIN_GUN_SPECS: Record<MainGunId, MainGunSpec> = {
@@ -91,7 +106,7 @@ export const MAIN_GUN_SPECS: Record<MainGunId, MainGunSpec> = {
   },
 };
 
-export const RADAR_MEMORY_TICKS = 12;
+export const RADAR_MEMORY_TICKS = 28;
 
 export const RADAR_SPECS: Record<RadarId, RadarSpec> = {
   wide: {
@@ -204,12 +219,38 @@ export const SUB_WEAPON_SPECS: Record<SubWeaponId, SubWeaponSpec> = {
     maxAmmo: 3,
     cooldownTicks: 240,
   },
+  smoke: {
+    id: 'smoke',
+    name: '煙幕',
+    description: '半径95pxの視界遮断煙幕を100t間展開（3回 / クールダウン180t）。',
+    weight: 9,
+    maxAmmo: 3,
+    cooldownTicks: 180,
+  },
+  boost: {
+    id: 'boost',
+    name: '緊急ブースト',
+    description: '28tの間、移動速度・加速・旋回が1.7倍になる（3回 / クールダウン160t）。',
+    weight: 10,
+    maxAmmo: 3,
+    cooldownTicks: 160,
+  },
+  decoy: {
+    id: 'decoy',
+    name: 'デコイ',
+    description: '敵レーダーに戦車として映るHP1のおとりを150t間設置（2回 / クールダウン220t）。',
+    weight: 11,
+    maxAmmo: 2,
+    cooldownTicks: 220,
+  },
 };
 
 export function calculateAssemblyWeight(assembly: TankAssembly): {
   totalWeight: number;
   weightLimit: number;
   overweight: boolean;
+  overweightAmount: number;
+  mobilityMultiplier: number;
 } {
   const chassis = CHASSIS_SPECS[assembly.chassis];
   const gun = MAIN_GUN_SPECS[assembly.mainGun];
@@ -218,10 +259,18 @@ export function calculateAssemblyWeight(assembly: TankAssembly): {
   const sub = SUB_WEAPON_SPECS[assembly.subWeapon];
 
   const totalWeight = chassis.baseWeight + gun.weight + radar.weight + cpu.weight + sub.weight;
+  const overweight = totalWeight > chassis.weightLimit;
+  const overweightAmount = Math.max(0, totalWeight - chassis.weightLimit);
+  const mobilityMultiplier = overweight
+    ? Math.max(0.3, 0.8 - (overweightAmount / Math.max(1, chassis.weightLimit)) * 1.2)
+    : 1;
+
   return {
     totalWeight,
     weightLimit: chassis.weightLimit,
-    overweight: totalWeight > chassis.weightLimit,
+    overweight,
+    overweightAmount,
+    mobilityMultiplier,
   };
 }
 

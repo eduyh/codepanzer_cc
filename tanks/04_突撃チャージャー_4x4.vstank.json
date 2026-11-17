@@ -78,8 +78,8 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "sweep",
-            "angle": 90
+            "mode": "delta",
+            "angle": 10
           },
           "next": {
             "x": 1,

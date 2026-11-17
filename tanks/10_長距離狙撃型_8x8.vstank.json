@@ -86,10 +86,10 @@
         },
         {
           "id": "c_9_5_0",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
+            "mode": "approaching",
+            "target": "all",
             "dist": 140
           },
           "next": null,
@@ -124,8 +124,8 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "sweep",
-            "angle": 60
+            "mode": "delta",
+            "angle": 10
           },
           "next": {
             "x": 1,
@@ -195,10 +195,10 @@
         },
         {
           "id": "c_3_1_2",
-          "type": "cond_wall_ahead",
+          "type": "cond_proximity",
           "params": {
-            "direction": "front",
-            "angle": 0,
+            "mode": "approaching",
+            "target": "all",
             "dist": 140
           },
           "next": null,

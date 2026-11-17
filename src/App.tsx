@@ -24,6 +24,7 @@ import { BattleCanvas3D } from './components/BattleCanvas3D';
 import { GridEditor } from './components/GridEditor';
 import { ShareModal } from './components/ShareModal';
 import { CHASSIS_SPECS, cpuIdForGridSize, SUB_WEAPON_SPECS } from './data/parts';
+import { validateAndRepairBlueprint } from './utils/blueprintGatekeeper';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
@@ -73,11 +74,11 @@ function loadUiFontScale(): UiFontScale {
   } catch {
     // ignore storage errors
   }
-  return 'large';
+  return 'normal';
 }
 
 function cloneBlueprint(bp: TankBlueprint): TankBlueprint {
-  return JSON.parse(JSON.stringify(bp)) as TankBlueprint;
+  return validateAndRepairBlueprint(bp).blueprint;
 }
 
 function createBlankTutorialBlueprint(stageBp: TankBlueprint): TankBlueprint {
@@ -152,6 +153,7 @@ export function App() {
           playerSpawn: st.playerSpawn,
           enemySpawn: st.enemySpawn,
           enemySpawns: st.enemySpawns,
+          enemyHpScale: st.enemyHpScale,
           teamBattle: Boolean(st.enemies && st.enemies.length > 1),
         });
       }
@@ -219,6 +221,7 @@ export function App() {
         playerSpawn: stage.playerSpawn,
         enemySpawn: stage.enemySpawn,
         enemySpawns: stage.enemySpawns,
+        enemyHpScale: stage.enemyHpScale,
         teamBattle: Boolean(stage.enemies && stage.enemies.length > 1),
       })
     );
@@ -425,7 +428,7 @@ export function App() {
         chassis: nextChassis,
       },
     };
-    updatePlayerBlueprint(updated, false);
+    updatePlayerBlueprint(validateAndRepairBlueprint(updated).blueprint, false);
   };
 
   const handleChangePlayerRadar = (nextRadar: RadarId) => {

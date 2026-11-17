@@ -477,6 +477,98 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
       },
     ],
   },
+  cond_proximity: {
+    type: 'cond_proximity',
+    category: 'condition',
+    name: 'if 近接センサー:',
+    nameEn: 'if proximity_near():',
+    shortLabel: 'if 近接',
+    shortLabelEn: 'if prox:',
+    description:
+      '全周の壁・障害物・戦車までの距離をスキャンし、指定条件に当てはまる場合は True (青/then)、そうでなければ False (赤/else) へ分岐します。',
+    pythonSyntax: 'if proximity_near(mode="approaching", target="all", dist=90):',
+    conceptTag: '近接センサー (全周スキャン)',
+    signatureInfo: '引数: mode: str, target: str, dist: float → 戻り値: bool (True / False)',
+    learningTip:
+      '車体の全周をスキャンして壁・障害物・他戦車との接触を事前に検知します。「接近中のみ」を選ぶと、離れる向きに旋回した瞬間に False に戻るため、その場で回り続けるのを防げます。',
+    isCondition: true,
+    defaultParams: { mode: 'approaching', target: 'all', dist: 90 },
+    paramSchema: [
+      {
+        key: 'mode',
+        label: '判定モード',
+        labelEn: 'mode',
+        type: 'select',
+        options: [
+          { value: 'approaching', label: '全周 (接近中のみ)', labelEn: '"approaching"' },
+          { value: 'any', label: '全周 (無条件)', labelEn: '"any"' },
+          { value: 'left_closer', label: '左右比較 (左の方が近い)', labelEn: '"left_closer"' },
+        ],
+      },
+      {
+        key: 'target',
+        label: '検知対象',
+        labelEn: 'target',
+        type: 'select',
+        options: [
+          { value: 'all', label: '壁・障害物 + 戦車', labelEn: '"all"' },
+          { value: 'walls', label: '壁・障害物のみ', labelEn: '"walls"' },
+          { value: 'tanks', label: '他戦車のみ', labelEn: '"tanks"' },
+        ],
+      },
+      {
+        key: 'dist',
+        label: '検知レンジ',
+        labelEn: 'dist_px',
+        type: 'number',
+        min: 20,
+        max: 300,
+        step: 10,
+        unit: 'px',
+      },
+    ],
+  },
+  cond_hit_from: {
+    type: 'cond_hit_from',
+    category: 'condition',
+    name: 'if 被弾検知:',
+    nameEn: 'if hit_from():',
+    shortLabel: 'if 被弾',
+    shortLabelEn: 'if hit:',
+    description:
+      '直近の一定時間内に指定方向から砲弾を受けた場合 True (青/then)、そうでなければ False (赤/else) へ分岐します。',
+    pythonSyntax: 'if hit_from(zone="any", ticks=20):',
+    conceptTag: '被弾方向センサー (if)',
+    signatureInfo: '引数: zone: str, ticks: int → 戻り値: bool (True / False)',
+    learningTip:
+      '背後や側面から撃たれたとき、`turn_radar(mode="last_hit")` と組み合わせて被弾方向へレーダーを向けると、死角からの攻撃にもすぐ反撃できます。',
+    isCondition: true,
+    defaultParams: { zone: 'any', ticks: 20 },
+    paramSchema: [
+      {
+        key: 'zone',
+        label: '被弾方向',
+        labelEn: 'zone',
+        type: 'select',
+        options: [
+          { value: 'any', label: '全方向 (どこからでも)', labelEn: '"any"' },
+          { value: 'rear', label: '後方 (背面)', labelEn: '"rear"' },
+          { value: 'side', label: '側面 (左右)', labelEn: '"side"' },
+          { value: 'front', label: '正面', labelEn: '"front"' },
+        ],
+      },
+      {
+        key: 'ticks',
+        label: '検知時間',
+        labelEn: 'ticks',
+        type: 'number',
+        min: 1,
+        max: 120,
+        step: 5,
+        unit: 'tick',
+      },
+    ],
+  },
   cond_gun_ready: {
     type: 'cond_gun_ready',
     category: 'condition',
@@ -713,6 +805,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
           { value: 'heading', label: '絶対方位 (北=0°)', labelEn: '"heading"' },
           { value: 'turret_rel', label: '砲塔方向基準 (0°で砲塔向き)', labelEn: '"turret_rel"' },
           { value: 'enemy_rel', label: '敵方向基準 (+90°で側面旋回)', labelEn: '"enemy_rel"' },
+          { value: 'last_hit', label: '被弾方向基準 (0°で被弾向き)', labelEn: '"last_hit"' },
         ],
       },
       {
@@ -814,12 +907,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'radar()',
     shortLabelEn: 'radar()',
     description:
-      'レーダー（視界）を砲塔正面の左右へ首振りスキャン(sweep)するか、検知した敵をロックオン追尾します。',
+      'レーダー（視界）を連続回転(delta)で全周サーチするか、砲塔正面の首振り(sweep)・ロック追尾(lock_enemy)で精密に捉えます。',
     pythonSyntax: 'turn_radar(mode="sweep", angle=60)',
     conceptTag: '関数呼び出し (モード引数)',
     signatureInfo: '引数: mode: str, angle: float → 戻り値: None',
     learningTip:
-      '普段は `mode="sweep"` で砲塔の正面左右をキョロキョロ見渡し、敵を見つけたら `mode="lock_enemy"` で視線を固定して追尾するのが索敵の基本です。',
+      '敵未発見時は `mode="delta"` で360°回転して死角なく探し、発見後は `mode="sweep"` や `mode="lock_enemy"` に切り替えて連続捕捉すると偏差射撃の精度が最大限に発揮されます。死角から撃たれたときは `if hit_from():` ＋ `mode="last_hit"` も有効です。',
     isCondition: false,
     defaultParams: { mode: 'sweep', angle: 60 },
     paramSchema: [
@@ -831,6 +924,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         options: [
           { value: 'sweep', label: '砲塔正面首振り (左右スキャン)', labelEn: '"sweep"' },
           { value: 'lock_enemy', label: '敵ロック追尾', labelEn: '"lock_enemy"' },
+          { value: 'last_hit', label: '被弾方向へ向く', labelEn: '"last_hit"' },
           { value: 'auto', label: '座標モード自動', labelEn: '"auto"' },
           { value: 'delta', label: '連続回転 (右+/左-)', labelEn: '"delta"' },
           { value: 'heading', label: '絶対方位 (北=0°)', labelEn: '"heading"' },
@@ -894,7 +988,10 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
   },
 };
 
-export const CHIP_LIST: ChipDefinition[] = Object.values(CHIP_DEFINITIONS);
+// 旧壁センサー (cond_wall_ahead) は近接センサー (cond_proximity) へ移行のためパレットから除外
+export const CHIP_LIST: ChipDefinition[] = Object.values(CHIP_DEFINITIONS).filter(
+  (def) => def.type !== 'cond_wall_ahead'
+);
 
 export const CHIP_CATEGORY_LABELS: Record<ChipDefinition['category'], string> = {
   flow: '制御・反復 (while/for/sub)',
