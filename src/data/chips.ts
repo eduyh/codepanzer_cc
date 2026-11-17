@@ -503,6 +503,8 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
           { value: 'approaching', label: '全周 (接近中のみ)', labelEn: '"approaching"' },
           { value: 'any', label: '全周 (無条件)', labelEn: '"any"' },
           { value: 'left_closer', label: '左右比較 (左の方が近い)', labelEn: '"left_closer"' },
+          { value: 'left_open', label: '左側が開いている (左手法)', labelEn: '"left_open"' },
+          { value: 'right_open', label: '右側が開いている (右手法)', labelEn: '"right_open"' },
         ],
       },
       {
@@ -756,14 +758,15 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'move(speed=%)',
     shortLabel: 'move()',
     shortLabelEn: 'move()',
-    description: 'このTickの移動目標速度(%)を設定します。プラスで前進、マイナスで後退、0で停止。',
-    pythonSyntax: 'move(speed=80)',
+    description:
+      '移動目標速度(%)を設定します。プラスで前進、マイナスで後退、0で停止。時間(秒)を0より大きくすると、その秒数だけ移動し終えてから次の処理へ進みます（0で1Tick設定してすぐ次へ進みます）。',
+    pythonSyntax: 'move(speed=80, duration=0)',
     conceptTag: '関数呼び出し (引数: 数値)',
-    signatureInfo: '引数: speed: int (-100 〜 100) → 戻り値: None',
+    signatureInfo: '引数: speed: int (-100 〜 100), duration: float (秒, 0=継続) → 戻り値: None',
     learningTip:
-      '関数 `move(speed)` に正の数を渡すと前進、負の数を渡すと後退します。符号（+/-）によって動作の向きを制御する例です。',
+      '関数 `move(speed)` に正の数を渡すと前進、負の数を渡すと後退します。`duration` に秒数を指定すると「n秒間移動してから次の命令へ進む」、`0` のままなら毎Tick設定して進み続けます。',
     isCondition: false,
-    defaultParams: { speedPercent: 80 },
+    defaultParams: { speedPercent: 80, duration: 0 },
     paramSchema: [
       {
         key: 'speedPercent',
@@ -774,6 +777,16 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         max: 100,
         step: 10,
         unit: '%',
+      },
+      {
+        key: 'duration',
+        label: '移動時間 (0=継続)',
+        labelEn: 'duration_s',
+        type: 'number',
+        min: 0,
+        max: 30,
+        step: 0.5,
+        unit: '秒',
       },
     ],
   },

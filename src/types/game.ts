@@ -247,6 +247,24 @@ export interface TankRuntime {
   killedById?: string | null;
   counters: Record<string, number>;
   loopCounters: Record<string, number>;
+  loopStack?: Array<{
+    coord: GridCoord;
+    callStack?: Array<{
+      returnCoord: GridCoord | null;
+      callerCoord: GridCoord;
+      subKey: string;
+    }>;
+  }>;
+  moveState?: {
+    coord: GridCoord;
+    speedRatio: number;
+    remainingTicks: number;
+    callStack?: Array<{
+      returnCoord: GridCoord | null;
+      callerCoord: GridCoord;
+      subKey: string;
+    }>;
+  } | null;
   sleepState?: {
     coord: GridCoord;
     remainingTicks: number;

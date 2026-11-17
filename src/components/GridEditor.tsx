@@ -144,7 +144,9 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
     case 'loop_for':
       return lang === 'en' ? `n=${p.iterations}` : `${p.iterations}回`;
     case 'act_move':
-      return `${p.speedPercent}%`;
+      return Number(p.duration ?? 0) > 0
+        ? `${p.speedPercent}% (${p.duration}s)`
+        : `${p.speedPercent}%`;
     case 'act_turn_body': {
       const ang = Number(p.angle ?? 0);
       const sign = ang >= 0 ? '+' : '';
@@ -189,6 +191,8 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
       return `${p.dist}px`;
     case 'cond_proximity':
       if (p.mode === 'left_closer') return lang === 'en' ? 'L<R' : '左<右';
+      if (p.mode === 'left_open') return lang === 'en' ? `LO>${p.dist ?? 90}` : `左空>${p.dist ?? 90}`;
+      if (p.mode === 'right_open') return lang === 'en' ? `RO>${p.dist ?? 90}` : `右空>${p.dist ?? 90}`;
       return `${p.dist ?? 90}px`;
     case 'cond_hit_from':
       return `${p.zone ?? 'any'}`;
@@ -293,7 +297,9 @@ function formatPythonActionStmt(type: ChipType, params: Record<string, string | 
     case 'mode_set':
       return `mode = ${p.mode ?? 1}`;
     case 'act_move':
-      return `move(speed=${p.speedPercent ?? 80})`;
+      return Number(p.duration ?? 0) > 0
+        ? `move(speed=${p.speedPercent ?? 80}, duration=${p.duration})`
+        : `move(speed=${p.speedPercent ?? 80})`;
     case 'act_turn_body':
       return `turn_body(mode="${p.mode ?? 'auto'}", angle=${p.angle ?? 4})`;
     case 'act_turn_turret':

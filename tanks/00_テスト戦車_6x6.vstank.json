@@ -75,7 +75,8 @@
           "id": "c_8_4_0",
           "type": "act_move",
           "params": {
-            "speedPercent": 85
+            "speedPercent": 85,
+            "duration": 0
           },
           "next": {
             "x": 4,
@@ -206,7 +207,8 @@
           "id": "c_5_1_3",
           "type": "act_move",
           "params": {
-            "speedPercent": 75
+            "speedPercent": 75,
+            "duration": 0
           },
           "next": null,
           "yes": null,

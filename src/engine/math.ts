@@ -270,13 +270,24 @@ export function scanProximity(
   arenaHeight: number,
   obstacles: ArenaObstacle[],
   otherTanks: Array<{ id: string; x: number; y: number; radius: number; hp: number }>,
-  target: ProximityTarget = 'all'
+  target: ProximityTarget = 'all',
+  approachingDir?: { dx: number; dy: number; minDot?: number }
 ): ProximityScanResult {
   let nearestDist = Infinity;
   let nearestPoint: { x: number; y: number } | null = null;
+  const minDot = approachingDir?.minDot ?? 0.72;
 
   const considerPoint = (px: number, py: number, clearance: number) => {
     const c = Math.max(0, clearance);
+    if (approachingDir) {
+      const tx = px - tank.x;
+      const ty = py - tank.y;
+      const tLen = Math.hypot(tx, ty);
+      if (tLen > 1e-6) {
+        const dot = (approachingDir.dx * tx + approachingDir.dy * ty) / tLen;
+        if (dot <= minDot) return;
+      }
+    }
     if (c < nearestDist) {
       nearestDist = c;
       nearestPoint = { x: px, y: py };

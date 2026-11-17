@@ -6,6 +6,7 @@ import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
   ENEMY_DUMMY,
+  ENEMY_PATROL,
   PRESET_ENEMIES,
   TUTORIAL_STAGES,
 } from '../../data/presets';
@@ -438,10 +439,10 @@ def on_tick():
     }
   });
 
-  it('fits every Tutorial Stage into 4x4 (St.1-12) or 6x6 (St.13-15) with matching enemy sizes and clean Python round-trip', () => {
-    expect(TUTORIAL_STAGES.length).toBe(15);
+  it('fits every Tutorial Stage into 4x4 (St.1-18) with matching enemy sizes and clean Python round-trip', () => {
+    expect(TUTORIAL_STAGES.length).toBe(18);
     for (const stage of TUTORIAL_STAGES) {
-      const expectedSize = stage.number <= 12 ? 4 : 6;
+      const expectedSize = 4;
       const expectedCpu = cpuIdForGridSize(expectedSize);
       const maxBlocks = expectedSize * expectedSize;
 
@@ -1436,21 +1437,22 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     expect(stLose.winnerId).toBe('enemy');
   });
 
-  it('initializes Stage 15 with 2 cooperating 6x6 enemies and fixed fortress obstacles', () => {
-    const st15 = TUTORIAL_STAGES[14];
-    expect(st15.id).toBe('tut_15');
-    expect(st15.number).toBe(15);
-    expect(st15.enemies?.length).toBe(2);
-    expect(st15.obstacles.length).toBe(3);
-
+  it('initializes 1v2 Team Battle with 2 cooperating enemies and fortress obstacles', () => {
     const battle = createBattleState({
-      player: st15.playerStarter,
-      enemies: st15.enemies,
-      obstacles: st15.obstacles,
-      maxTicks: st15.maxTicks,
-      playerSpawn: st15.playerSpawn,
-      enemySpawn: st15.enemySpawn,
-      enemySpawns: st15.enemySpawns,
+      player: DEFAULT_PLAYER_BLUEPRINT,
+      enemies: [ENEMY_PATROL, ENEMY_PATROL],
+      arenaSize: 'large',
+      obstacles: [
+        { id: 'f1', x: 520, y: 260, width: 90, height: 190 },
+        { id: 'f2', x: 520, y: 650, width: 90, height: 190 },
+        { id: 'f3', x: 860, y: 440, width: 90, height: 220 },
+      ],
+      maxTicks: 10800,
+      playerSpawn: { x: 200, y: 550, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      enemySpawns: [
+        { x: 1120, y: 310, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+        { x: 1120, y: 790, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+      ],
       teamBattle: true,
     });
 

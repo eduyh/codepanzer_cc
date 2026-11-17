@@ -128,35 +128,55 @@ export function runTankChipProgram(
       printOutputs.push(line);
     }
   };
+  const cloneCallStack = (
+    stack: Array<{ returnCoord: GridCoord | null; callerCoord: GridCoord; subKey: string }>
+  ) =>
+    stack.map((f) => ({
+      returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
+      callerCoord: { ...f.callerCoord },
+      subKey: f.subKey,
+    }));
+  const isMultiTickLoopCell = (c: GridCell | null | undefined): boolean =>
+    Boolean(
+      c &&
+        (c.type === 'loop_for' ||
+          (c.type === 'loop_while' && String(c.params.cond ?? '') !== 'var_a_lt'))
+    );
 
-  // Resume active time.sleep() if still waiting across ticks
-  if (tank.sleepState) {
-    const sleepCoord = tank.sleepState.coord;
-    const sleepCell = program.cells[sleepCoord.y]?.[sleepCoord.x];
-    if (!sleepCell || sleepCell.type !== 'wire') {
-      tank.sleepState = null;
+  // Resume active time.sleep() or timed move(duration > 0) across ticks
+  const activeTimed = tank.sleepState
+    ? { kind: 'sleep' as const, state: tank.sleepState, expectedType: 'wire' as const }
+    : tank.moveState
+      ? { kind: 'move' as const, state: tank.moveState, expectedType: 'act_move' as const }
+      : null;
+  if (activeTimed) {
+    const timedCoord = activeTimed.state.coord;
+    const timedCell = program.cells[timedCoord.y]?.[timedCoord.x];
+    if (!timedCell || timedCell.type !== activeTimed.expectedType) {
+      if (activeTimed.kind === 'sleep') tank.sleepState = null;
+      else tank.moveState = null;
     } else {
-      visited.push({ x: sleepCoord.x, y: sleepCoord.y });
+      visited.push({ x: timedCoord.x, y: timedCoord.y });
       steps += 1;
-      tank.sleepState.remainingTicks -= 1;
-      if (tank.sleepState.remainingTicks > 0) {
+      activeTimed.state.remainingTicks -= 1;
+      if (activeTimed.state.remainingTicks > 0) {
+        if (activeTimed.kind === 'move' && tank.moveState) {
+          commands.targetSpeedRatio = tank.moveState.speedRatio;
+        }
         return {
           commands,
           trace: { visited, edges, stepsUsed: steps, truncated: false },
         };
       }
-      if (tank.sleepState.callStack && tank.sleepState.callStack.length > 0) {
-        callStack = tank.sleepState.callStack.map((f) => ({
-          returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
-          callerCoord: { ...f.callerCoord },
-          subKey: f.subKey,
-        }));
+      if (activeTimed.state.callStack && activeTimed.state.callStack.length > 0) {
+        callStack = cloneCallStack(activeTimed.state.callStack);
       }
-      tank.sleepState = null;
-      const resumeNext = sleepCell.next ?? null;
-      if (isValidOrthoTransition(sleepCoord, resumeNext, program.cells)) {
+      if (activeTimed.kind === 'sleep') tank.sleepState = null;
+      else tank.moveState = null;
+      const resumeNext = timedCell.next ?? null;
+      if (isValidOrthoTransition(timedCoord, resumeNext, program.cells)) {
         edges.push({
-          from: { x: sleepCoord.x, y: sleepCoord.y },
+          from: { x: timedCoord.x, y: timedCoord.y },
           to: { x: resumeNext.x, y: resumeNext.y },
           branch: 'next',
         });
@@ -164,6 +184,20 @@ export function runTankChipProgram(
       } else {
         current = unwindCallStack();
       }
+    }
+  } else if (tank.loopStack && tank.loopStack.length > 0) {
+    // Resume active Python for/while loop until its exit condition completes
+    while (tank.loopStack.length > 0) {
+      const top = tank.loopStack[tank.loopStack.length - 1];
+      const loopCell = program.cells[top.coord.y]?.[top.coord.x];
+      if (isMultiTickLoopCell(loopCell)) {
+        current = { x: top.coord.x, y: top.coord.y };
+        if (top.callStack && top.callStack.length > 0) {
+          callStack = cloneCallStack(top.callStack);
+        }
+        break;
+      }
+      tank.loopStack.pop();
     }
   }
 
@@ -195,6 +229,24 @@ export function runTankChipProgram(
 
       if (cell.type === 'loop_while' && String(cell.params.cond ?? '') === 'var_a_lt') {
         activeInTickLoopCoord = result ? { x: current.x, y: current.y } : null;
+      } else if (isMultiTickLoopCell(cell)) {
+        if (result) {
+          if (isValidOrthoTransition(current, cell.yes ?? null, program.cells)) {
+            if (!tank.loopStack) tank.loopStack = [];
+            const top = tank.loopStack[tank.loopStack.length - 1];
+            if (!top || top.coord.x !== current.x || top.coord.y !== current.y) {
+              tank.loopStack.push({
+                coord: { x: current.x, y: current.y },
+                ...(callStack.length > 0 ? { callStack: cloneCallStack(callStack) } : {}),
+              });
+            }
+          }
+        } else if (tank.loopStack && tank.loopStack.length > 0) {
+          const top = tank.loopStack[tank.loopStack.length - 1];
+          if (top.coord.x === current.x && top.coord.y === current.y) {
+            tank.loopStack.pop();
+          }
+        }
       }
     } else if (cell.type === 'sub_call') {
       if (Number(cell.params._print ?? 0) === 1) {
@@ -225,15 +277,25 @@ export function runTankChipProgram(
           tank.sleepState = {
             coord: { x: current.x, y: current.y },
             remainingTicks: Math.max(1, Math.round(seconds * 20)),
-            ...(callStack.length > 0
-              ? {
-                  callStack: callStack.map((f) => ({
-                    returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
-                    callerCoord: { ...f.callerCoord },
-                    subKey: f.subKey,
-                  })),
-                }
-              : {}),
+            ...(callStack.length > 0 ? { callStack: cloneCallStack(callStack) } : {}),
+          };
+          if (Number(cell.params._print ?? 0) === 1) {
+            pushPrintOutput(formatChipDebugPrint(cell, tank));
+          }
+          break;
+        }
+      } else if (cell.type === 'act_move') {
+        const duration = Math.max(0, Number(cell.params.duration ?? 0));
+        const limitTicks = duration > 0 ? Math.max(1, Math.round(duration * 20)) : 0;
+        if (limitTicks > 1) {
+          const pct = Number(cell.params.speedPercent ?? 80);
+          const ratio = clamp(pct / 100, -1, 1);
+          commands.targetSpeedRatio = ratio;
+          tank.moveState = {
+            coord: { x: current.x, y: current.y },
+            speedRatio: ratio,
+            remainingTicks: limitTicks,
+            ...(callStack.length > 0 ? { callStack: cloneCallStack(callStack) } : {}),
           };
           if (Number(cell.params._print ?? 0) === 1) {
             pushPrintOutput(formatChipDebugPrint(cell, tank));
@@ -241,8 +303,10 @@ export function runTankChipProgram(
           break;
         }
       }
+      const coordKey = `${current.x},${current.y}`;
       executeActionCell(
         cell,
+        coordKey,
         tank,
         tick,
         coordMode,
@@ -309,6 +373,8 @@ function formatChipDebugPrint(
       return `wall_near(${p.dist ?? 110}): ${tf}`;
     case 'cond_proximity':
       if (p.mode === 'left_closer') return `prox(L<=R): ${tf}`;
+      if (p.mode === 'left_open') return `prox(L_open>${p.dist ?? 90}): ${tf}`;
+      if (p.mode === 'right_open') return `prox(R_open>${p.dist ?? 90}): ${tf}`;
       return `prox(${p.dist ?? 90}): ${tf}`;
     case 'cond_hit_from':
       return `hit_from(${p.zone ?? 'any'}): ${tf}`;
@@ -562,44 +628,87 @@ function evaluateCondition(
         hp: t.hp,
       }));
 
+      let approachingDir: { dx: number; dy: number; minDot?: number } | undefined;
+      if (mode === 'approaching') {
+        let moveSign = 1;
+        if (Math.abs(tank.speed) > 0.1) {
+          moveSign = tank.speed >= 0 ? 1 : -1;
+        } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
+          moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
+        }
+        const fwd = angleToVector(tank.bodyAngle);
+        approachingDir = { dx: fwd.dx * moveSign, dy: fwd.dy * moveSign, minDot: 0.72 };
+      }
+
       const { nearestDist, nearestPoint } = scanProximity(
         { id: tank.id, x: tank.x, y: tank.y, radius: chassis.radius },
         arena.width,
         arena.height,
         arena.obstacles,
         otherTanks,
-        target
+        target,
+        approachingDir
       );
 
       if (!nearestPoint) return false;
 
+      if (mode === 'left_open' || mode === 'right_open') {
+        const sign = mode === 'left_open' ? -1 : 1;
+        const sideAngle = tank.bodyAngle + sign * 90;
+        const rearSideAngle = tank.bodyAngle + sign * 135;
+        const threshold = distCheck + chassis.radius;
+        const sideDist = raycastWallDistance(
+          tank.x,
+          tank.y,
+          sideAngle,
+          threshold + 5,
+          arena.width,
+          arena.height,
+          arena.obstacles
+        );
+        const rearSideDist = raycastWallDistance(
+          tank.x,
+          tank.y,
+          rearSideAngle,
+          threshold + 80,
+          arena.width,
+          arena.height,
+          arena.obstacles
+        );
+        // True only when the side just opened up while a wall is still behind on that side (corner passed)
+        return sideDist > threshold && rearSideDist <= threshold + 75;
+      }
+
       if (mode === 'left_closer') {
+        if (target !== 'tanks') {
+          const probeMax = Math.max(distCheck, 360) + chassis.radius + 5;
+          const leftDist = raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle - 45,
+            probeMax,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          );
+          const rightDist = raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle + 45,
+            probeMax,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          );
+          return leftDist <= rightDist;
+        }
         const relAngle = normalizeAngle180(
           vectorToAngle(nearestPoint.x - tank.x, nearestPoint.y - tank.y) - tank.bodyAngle
         );
         return relAngle <= 0;
       }
 
-      if (nearestDist > distCheck) return false;
-      if (mode === 'any') return true;
-
-      // mode === 'approaching': True only when moving/facing toward the nearest obstacle
-      const toX = nearestPoint.x - tank.x;
-      const toY = nearestPoint.y - tank.y;
-      const toLen = Math.hypot(toX, toY);
-      if (toLen < 1e-6) return true;
-
-      let moveSign = 1;
-      if (Math.abs(tank.speed) > 0.1) {
-        moveSign = tank.speed >= 0 ? 1 : -1;
-      } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
-        moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
-      }
-      const fwd = angleToVector(tank.bodyAngle);
-      const dirX = fwd.dx * moveSign;
-      const dirY = fwd.dy * moveSign;
-      const dot = (dirX * toX + dirY * toY) / toLen;
-      return dot > 0.15;
+      return nearestDist <= distCheck;
     }
     case 'cond_hit_from': {
       const zone = String(p.zone ?? 'any');
@@ -673,6 +782,7 @@ function evaluateCondition(
 
 function executeActionCell(
   cell: GridCell,
+  _coordKey: string,
   tank: TankRuntime,
   tick: number,
   coordMode: 'relative' | 'absolute',
@@ -763,14 +873,17 @@ function executeActionCell(
         let desiredAbsAngle: number;
         if (String(p.lead ?? 'direct') === 'lead') {
           const age = Math.max(0, tick - enemy.lastSeenTick);
-          const velocityFreshness = age <= 4 ? 1 : Math.max(0, 1 - (age - 4) / 16);
-          const nominalPower = commands.firePower ?? 2.0;
+          const velocityFreshness = age <= 8 ? 1 : Math.max(0.2, 1 - (age - 8) / 28);
+          const extrapTicks = Math.min(age, 16);
+          const estX = enemy.x + enemy.vx * extrapTicks;
+          const estY = enemy.y + enemy.vy * extrapTicks;
+          const nominalPower = commands.firePower ?? tank.lastCommands?.firePower ?? 2.0;
           const bulletSpeed = Math.max(4.5, (14.5 - 1.8 * nominalPower + gunSpeedBonus) * 0.65);
           desiredAbsAngle = calculateLeadAngle(
             tank.x,
             tank.y,
-            enemy.x,
-            enemy.y,
+            estX,
+            estY,
             enemy.vx * velocityFreshness,
             enemy.vy * velocityFreshness,
             bulletSpeed

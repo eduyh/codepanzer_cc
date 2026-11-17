@@ -137,7 +137,8 @@
           "id": "c_7_3_2",
           "type": "act_move",
           "params": {
-            "speedPercent": 85
+            "speedPercent": 85,
+            "duration": 0
           },
           "next": {
             "x": 2,

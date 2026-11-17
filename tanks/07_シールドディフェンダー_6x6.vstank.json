@@ -109,7 +109,8 @@
           "id": "c_6_1_2",
           "type": "act_move",
           "params": {
-            "speedPercent": 65
+            "speedPercent": 65,
+            "duration": 0
           },
           "next": {
             "x": 2,

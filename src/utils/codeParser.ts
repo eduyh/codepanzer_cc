@@ -584,7 +584,10 @@ function parseActionLine(stmt: string): {
     case 'move':
       return {
         type: 'act_move',
-        params: { speedPercent: Number(kw.speed ?? kw.speedPercent ?? pos[0] ?? 80) },
+        params: {
+          speedPercent: Number(kw.speed ?? kw.speedPercent ?? pos[0] ?? 80),
+          duration: Math.max(0, Number(kw.duration ?? kw.sec ?? kw.seconds ?? pos[1] ?? 0)),
+        },
       };
     case 'turn_body':
     case 'turnBody': {

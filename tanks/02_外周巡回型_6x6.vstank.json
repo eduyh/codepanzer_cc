@@ -31,7 +31,8 @@
           "id": "c_1_1_0",
           "type": "act_move",
           "params": {
-            "speedPercent": 85
+            "speedPercent": 85,
+            "duration": 0
           },
           "next": {
             "x": 2,
@@ -108,7 +109,8 @@
           "id": "c_4_3_1",
           "type": "act_move",
           "params": {
-            "speedPercent": 30
+            "speedPercent": 30,
+            "duration": 0
           },
           "next": {
             "x": 2,

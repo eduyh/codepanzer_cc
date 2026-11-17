@@ -283,6 +283,8 @@ export function createTankRuntime(
     killedById: null,
     counters: { A: 0, B: 0 },
     loopCounters: {},
+    loopStack: [],
+    moveState: null,
     sleepState: null,
     activePrintSpeech: null,
     mode: 0,

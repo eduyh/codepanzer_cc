@@ -81,6 +81,58 @@ function cloneBlueprint(bp: TankBlueprint): TankBlueprint {
   return validateAndRepairBlueprint(bp).blueprint;
 }
 
+function cloneCallStack(
+  stack?: Array<{
+    returnCoord: { x: number; y: number } | null;
+    callerCoord: { x: number; y: number };
+    subKey: string;
+  }>
+) {
+  return stack?.map((f) => ({
+    returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
+    callerCoord: { ...f.callerCoord },
+    subKey: f.subKey,
+  }));
+}
+
+function cloneBattleStateForStep(prev: BattleState): BattleState {
+  return {
+    ...prev,
+    tanks: prev.tanks.map((t) => ({
+      ...t,
+      stats: { ...t.stats },
+      counters: { ...t.counters },
+      loopCounters: { ...t.loopCounters },
+      loopStack: t.loopStack?.map((f) => ({
+        coord: { ...f.coord },
+        callStack: cloneCallStack(f.callStack),
+      })),
+      detectedEnemy: t.detectedEnemy ? { ...t.detectedEnemy } : null,
+      moveState: t.moveState
+        ? {
+            coord: { ...t.moveState.coord },
+            speedRatio: t.moveState.speedRatio,
+            remainingTicks: t.moveState.remainingTicks,
+            callStack: cloneCallStack(t.moveState.callStack),
+          }
+        : null,
+      sleepState: t.sleepState
+        ? {
+            coord: { ...t.sleepState.coord },
+            remainingTicks: t.sleepState.remainingTicks,
+            callStack: cloneCallStack(t.sleepState.callStack),
+          }
+        : null,
+      activePrintSpeech: t.activePrintSpeech
+        ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
+        : null,
+    })),
+    projectiles: prev.projectiles.map((p) => ({ ...p })),
+    mines: prev.mines.map((m) => ({ ...m })),
+    explosions: prev.explosions.map((e) => ({ ...e })),
+  };
+}
+
 function createBlankTutorialBlueprint(stageBp: TankBlueprint): TankBlueprint {
   const cloned = cloneBlueprint(stageBp);
   return {
@@ -380,6 +432,9 @@ export function App() {
             maxHp: nextChassis.maxHp,
             hp: prev.tick === 0 ? nextChassis.maxHp : Math.min(t.hp, nextChassis.maxHp),
             subAmmo: prev.tick === 0 ? nextSub.maxAmmo : Math.min(t.subAmmo, nextSub.maxAmmo),
+            moveState: null,
+            sleepState: null,
+            loopStack: [],
             blueprint: { ...cloneBlueprint(nextBp), color: getAutoTankColor(0) },
           };
         }),
@@ -498,32 +553,7 @@ export function App() {
         accumulatorRef.current -= steps;
         setBattleState((prev) => {
           if (prev.status === 'finished') return prev;
-          const next = {
-            ...prev,
-            tanks: prev.tanks.map((t) => ({
-              ...t,
-              stats: { ...t.stats },
-              counters: { ...t.counters },
-              loopCounters: { ...t.loopCounters },
-              sleepState: t.sleepState
-                ? {
-                    coord: { ...t.sleepState.coord },
-                    remainingTicks: t.sleepState.remainingTicks,
-                    callStack: t.sleepState.callStack?.map((f) => ({
-                      returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
-                      callerCoord: { ...f.callerCoord },
-                      subKey: f.subKey,
-                    })),
-                  }
-                : null,
-              activePrintSpeech: t.activePrintSpeech
-                ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
-                : null,
-            })),
-            projectiles: [...prev.projectiles],
-            mines: [...prev.mines],
-            explosions: [...prev.explosions],
-          };
+          const next = cloneBattleStateForStep(prev);
           for (let i = 0; i < steps; i++) {
             stepBattleTick(next);
             if (next.status === 'finished') break;
@@ -557,33 +587,7 @@ export function App() {
     setIsPlaying(false);
     setBattleState((prev) => {
       if (prev.status === 'finished') return prev;
-      const next = {
-        ...prev,
-        tanks: prev.tanks.map((t) => ({
-          ...t,
-          stats: { ...t.stats },
-          counters: { ...t.counters },
-          loopCounters: { ...t.loopCounters },
-          sleepState: t.sleepState
-            ? {
-                coord: { ...t.sleepState.coord },
-                remainingTicks: t.sleepState.remainingTicks,
-                callStack: t.sleepState.callStack?.map((f) => ({
-                  returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
-                  callerCoord: { ...f.callerCoord },
-                  subKey: f.subKey,
-                })),
-              }
-            : null,
-          activePrintSpeech: t.activePrintSpeech
-            ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
-            : null,
-        })),
-        projectiles: [...prev.projectiles],
-        mines: [...prev.mines],
-        explosions: [...prev.explosions],
-      };
-      return stepBattleTick(next);
+      return stepBattleTick(cloneBattleStateForStep(prev));
     });
   };
 
