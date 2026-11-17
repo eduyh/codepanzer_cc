@@ -1,0 +1,301 @@
+{
+  "version": 1,
+  "id": "enemy_sniper",
+  "name": "長距離狙撃型",
+  "author": "CodePanzer Official",
+  "color": "#f59e0b",
+  "assembly": {
+    "chassis": "heavy",
+    "mainGun": "cannon",
+    "radar": "long",
+    "cpu": "standard_8x8",
+    "subWeapon": "shield"
+  },
+  "program": {
+    "gridSize": 8,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 25
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 0
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_6_2_0",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_3_0",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "lead",
+            "offset": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_4_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55
+          },
+          "next": {
+            "x": 5,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_5_0",
+          "type": "cond_wall_ahead",
+          "params": {
+            "direction": "front",
+            "angle": 0,
+            "dist": 140
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 0
+          },
+          "no": {
+            "x": 5,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_10_6_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 16
+          },
+          "next": {
+            "x": 6,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        null,
+        {
+          "id": "c_2_1_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 60
+          },
+          "next": {
+            "x": 1,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        {
+          "id": "c_11_5_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 2
+          },
+          "next": {
+            "x": 6,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_6_1",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 7,
+            "maxDist": 1500
+          },
+          "next": null,
+          "yes": {
+            "x": 7,
+            "y": 1
+          },
+          "no": {
+            "x": 6,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_13_7_1",
+          "type": "act_fire",
+          "params": {
+            "power": 3
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_4_0_2",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 15
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_1_2",
+          "type": "cond_wall_ahead",
+          "params": {
+            "direction": "front",
+            "angle": 0,
+            "dist": 140
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        null,
+        null,
+        null,
+        null,
+        {
+          "id": "c_14_6_2",
+          "type": "cond_hp_below",
+          "params": {
+            "percent": 65
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 3
+          },
+          "no": null
+        },
+        null
+      ],
+      [
+        null,
+        {
+          "id": "c_5_1_3",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 50
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        {
+          "id": "c_15_6_3",
+          "type": "act_sub_weapon",
+          "params": {},
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    ]
+  }
+}

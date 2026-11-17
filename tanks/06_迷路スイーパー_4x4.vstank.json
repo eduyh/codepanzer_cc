@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "id": "enemy_maze_sweeper",
+  "name": "迷路スイーパー",
+  "author": "CodePanzer Official",
+  "color": "#06b6d4",
+  "assembly": {
+    "chassis": "light",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "cond_wall_ahead",
+          "params": {
+            "direction": "front",
+            "angle": 0,
+            "dist": 150
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 0
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "cond_wall_ahead",
+          "params": {
+            "direction": "left_closer",
+            "angle": 0,
+            "dist": 150
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 0
+          },
+          "no": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 12
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_5_1_1",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 80
+          },
+          "next": {
+            "x": 1,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_2_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": -12
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        null,
+        {
+          "id": "c_6_1_2",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 12
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_8_2_2",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_3_2",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_7_1_3",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 75
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_11_2_3",
+          "type": "act_fire",
+          "params": {
+            "power": 2
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_10_3_3",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 12,
+            "maxDist": 900
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 3
+          },
+          "no": null
+        }
+      ]
+    ]
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "id": "enemy_dummy",
+  "name": "標的ダミー",
+  "author": "CodePanzer Official",
+  "color": "#64748b",
+  "assembly": {
+    "chassis": "standard",
+    "mainGun": "standard",
+    "radar": "wide",
+    "cpu": "mini_4x4",
+    "subWeapon": "missile"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 60
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null
+      ]
+    ]
+  }
+}

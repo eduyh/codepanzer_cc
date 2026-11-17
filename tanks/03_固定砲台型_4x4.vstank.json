@@ -1,0 +1,142 @@
+{
+  "version": 1,
+  "id": "enemy_fixed_turret",
+  "name": "固定砲台型",
+  "author": "CodePanzer Official",
+  "color": "#38bdf8",
+  "assembly": {
+    "chassis": "standard",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 12
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 0
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_3_2_0",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_3_0",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_2_1_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 75
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_5_3_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "turret_rel",
+            "angle": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        null,
+        null,
+        {
+          "id": "c_6_3_2",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 10,
+            "maxDist": 850
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 3
+          },
+          "no": null
+        }
+      ],
+      [
+        null,
+        null,
+        null,
+        {
+          "id": "c_7_3_3",
+          "type": "act_fire",
+          "params": {
+            "power": 2
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ]
+    ]
+  }
+}

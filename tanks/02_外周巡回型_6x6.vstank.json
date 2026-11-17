@@ -1,0 +1,207 @@
+{
+  "version": 1,
+  "id": "enemy_patrol",
+  "name": "外周巡回型",
+  "author": "CodePanzer Official",
+  "color": "#ef4444",
+  "assembly": {
+    "chassis": "standard",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "compact_6x6",
+    "subWeapon": "mine"
+  },
+  "program": {
+    "gridSize": 6,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 85
+          },
+          "next": {
+            "x": 2,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "cond_wall_ahead",
+          "params": {
+            "direction": "front",
+            "angle": 0,
+            "dist": 120
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 0
+          },
+          "no": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 8
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        {
+          "id": "c_6_1_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 60
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_5_2_1",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 20
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_4_3_1",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 30
+          },
+          "next": {
+            "x": 2,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_7_2_2",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_3_2",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_4_2",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 14,
+            "maxDist": 900
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 2
+          },
+          "no": null
+        },
+        {
+          "id": "c_10_5_2",
+          "type": "act_fire",
+          "params": {
+            "power": 2
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    ]
+  }
+}
