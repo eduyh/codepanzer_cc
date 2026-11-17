@@ -275,7 +275,7 @@ export function scanProximity(
 ): ProximityScanResult {
   let nearestDist = Infinity;
   let nearestPoint: { x: number; y: number } | null = null;
-  const minDot = approachingDir?.minDot ?? 0.72;
+  const minDot = approachingDir?.minDot ?? 0.05;
 
   const considerPoint = (px: number, py: number, clearance: number) => {
     const c = Math.max(0, clearance);
@@ -319,5 +319,81 @@ export function scanProximity(
   }
 
   return { nearestDist, nearestPoint };
+}
+
+/**
+ * Compute whether to turn clockwise (+1) or counter-clockwise (-1) to steer away
+ * from approaching/adjacent walls without getting trapped in corners.
+ */
+export function computeWallAwayTurnSign(
+  tank: { x: number; y: number; radius: number },
+  moveHeading: number,
+  arenaWidth: number,
+  arenaHeight: number,
+  obstacles: ArenaObstacle[]
+): number {
+  const fwd = angleToVector(moveHeading);
+  let rx = 0;
+  let ry = 0;
+  const maxRange = 160;
+
+  const accumulateWall = (px: number, py: number, clearance: number) => {
+    const c = Math.max(0, clearance);
+    if (c > maxRange) return;
+    const vx = tank.x - px;
+    const vy = tank.y - py;
+    const vLen = Math.hypot(vx, vy);
+    if (vLen <= 1e-6) return;
+    const nx = vx / vLen;
+    const ny = vy / vLen;
+    // Always include walls immediately adjacent/contacting to escape corners cleanly;
+    // at longer range emphasize walls in the movement direction smoothly without hard step cutoffs.
+    let approachScale = 1;
+    if (c > 25) {
+      const dotToWall = -(fwd.dx * nx + fwd.dy * ny);
+      if (dotToWall <= -0.1) return;
+      approachScale = 0.25 + Math.max(0, dotToWall);
+    }
+    const w = approachScale / Math.pow(Math.max(8, c + 8), 2);
+    rx += nx * w;
+    ry += ny * w;
+  };
+
+  accumulateWall(0, tank.y, tank.x - tank.radius);
+  accumulateWall(arenaWidth, tank.y, arenaWidth - tank.x - tank.radius);
+  accumulateWall(tank.x, 0, tank.y - tank.radius);
+  accumulateWall(tank.x, arenaHeight, arenaHeight - tank.y - tank.radius);
+
+  for (const obs of obstacles) {
+    const cx = clamp(tank.x, obs.x, obs.x + obs.width);
+    const cy = clamp(tank.y, obs.y, obs.y + obs.height);
+    const d = Math.hypot(tank.x - cx, tank.y - cy);
+    accumulateWall(cx, cy, d - tank.radius);
+  }
+
+  let targetAngle: number;
+  if (Math.hypot(rx, ry) > 1e-6) {
+    targetAngle = vectorToAngle(rx, ry);
+  } else {
+    const scan = scanProximity(
+      { id: '__wall_away__', x: tank.x, y: tank.y, radius: tank.radius },
+      arenaWidth,
+      arenaHeight,
+      obstacles,
+      [],
+      'walls'
+    );
+    if (!scan.nearestPoint) return 1;
+    targetAngle = vectorToAngle(tank.x - scan.nearestPoint.x, tank.y - scan.nearestPoint.y);
+  }
+
+  const relEscape = normalizeAngle180(targetAngle - moveHeading);
+  if (Math.abs(relEscape) > 177) {
+    const wallDirAngle = targetAngle + 180;
+    const toCenterAngle = vectorToAngle(arenaWidth / 2 - tank.x, arenaHeight / 2 - tank.y);
+    const relCenter = normalizeAngle180(toCenterAngle - wallDirAngle);
+    return relCenter >= 0 ? 1 : -1;
+  }
+  return relEscape >= 0 ? 1 : -1;
 }
 

@@ -14,6 +14,7 @@ import {
   angleToVector,
   calculateLeadAngle,
   clamp,
+  computeWallAwayTurnSign,
   distanceBetween,
   normalizeAngle180,
   ProximityTarget,
@@ -309,6 +310,7 @@ export function runTankChipProgram(
         coordKey,
         tank,
         tick,
+        arena,
         coordMode,
         gun.speedBonus,
         radar.turnRate,
@@ -421,6 +423,7 @@ function formatChipDebugPrint(
     case 'act_move':
       return `move(${p.speedPercent ?? 80}%)`;
     case 'act_turn_body':
+      if (p.mode === 'wall_away') return `turn_body(回避${p.angle ?? 12}°)`;
       if (p.mode === 'turret_rel') return `turn_body(砲塔${p.angle ?? 0}°)`;
       return p.mode === 'enemy_rel'
         ? `turn_body(敵${p.angle ?? 0}°)`
@@ -637,7 +640,7 @@ function evaluateCondition(
           moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
         }
         const fwd = angleToVector(tank.bodyAngle);
-        approachingDir = { dx: fwd.dx * moveSign, dy: fwd.dy * moveSign, minDot: 0.72 };
+        approachingDir = { dx: fwd.dx * moveSign, dy: fwd.dy * moveSign, minDot: 0.05 };
       }
 
       const { nearestDist, nearestPoint } = scanProximity(
@@ -655,7 +658,6 @@ function evaluateCondition(
       if (mode === 'left_open' || mode === 'right_open') {
         const sign = mode === 'left_open' ? -1 : 1;
         const sideAngle = tank.bodyAngle + sign * 90;
-        const rearSideAngle = tank.bodyAngle + sign * 135;
         const threshold = distCheck + chassis.radius;
         const sideDist = raycastWallDistance(
           tank.x,
@@ -666,17 +668,37 @@ function evaluateCondition(
           arena.height,
           arena.obstacles
         );
-        const rearSideDist = raycastWallDistance(
-          tank.x,
-          tank.y,
-          rearSideAngle,
-          threshold + 80,
-          arena.width,
-          arena.height,
-          arena.obstacles
+        const rearDist = Math.min(
+          raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle + sign * 120,
+            threshold + 80,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          ),
+          raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle + sign * 135,
+            threshold + 80,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          ),
+          raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle + sign * 150,
+            threshold + 80,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          )
         );
         // True only when the side just opened up while a wall is still behind on that side (corner passed)
-        return sideDist > threshold && rearSideDist <= threshold + 75;
+        return sideDist > threshold && rearDist <= threshold + 75;
       }
 
       if (mode === 'left_closer') {
@@ -785,6 +807,7 @@ function executeActionCell(
   _coordKey: string,
   tank: TankRuntime,
   tick: number,
+  arena: ArenaConfig,
   coordMode: 'relative' | 'absolute',
   gunSpeedBonus: number,
   _radarTurnRate: number,
@@ -845,6 +868,24 @@ function executeActionCell(
         if (tank.lastHitAngle !== null) {
           commands.bodyTurnDelta = normalizeAngle180(tank.lastHitAngle + ang - tank.bodyAngle);
         }
+      } else if (effectiveMode === 'wall_away') {
+        const chassis = CHASSIS_SPECS[tank.blueprint.assembly.chassis];
+        let moveSign = 1;
+        if (Math.abs(tank.speed) > 0.1) {
+          moveSign = tank.speed >= 0 ? 1 : -1;
+        } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
+          moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
+        }
+        const moveHeading = moveSign < 0 ? tank.bodyAngle + 180 : tank.bodyAngle;
+        const mag = Math.abs(ang || 12);
+        const turnSign = computeWallAwayTurnSign(
+          { x: tank.x, y: tank.y, radius: chassis.radius },
+          moveHeading,
+          arena.width,
+          arena.height,
+          arena.obstacles
+        );
+        commands.bodyTurnDelta = turnSign * mag;
       } else if (effectiveMode === 'heading') {
         commands.bodyTurnDelta = normalizeAngle180(ang - tank.bodyAngle);
       } else {

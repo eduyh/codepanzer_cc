@@ -486,13 +486,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabelEn: 'if prox:',
     description:
       '全周の壁・障害物・戦車までの距離をスキャンし、指定条件に当てはまる場合は True (青/then)、そうでなければ False (赤/else) へ分岐します。',
-    pythonSyntax: 'if proximity_near(mode="approaching", target="all", dist=90):',
+    pythonSyntax: 'if proximity_near(mode="approaching", target="all", dist=130):',
     conceptTag: '近接センサー (全周スキャン)',
     signatureInfo: '引数: mode: str, target: str, dist: float → 戻り値: bool (True / False)',
     learningTip:
       '車体の全周をスキャンして壁・障害物・他戦車との接触を事前に検知します。「接近中のみ」を選ぶと、離れる向きに旋回した瞬間に False に戻るため、その場で回り続けるのを防げます。',
     isCondition: true,
-    defaultParams: { mode: 'approaching', target: 'all', dist: 90 },
+    defaultParams: { mode: 'approaching', target: 'all', dist: 130 },
     paramSchema: [
       {
         key: 'mode',
@@ -803,7 +803,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     conceptTag: '関数呼び出し (座標基準とベクトル角度)',
     signatureInfo: '引数: mode: str, angle: float → 戻り値: None',
     learningTip:
-      '同じ `turn_body()` でも `mode` により挙動が変わります。`mode="turret_rel"` に `angle=0` を渡すと砲塔が向いている方向へ車体正面を向けられるため、固い正面装甲を敵に向け直す操作に使えます。`mode="enemy_rel"` に `angle=90` を渡すと敵に対し直角を向く側面旋回になります。',
+      '同じ `turn_body()` でも `mode` により挙動が変わります。`mode="wall_away"` にすると最寄りの壁から離れる方向へ自動旋回でき、`mode="turret_rel"` に `angle=0` を渡すと砲塔が向いている方向へ車体正面を向けられます（固い正面装甲を敵に向け直す操作に有効）。`mode="enemy_rel"` に `angle=90` で側面旋回になります。',
     isCondition: false,
     defaultParams: { mode: 'auto', angle: 4 },
     paramSchema: [
@@ -816,6 +816,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
           { value: 'auto', label: '座標モード自動', labelEn: '"auto"' },
           { value: 'delta', label: '相対角速度 (右+/左-)', labelEn: '"delta"' },
           { value: 'heading', label: '絶対方位 (北=0°)', labelEn: '"heading"' },
+          { value: 'wall_away', label: '壁回避方向へ (自動)', labelEn: '"wall_away"' },
           { value: 'turret_rel', label: '砲塔方向基準 (0°で砲塔向き)', labelEn: '"turret_rel"' },
           { value: 'enemy_rel', label: '敵方向基準 (+90°で側面旋回)', labelEn: '"enemy_rel"' },
           { value: 'last_hit', label: '被弾方向基準 (0°で被弾向き)', labelEn: '"last_hit"' },

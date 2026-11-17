@@ -150,6 +150,9 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
     case 'act_turn_body': {
       const ang = Number(p.angle ?? 0);
       const sign = ang >= 0 ? '+' : '';
+      if (p.mode === 'wall_away') {
+        return lang === 'en' ? `away ${Math.abs(ang)}°` : `壁回避${Math.abs(ang)}°`;
+      }
       if (p.mode === 'enemy_rel') {
         return lang === 'en' ? `e${sign}${ang}°` : `敵${sign}${ang}°`;
       }

@@ -647,7 +647,7 @@ export function stepBattleTick(state: BattleState): BattleState {
     const effectiveAccel = chassis.accel * mobilityMultiplier * boostFactor;
     const effectiveTurnRate = chassis.turnRate * mobilityMultiplier * boostFactor;
 
-    const speedFactor = 1 - 0.35 * (Math.abs(tank.speed) / Math.max(0.1, effectiveMaxSpeed));
+    const speedFactor = 1 - 0.2 * (Math.abs(tank.speed) / Math.max(0.1, effectiveMaxSpeed));
     const maxBodyTurn = effectiveTurnRate * speedFactor;
     const actualBodyTurn = clamp(commands.bodyTurnDelta, -maxBodyTurn, maxBodyTurn);
     tank.bodyAngle = normalizeAngle360(tank.bodyAngle + actualBodyTurn);

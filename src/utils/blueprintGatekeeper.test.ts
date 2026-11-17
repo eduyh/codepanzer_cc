@@ -313,4 +313,74 @@ describe('blueprintGatekeeper', () => {
     const r7 = runTankChipProgram(p, 7, battle.arena, battle.projectiles, battle.tanks);
     expect(r7.commands.targetSpeedRatio).toBeCloseTo(0.5);
   });
+
+  it('steers away from left, right, head-on, and corner walls with act_turn_body(mode="wall_away") and round-trips Python', () => {
+    const bp: TankBlueprint = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT));
+    bp.assembly.cpu = 'mini_4x4';
+    bp.program = buildProgram(4, 'relative', [
+      { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+      { x: 1, y: 0, type: 'act_turn_body', params: { mode: 'wall_away', angle: 12 }, next: null },
+    ]);
+
+    const validation = validateAndRepairBlueprint(bp);
+    expect(validation.isValid).toBe(true);
+    expect(validation.fixes).toEqual([]);
+
+    const src = transpileProgramToLines(bp.program, bp.name, false).map((l) => l.text).join('\n');
+    expect(src).toContain('turn_body(mode="wall_away", angle=12)');
+    const reparsed = parsePythonSourceToProgram(src, bp.program.gridSize, bp.program.coordinateMode);
+    expect(reparsed.ok).toBe(true);
+    if (reparsed.ok) {
+      expect(reparsed.program.cells[0][1]?.params.mode).toBe('wall_away');
+      expect(reparsed.program.cells[0][1]?.params.angle).toBe(12);
+    }
+
+    const battle = createBattleState({ player: bp, enemy: TUTORIAL_STAGES[0].enemy, arenaSize: 'small' });
+    const tank = battle.tanks[0];
+
+    // Near right wall facing North -> turn left (-12)
+    tank.x = battle.arena.width - 45;
+    tank.y = 250;
+    tank.bodyAngle = 0;
+    expect(runTankChipProgram(tank, 1, battle.arena, battle.projectiles, battle.tanks).commands.bodyTurnDelta).toBe(-12);
+
+    // Near left wall facing North -> turn right (+12)
+    tank.x = 45;
+    tank.y = 250;
+    tank.bodyAngle = 0;
+    expect(runTankChipProgram(tank, 2, battle.arena, battle.projectiles, battle.tanks).commands.bodyTurnDelta).toBe(12);
+
+    // Head-on into top wall from left of arena center -> turn right (+12) toward center
+    tank.x = 200;
+    tank.y = 55;
+    tank.bodyAngle = 0;
+    expect(runTankChipProgram(tank, 3, battle.arena, battle.projectiles, battle.tanks).commands.bodyTurnDelta).toBe(12);
+
+    // Trapped in bottom-left corner heading South-West -> turn left (-12) out toward NE, no corner ping-pong
+    tank.x = 30;
+    tank.y = battle.arena.height - 30;
+    tank.bodyAngle = 200;
+    expect(runTankChipProgram(tank, 4, battle.arena, battle.projectiles, battle.tanks).commands.bodyTurnDelta).toBe(-12);
+  });
+
+  it('completes obstacle/evasion stages (tut_7, 8, 11, 13, 14) with zero wall hits', () => {
+    for (const id of ['tut_7', 'tut_8', 'tut_11', 'tut_13', 'tut_14']) {
+      const st = TUTORIAL_STAGES.find((s) => s.id === id)!;
+      let battle = createBattleState({
+        player: st.playerStarter,
+        enemy: st.enemy,
+        arenaSize: st.arenaSize,
+        obstacles: st.obstacles,
+        maxTicks: st.maxTicks,
+        playerSpawn: st.playerSpawn,
+        enemySpawn: st.enemySpawn,
+        enemyHpScale: st.enemyHpScale,
+      });
+      while (battle.status === 'running' && battle.tick < (st.maxTicks ?? 6000)) {
+        battle = stepBattleTick(battle);
+      }
+      expect(battle.winnerId, id).toBe('player');
+      expect(battle.tanks[0].stats.wallHits, `${id} wallHits`).toBe(0);
+    }
+  });
 });
