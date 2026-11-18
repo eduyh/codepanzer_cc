@@ -15,6 +15,7 @@ import {
 const SHARE_PREFIX = 'VST1-';
 const STORAGE_KEY_SAVED_TANKS = 'vstank_saved_blueprints_v1';
 const STORAGE_KEY_TUTORIAL_CLEARS = 'vstank_tutorial_clears_v1';
+const STORAGE_KEY_LEARNING_CLEARS = 'vstank_learning_clears_v1';
 
 function toBase64Url(str: string): string {
   const bytes = new TextEncoder().encode(str);
@@ -311,9 +312,9 @@ export function deleteBlueprintFromStorage(id: string): TankBlueprint[] {
   return updated;
 }
 
-export function loadTutorialClears(): string[] {
+function loadClearedIdList(storageKey: string): string[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY_TUTORIAL_CLEARS);
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((s) => typeof s === 'string') : [];
@@ -322,15 +323,31 @@ export function loadTutorialClears(): string[] {
   }
 }
 
-export function markTutorialCleared(stageId: string): string[] {
-  const existing = loadTutorialClears();
-  if (existing.includes(stageId)) return existing;
-  const updated = [...existing, stageId];
+function markClearedIdInList(storageKey: string, id: string): string[] {
+  const existing = loadClearedIdList(storageKey);
+  if (existing.includes(id)) return existing;
+  const updated = [...existing, id];
   try {
-    localStorage.setItem(STORAGE_KEY_TUTORIAL_CLEARS, JSON.stringify(updated));
+    localStorage.setItem(storageKey, JSON.stringify(updated));
   } catch {
     // Ignore
   }
   return updated;
+}
+
+export function loadTutorialClears(): string[] {
+  return loadClearedIdList(STORAGE_KEY_TUTORIAL_CLEARS);
+}
+
+export function markTutorialCleared(stageId: string): string[] {
+  return markClearedIdInList(STORAGE_KEY_TUTORIAL_CLEARS, stageId);
+}
+
+export function loadLearningClears(): string[] {
+  return loadClearedIdList(STORAGE_KEY_LEARNING_CLEARS);
+}
+
+export function markLearningCleared(missionId: string): string[] {
+  return markClearedIdInList(STORAGE_KEY_LEARNING_CLEARS, missionId);
 }
 

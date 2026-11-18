@@ -11,8 +11,11 @@ import {
   ArenaConfig,
   ArenaObstacle,
   ArenaSizeId,
+  ArenaTarget,
+  ArenaTile,
   BattleState,
   ChassisId,
+  LearningGoalRule,
   Mine,
   ObstacleMode,
   Projectile,
@@ -281,6 +284,8 @@ export function createTankRuntime(
     lastHitTick: -999,
     lastAttackHitTick: -999,
     lastHitAngle: null,
+    lastAimAngle: null,
+    lastAimTick: -999,
     wallHitCooldown: 0,
     killedById: null,
     counters: { A: 0, B: 0 },
@@ -288,6 +293,10 @@ export function createTankRuntime(
     loopStack: [],
     moveState: null,
     sleepState: null,
+    turnState: null,
+    fireState: null,
+    halted: false,
+    tileEdgeState: {},
     activePrintSpeech: null,
     mode: 0,
     trace: { visited: [], edges: [], stepsUsed: 0, truncated: false },
@@ -314,6 +323,9 @@ export function createBattleState(options: {
   enemy?: TankBlueprint;
   enemies?: TankBlueprint[];
   obstacles?: ArenaObstacle[];
+  tiles?: ArenaTile[];
+  targets?: ArenaTarget[];
+  learningRule?: LearningGoalRule;
   arenaSize?: ArenaSizeId;
   maxTicks?: number;
   playerSpawn?: SpawnPoint;
@@ -329,6 +341,16 @@ export function createBattleState(options: {
     height: sizeSpec.height,
     maxTicks: options.maxTicks ?? DEFAULT_MAX_TICKS,
     obstacles: options.obstacles ?? [],
+    ...(options.tiles ? { tiles: options.tiles.map((t) => ({ ...t })) } : {}),
+    ...(options.targets
+      ? {
+          targets: options.targets.map((t) => ({
+            ...t,
+            ...(t.patrol ? { patrol: { ...t.patrol } } : {}),
+          })),
+        }
+      : {}),
+    ...(options.learningRule ? { learningRule: { ...options.learningRule } } : {}),
     teamBattle: Boolean(options.teamBattle),
   };
 
@@ -392,7 +414,7 @@ function updateRadarScan(
   const radar = RADAR_SPECS[tank.blueprint.assembly.radar];
   const smokes = state.smokes ?? [];
   const decoys = state.decoys ?? [];
-  let bestTarget: {
+  interface RadarCandidate {
     id: string;
     x: number;
     y: number;
@@ -401,25 +423,32 @@ function updateRadarScan(
     speed: number;
     heading: number;
     hp: number;
-  } | null = null;
+  }
+  let bestTarget: RadarCandidate | null = null;
   let bestDist = Infinity;
   let bestBearing = 0;
+
+  const considerCandidate = (candidate: RadarCandidate): void => {
+    const dist = distanceBetween(tank.x, tank.y, candidate.x, candidate.y);
+    if (dist > radar.range || dist >= bestDist) return;
+
+    const absBearing = vectorToAngle(candidate.x - tank.x, candidate.y - tank.y);
+    const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
+    if (diff > radar.fovDeg / 2) return;
+
+    if (!hasLineOfSight(tank.x, tank.y, candidate.x, candidate.y, state.arena.obstacles, smokes)) {
+      return;
+    }
+
+    bestTarget = candidate;
+    bestDist = dist;
+    bestBearing = absBearing;
+  };
 
   for (const other of candidates) {
     if (other.id === tank.id || other.hp <= 0) continue;
     if (state.arena.teamBattle && other.team === tank.team) continue;
-    const dist = distanceBetween(tank.x, tank.y, other.x, other.y);
-    if (dist > radar.range || dist >= bestDist) continue;
-
-    const absBearing = vectorToAngle(other.x - tank.x, other.y - tank.y);
-    const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
-    if (diff > radar.fovDeg / 2) continue;
-
-    if (!hasLineOfSight(tank.x, tank.y, other.x, other.y, state.arena.obstacles, smokes)) {
-      continue;
-    }
-
-    bestTarget = {
+    considerCandidate({
       id: other.id,
       x: other.x,
       y: other.y,
@@ -428,26 +457,13 @@ function updateRadarScan(
       speed: other.speed,
       heading: other.bodyAngle,
       hp: other.hp,
-    };
-    bestDist = dist;
-    bestBearing = absBearing;
+    });
   }
 
   for (const decoy of decoys) {
     if (decoy.ownerId === tank.id || decoy.hp <= 0 || decoy.ttl <= 0) continue;
     if (state.arena.teamBattle && decoy.team === tank.team) continue;
-    const dist = distanceBetween(tank.x, tank.y, decoy.x, decoy.y);
-    if (dist > radar.range || dist >= bestDist) continue;
-
-    const absBearing = vectorToAngle(decoy.x - tank.x, decoy.y - tank.y);
-    const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
-    if (diff > radar.fovDeg / 2) continue;
-
-    if (!hasLineOfSight(tank.x, tank.y, decoy.x, decoy.y, state.arena.obstacles, smokes)) {
-      continue;
-    }
-
-    bestTarget = {
+    considerCandidate({
       id: decoy.id,
       x: decoy.x,
       y: decoy.y,
@@ -456,9 +472,34 @@ function updateRadarScan(
       speed: 0,
       heading: 0,
       hp: decoy.hp,
-    };
-    bestDist = dist;
-    bestBearing = absBearing;
+    });
+  }
+
+  if (tank.team === 'player' && state.arena.targets) {
+    for (const tgt of state.arena.targets) {
+      if (tgt.popped || tgt.kind !== 'shoot_balloon') continue;
+      const vx = tgt.vx ?? 0;
+      const vy = tgt.vy ?? 0;
+      const speed = Math.hypot(vx, vy);
+      considerCandidate({
+        id: tgt.id,
+        x: tgt.x,
+        y: tgt.y,
+        vx,
+        vy,
+        speed,
+        heading: speed > 1e-4 ? vectorToAngle(vx, vy) : 0,
+        hp: tgt.hp,
+      });
+    }
+  }
+
+  if (
+    tank.detectedEnemy &&
+    state.arena.targets?.some((tgt) => tgt.id === tank.detectedEnemy?.id && tgt.popped)
+  ) {
+    tank.detectedEnemy = null;
+    tank.enemyDist = null;
   }
 
   if (!bestTarget) {
@@ -470,23 +511,24 @@ function updateRadarScan(
     return;
   }
 
+  const matched = bestTarget as RadarCandidate;
   const roundedDist = Math.round(bestDist);
   tank.radarLock = true;
   tank.enemyDist = roundedDist;
   tank.counters.ENEMY_DIST = roundedDist;
   tank.detectedEnemy = {
-    id: bestTarget.id,
-    x: bestTarget.x,
-    y: bestTarget.y,
-    vx: bestTarget.vx,
-    vy: bestTarget.vy,
-    speed: bestTarget.speed,
-    heading: bestTarget.heading,
+    id: matched.id,
+    x: matched.x,
+    y: matched.y,
+    vx: matched.vx,
+    vy: matched.vy,
+    speed: matched.speed,
+    heading: matched.heading,
     distance: bestDist,
     bearingFromBody: normalizeAngle180(bestBearing - tank.bodyAngle),
     bearingFromTurret: normalizeAngle180(bestBearing - tank.turretAngle),
     absoluteBearing: bestBearing,
-    hp: bestTarget.hp,
+    hp: matched.hp,
     lastSeenTick: state.tick,
   };
 }
@@ -827,6 +869,36 @@ export function stepBattleTick(state: BattleState): BattleState {
     return ex.age < ex.maxAge;
   });
 
+  // 1b. Update moving patrol targets (Learning Mode moving balloons)
+  if (state.arena.targets) {
+    for (const tgt of state.arena.targets) {
+      if (tgt.popped || !tgt.patrol) {
+        tgt.vx = 0;
+        tgt.vy = 0;
+        continue;
+      }
+      const { ax, ay, bx, by, speed } = tgt.patrol;
+      const dir = tgt.patrol.dir ?? 1;
+      const destX = dir > 0 ? bx : ax;
+      const destY = dir > 0 ? by : ay;
+      const dx = destX - tgt.x;
+      const dy = destY - tgt.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= speed || dist < 1e-6) {
+        tgt.vx = destX - tgt.x;
+        tgt.vy = destY - tgt.y;
+        tgt.x = destX;
+        tgt.y = destY;
+        tgt.patrol.dir = dir > 0 ? -1 : 1;
+      } else {
+        tgt.vx = (dx / dist) * speed;
+        tgt.vy = (dy / dist) * speed;
+        tgt.x += tgt.vx;
+        tgt.y += tgt.vy;
+      }
+    }
+  }
+
   // 2. Radar scan phase for all alive tanks
   for (const tank of state.tanks) {
     if (tank.hp <= 0) continue;
@@ -1102,6 +1174,53 @@ export function stepBattleTick(state: BattleState): BattleState {
   // 4. Tank-to-Tank physical collision: mass-weighted knockback, bounce, anti-deadlock & wall/obstacle clamp
   resolveTankCollisions(state, tick);
 
+  // 4b. Learning Arena Tiles & Ram-Balloon Interactions
+  if (state.arena.tiles || state.arena.targets) {
+    for (const tank of state.tanks) {
+      if (tank.team !== 'player' || tank.hp <= 0) continue;
+      const r = CHASSIS_SPECS[tank.blueprint.assembly.chassis].radius;
+      for (const tile of state.arena.tiles ?? []) {
+        const inside =
+          tank.x >= tile.x &&
+          tank.x <= tile.x + tile.width &&
+          tank.y >= tile.y &&
+          tank.y <= tile.y + tile.height;
+        if (!inside) continue;
+        if (tile.kind === 'checkpoint' && !tile.visited) {
+          tile.visited = true;
+          state.explosions.push({
+            id: makeEntityId('exp'),
+            x: tile.x + tile.width / 2,
+            y: tile.y + tile.height / 2,
+            radius: 26,
+            color: '#22c55e',
+            age: 0,
+            maxAge: 18,
+          });
+        } else if (tile.kind === 'hazard') {
+          tank.speed *= 0.65;
+          applyDamage(tank, 1.5, undefined, tick);
+        }
+      }
+      for (const tgt of state.arena.targets ?? []) {
+        if (tgt.popped || tgt.kind !== 'ram_balloon') continue;
+        if (distanceBetween(tank.x, tank.y, tgt.x, tgt.y) <= r + tgt.radius) {
+          tgt.popped = true;
+          tgt.hp = 0;
+          state.explosions.push({
+            id: makeEntityId('exp'),
+            x: tgt.x,
+            y: tgt.y,
+            radius: 38,
+            color: tgt.color ?? '#f43f5e',
+            age: 0,
+            maxAge: 24,
+          });
+        }
+      }
+    }
+  }
+
   // 5. Update Projectiles & Hit Detection
   const survivingProjectiles: Projectile[] = [];
   for (const proj of state.projectiles) {
@@ -1171,8 +1290,33 @@ export function stepBattleTick(state: BattleState): BattleState {
       continue;
     }
 
-    // Tank hit
+    // Shoot-Balloon hit (Learning Mode target)
     const attacker = state.tanks.find((t) => t.id === proj.ownerId);
+    let hitBalloon = false;
+    for (const tgt of state.arena.targets ?? []) {
+      if (tgt.popped || tgt.kind !== 'shoot_balloon') continue;
+      if (distanceBetween(proj.x, proj.y, tgt.x, tgt.y) <= tgt.radius + 5) {
+        tgt.hp = Math.max(0, tgt.hp - proj.damage);
+        if (tgt.hp <= 0) {
+          tgt.popped = true;
+        }
+        if (attacker) attacker.stats.shotsHit += 1;
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: tgt.x,
+          y: tgt.y,
+          radius: tgt.popped ? 38 : 16,
+          color: tgt.color ?? '#f43f5e',
+          age: 0,
+          maxAge: 22,
+        });
+        hitBalloon = true;
+        break;
+      }
+    }
+    if (hitBalloon) continue;
+
+    // Tank hit
     let hitTank: TankRuntime | null = null;
     for (const tank of state.tanks) {
       if (tank.id === proj.ownerId || tank.hp <= 0) continue;
@@ -1296,6 +1440,71 @@ export function stepBattleTick(state: BattleState): BattleState {
     t.stats.shotsFired > 0 && t.stats.damageDealt > 0;
 
   // 7. Check Win / Draw / Timeout conditions
+  if (state.arena.learningRule) {
+    const rule = state.arena.learningRule;
+    const playerTank = state.tanks.find((t) => t.team === 'player');
+    if (!playerTank || playerTank.hp <= 0) {
+      state.status = 'finished';
+      state.winnerId = 'draw';
+      state.winType = 'defeat';
+      state.endReason = '機体がダメージを受けて停止しました';
+      return state;
+    }
+    if (rule.maxWallHits !== undefined && playerTank.stats.wallHits > rule.maxWallHits) {
+      state.status = 'finished';
+      state.winnerId = 'draw';
+      state.winType = 'defeat';
+      state.endReason = `壁・障害物に接触しました（無接触上限 ${rule.maxWallHits}回）`;
+      return state;
+    }
+    const tiles = state.arena.tiles ?? [];
+    const targets = state.arena.targets ?? [];
+    const checkpointsOk =
+      !rule.requireAllCheckpoints ||
+      tiles.every((t) => t.kind !== 'checkpoint' || Boolean(t.visited));
+    const targetsOk =
+      !rule.requireAllTargetsPopped || targets.every((t) => Boolean(t.popped));
+    const enemiesOk =
+      !rule.requireEnemiesDefeated ||
+      state.tanks.every((t) => t.team !== 'enemy' || t.hp <= 0);
+    const onGoalTile = tiles.some(
+      (t) =>
+        t.kind === 'goal' &&
+        playerTank.x >= t.x &&
+        playerTank.x <= t.x + t.width &&
+        playerTank.y >= t.y &&
+        playerTank.y <= t.y + t.height
+    );
+    const stoppedOk = !rule.requireStop || Math.abs(playerTank.speed) < 0.25;
+
+    if (
+      checkpointsOk &&
+      targetsOk &&
+      enemiesOk &&
+      (!rule.reachGoalTile || (onGoalTile && stoppedOk))
+    ) {
+      state.status = 'finished';
+      state.winnerId = 'player';
+      state.winType = 'mission';
+      state.endReason = 'ミッションクリア！';
+    } else if (
+      playerTank.halted &&
+      Math.abs(playerTank.speed) < 0.05 &&
+      state.projectiles.length === 0
+    ) {
+      state.status = 'finished';
+      state.winnerId = 'draw';
+      state.winType = 'defeat';
+      state.endReason = 'stop() で停止しましたがクリア条件を満たしていません';
+    } else if (state.tick >= state.arena.maxTicks) {
+      state.status = 'finished';
+      state.winnerId = 'draw';
+      state.winType = 'defeat';
+      state.endReason = '制限時間切れ（ミッション未達成）';
+    }
+    return state;
+  }
+
   const aliveTanks = state.tanks.filter((t) => t.hp > 0);
   if (state.arena.teamBattle) {
     const alivePlayers = aliveTanks.filter((t) => t.team === 'player');

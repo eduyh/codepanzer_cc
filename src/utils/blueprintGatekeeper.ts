@@ -221,6 +221,34 @@ export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResu
                 repairedParams[schema.key] = str;
               }
             }
+          } else if (schema.type === 'boolean') {
+            const fbBool = Number(fallback ?? 0) === 1 ? 1 : 0;
+            if (rawVal === undefined) {
+              repairedParams[schema.key] = fbBool;
+            } else if (typeof rawVal === 'boolean') {
+              repairedParams[schema.key] = rawVal ? 1 : 0;
+            } else if (typeof rawVal === 'number') {
+              if (rawVal === 0 || rawVal === 1) {
+                repairedParams[schema.key] = rawVal;
+              } else {
+                fixes.push(
+                  `(${x},${y}) ${cell.type}.${schema.key} ${String(rawVal)} -> ${fbBool}`
+                );
+                repairedParams[schema.key] = fbBool;
+              }
+            } else {
+              const lower = String(rawVal).trim().toLowerCase();
+              if (lower === 'true' || lower === '1') {
+                repairedParams[schema.key] = 1;
+              } else if (lower === 'false' || lower === '0') {
+                repairedParams[schema.key] = 0;
+              } else {
+                fixes.push(
+                  `(${x},${y}) ${cell.type}.${schema.key} "${String(rawVal)}" -> ${fbBool}`
+                );
+                repairedParams[schema.key] = fbBool;
+              }
+            }
           }
         }
 

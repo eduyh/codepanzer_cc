@@ -10,6 +10,7 @@ import {
   Download,
   Eye,
   EyeOff,
+  GraduationCap,
   HelpCircle,
   Pause,
   Play,
@@ -25,6 +26,11 @@ import {
 import { BattleCanvas3D } from './components/BattleCanvas3D';
 import { GridEditor } from './components/GridEditor';
 import { ShareModal } from './components/ShareModal';
+import {
+  LEARNING_MISSIONS,
+  LESSON_1_TITLES,
+  resolveMissionVariant,
+} from './data/learningMissions';
 import { CHASSIS_SPECS, cpuIdForGridSize, SUB_WEAPON_SPECS } from './data/parts';
 import { validateAndRepairBlueprint } from './utils/blueprintGatekeeper';
 import {
@@ -32,6 +38,7 @@ import {
   DEFAULT_PLAYER_BLUEPRINT,
   ENEMY_DUMMY,
   PRESET_ENEMIES,
+  TUTORIAL_SECTION_TITLES,
   TUTORIAL_STAGES,
 } from './data/presets';
 import {
@@ -49,6 +56,7 @@ import {
   MainGunId,
   ObstacleMode,
   RadarId,
+  LearningMission,
   SubWeaponId,
   TankBlueprint,
 } from './types/game';
@@ -61,7 +69,9 @@ import {
 import {
   decodeShareCode,
   extractEnemyFromUrl,
+  loadLearningClears,
   loadTutorialClears,
+  markLearningCleared,
   markTutorialCleared,
   validateAndNormalizeBlueprint,
 } from './utils/share';
@@ -110,6 +120,19 @@ function cloneCallStack(
 function cloneBattleStateForStep(prev: BattleState): BattleState {
   return {
     ...prev,
+    arena: {
+      ...prev.arena,
+      ...(prev.arena.tiles ? { tiles: prev.arena.tiles.map((tl) => ({ ...tl })) } : {}),
+      ...(prev.arena.targets
+        ? {
+            targets: prev.arena.targets.map((tg) => ({
+              ...tg,
+              ...(tg.patrol ? { patrol: { ...tg.patrol } } : {}),
+            })),
+          }
+        : {}),
+      ...(prev.arena.learningRule ? { learningRule: { ...prev.arena.learningRule } } : {}),
+    },
     tanks: prev.tanks.map((t) => ({
       ...t,
       stats: { ...t.stats },
@@ -135,6 +158,21 @@ function cloneBattleStateForStep(prev: BattleState): BattleState {
             callStack: cloneCallStack(t.sleepState.callStack),
           }
         : null,
+      turnState: t.turnState
+        ? {
+            ...t.turnState,
+            coord: { ...t.turnState.coord },
+            callStack: cloneCallStack(t.turnState.callStack),
+          }
+        : null,
+      fireState: t.fireState
+        ? {
+            ...t.fireState,
+            coord: { ...t.fireState.coord },
+            callStack: cloneCallStack(t.fireState.callStack),
+          }
+        : null,
+      tileEdgeState: t.tileEdgeState ? { ...t.tileEdgeState } : undefined,
       activePrintSpeech: t.activePrintSpeech
         ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
         : null,
@@ -164,8 +202,16 @@ export function App() {
   const maxBattleTanks = isMobileLayout ? MAX_MOBILE_BATTLE_TANKS : MAX_BATTLE_TANKS;
   const maxEnemySlots = maxBattleTanks - 1;
 
-  const [gameMode, setGameMode] = useState<'tutorial' | 'free'>(() =>
-    urlEnemy || getInitialLayoutPreset() === 'mobile' ? 'free' : 'tutorial'
+  const [gameMode, setGameMode] = useState<'learning' | 'tutorial' | 'free'>(() =>
+    urlEnemy || getInitialLayoutPreset() === 'mobile' ? 'free' : 'learning'
+  );
+  const [learningIndex, setLearningIndex] = useState(0);
+  const [learningVariantIndex, setLearningVariantIndex] = useState(0);
+  const [passedLearningVariants, setPassedLearningVariants] = useState<number[]>([]);
+  const shouldAutoAdvanceVariantRef = useRef<boolean>(false);
+  const variantTimerRef = useRef<number | null>(null);
+  const [clearedLearnings, setClearedLearnings] = useState<string[]>(() =>
+    loadLearningClears()
   );
   const [tutorialIndex, setTutorialIndex] = useState(0);
   const [clearedTutorials, setClearedTutorials] = useState<string[]>(() =>
@@ -184,26 +230,85 @@ export function App() {
   const [freeTeamBattle, setFreeTeamBattle] = useState<boolean>(false);
   const enemyFileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const activeLearningMission = LEARNING_MISSIONS[learningIndex];
+  const [learningPlayerBp, setLearningPlayerBp] = useState<TankBlueprint>(() =>
+    createBlankTutorialBlueprint(LEARNING_MISSIONS[0].playerStarter)
+  );
   const activeStage = TUTORIAL_STAGES[tutorialIndex];
   const [tutorialPlayerBp, setTutorialPlayerBp] = useState<TankBlueprint>(() =>
     createBlankTutorialBlueprint(TUTORIAL_STAGES[0].playerStarter)
   );
 
   const freeEnemyBp = freeEnemies[0] ?? ENEMY_DUMMY;
-  const currentPlayerBp = gameMode === 'tutorial' ? tutorialPlayerBp : freePlayerBp;
+  const currentPlayerBp =
+    gameMode === 'learning'
+      ? learningPlayerBp
+      : gameMode === 'tutorial'
+        ? tutorialPlayerBp
+        : freePlayerBp;
   const currentEnemyList = useMemo(
     () =>
-      gameMode === 'tutorial'
-        ? activeStage.enemies && activeStage.enemies.length > 0
-          ? activeStage.enemies
-          : [activeStage.enemy]
-        : freeEnemies,
-    [gameMode, activeStage.enemies, activeStage.enemy, freeEnemies]
+      gameMode === 'learning'
+        ? activeLearningMission.enemies ?? []
+        : gameMode === 'tutorial'
+          ? activeStage.enemies && activeStage.enemies.length > 0
+            ? activeStage.enemies
+            : [activeStage.enemy]
+          : freeEnemies,
+    [
+      gameMode,
+      activeLearningMission.enemies,
+      activeStage.enemies,
+      activeStage.enemy,
+      freeEnemies,
+    ]
   );
   const currentEnemyBp = currentEnemyList[0] ?? activeStage.enemy;
 
+  const clearVariantTimer = useCallback(() => {
+    if (variantTimerRef.current !== null) {
+      window.clearTimeout(variantTimerRef.current);
+      variantTimerRef.current = null;
+    }
+  }, []);
+
+  const buildMissionBattle = useCallback(
+    (
+      mission: LearningMission,
+      playerBp: TankBlueprint,
+      variantIdx: number,
+      enemiesOverride?: TankBlueprint[]
+    ): BattleState => {
+      const resolved = resolveMissionVariant(mission, variantIdx);
+      const mEnemies =
+        enemiesOverride && enemiesOverride.length > 0 ? enemiesOverride : resolved.enemies;
+      return createBattleState({
+        player: cloneBlueprint(playerBp),
+        enemies: mEnemies.map(cloneBlueprint),
+        arenaSize: resolved.arenaSize,
+        obstacles: resolved.obstacles,
+        tiles: resolved.tiles,
+        targets: resolved.targets,
+        learningRule: mission.goalRule,
+        maxTicks: mission.maxTicks,
+        playerSpawn: resolved.playerSpawn,
+        enemySpawns: resolved.enemySpawns,
+        teamBattle: false,
+      });
+    },
+    []
+  );
+
   const buildInitialBattle = useCallback(
     (playerBp: TankBlueprint, enemiesInput: TankBlueprint[]): BattleState => {
+      if (gameMode === 'learning') {
+        return buildMissionBattle(
+          LEARNING_MISSIONS[learningIndex],
+          playerBp,
+          learningVariantIndex,
+          enemiesInput
+        );
+      }
       if (gameMode === 'tutorial') {
         const st = TUTORIAL_STAGES[tutorialIndex];
         const stEnemies =
@@ -234,7 +339,18 @@ export function App() {
         teamBattle: freeTeamBattle && cappedEnemies.length > 1,
       });
     },
-    [gameMode, tutorialIndex, obstacleMode, mapSeed, freeArenaSize, freeTeamBattle, maxEnemySlots]
+    [
+      gameMode,
+      learningIndex,
+      learningVariantIndex,
+      buildMissionBattle,
+      tutorialIndex,
+      obstacleMode,
+      mapSeed,
+      freeArenaSize,
+      freeTeamBattle,
+      maxEnemySlots,
+    ]
   );
 
   const [battleState, setBattleState] = useState<BattleState>(() =>
@@ -247,7 +363,7 @@ export function App() {
   const [splitRatio, setSplitRatio] = useState<number>(55);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const [showDebugOverlay, setShowDebugOverlay] = useState(true);
-  const [showHints, setShowHints] = useState(true);
+  const [showHints, setShowHints] = useState(false);
   const [uiFontScale, setUiFontScale] = useState<UiFontScale>(() => loadUiFontScale());
 
   const handleChangeUiFontScale = (scale: UiFontScale) => {
@@ -270,11 +386,40 @@ export function App() {
   const resetBattleWith = useCallback(
     (playerBp: TankBlueprint, enemyOrList: TankBlueprint | TankBlueprint[]) => {
       const list = Array.isArray(enemyOrList) ? enemyOrList : [enemyOrList];
+      clearVariantTimer();
+      shouldAutoAdvanceVariantRef.current = false;
       setIsPlaying(false);
       setBattleState(buildInitialBattle(playerBp, list));
     },
-    [buildInitialBattle]
+    [buildInitialBattle, clearVariantTimer]
   );
+
+  const handleSelectLearning = (idx: number) => {
+    clearVariantTimer();
+    shouldAutoAdvanceVariantRef.current = false;
+    const mission = LEARNING_MISSIONS[idx];
+    const starter = createBlankTutorialBlueprint(mission.playerStarter);
+    const resolved = resolveMissionVariant(mission, 0);
+    if (resolved.enemies.length === 0 && cameraMode === 'chase_p2') {
+      setCameraMode('tactical');
+    }
+    setGameMode('learning');
+    setLearningIndex(idx);
+    setLearningVariantIndex(0);
+    setPassedLearningVariants([]);
+    setLearningPlayerBp(starter);
+    setShowHints(false);
+    setIsPlaying(false);
+    setBattleState(buildMissionBattle(mission, starter, 0));
+  };
+
+  const handleSelectLearningVariant = (variantIdx: number, autoPlay = false) => {
+    clearVariantTimer();
+    shouldAutoAdvanceVariantRef.current = autoPlay;
+    setLearningVariantIndex(variantIdx);
+    setIsPlaying(autoPlay);
+    setBattleState(buildMissionBattle(activeLearningMission, learningPlayerBp, variantIdx));
+  };
 
   const handleSelectTutorial = (idx: number) => {
     const stage = TUTORIAL_STAGES[idx];
@@ -283,6 +428,7 @@ export function App() {
     setGameMode('tutorial');
     setTutorialIndex(idx);
     setTutorialPlayerBp(starter);
+    setShowHints(false);
     setIsPlaying(false);
     setBattleState(
       createBattleState({
@@ -300,9 +446,15 @@ export function App() {
     );
   };
 
-  const handleLoadTutorialSolution = () => {
-    const solution = cloneBlueprint(activeStage.playerStarter);
-    setTutorialPlayerBp(solution);
+  const handleLoadStarterSolution = () => {
+    const solution = cloneBlueprint(
+      gameMode === 'learning' ? activeLearningMission.playerStarter : activeStage.playerStarter
+    );
+    if (gameMode === 'learning') {
+      setLearningPlayerBp(solution);
+    } else {
+      setTutorialPlayerBp(solution);
+    }
     resetBattleWith(solution, currentEnemyList);
   };
 
@@ -470,7 +622,15 @@ export function App() {
   };
 
   const updatePlayerBlueprint = (nextBp: TankBlueprint, resetMatch: boolean) => {
-    if (gameMode === 'tutorial') {
+    if (gameMode === 'learning') {
+      clearVariantTimer();
+      shouldAutoAdvanceVariantRef.current = false;
+      setPassedLearningVariants([]);
+      if (resetMatch) {
+        setLearningVariantIndex(0);
+      }
+      setLearningPlayerBp(nextBp);
+    } else if (gameMode === 'tutorial') {
       setTutorialPlayerBp(nextBp);
     } else {
       setFreePlayerBp(nextBp);
@@ -492,6 +652,12 @@ export function App() {
             subAmmo: prev.tick === 0 ? nextSub.maxAmmo : Math.min(t.subAmmo, nextSub.maxAmmo),
             moveState: null,
             sleepState: null,
+            turnState: null,
+            fireState: null,
+            halted: false,
+            tileEdgeState: {},
+            lastAimAngle: null,
+            lastAimTick: -999,
             loopStack: [],
             blueprint: { ...cloneBlueprint(nextBp), color: getAutoTankColor(0) },
           };
@@ -628,11 +794,42 @@ export function App() {
     return () => cancelAnimationFrame(rafId);
   }, [isPlaying, speedMultiplier]);
 
-  // Stop playback & record tutorial clear when finished
+  // Stop playback & record mission / tutorial clear when finished
   useEffect(() => {
     if (battleState.status === 'finished') {
       setIsPlaying(false);
       if (
+        gameMode === 'learning' &&
+        battleState.winnerId === 'player' &&
+        battleState.winType === 'mission'
+      ) {
+        const variants = activeLearningMission.variants;
+        if (!variants || variants.length <= 1) {
+          const updated = markLearningCleared(activeLearningMission.id);
+          setClearedLearnings(updated);
+        } else {
+          const nextPassed = Array.from(new Set([...passedLearningVariants, learningVariantIndex]));
+          setPassedLearningVariants(nextPassed);
+          if (nextPassed.length >= variants.length) {
+            const updated = markLearningCleared(activeLearningMission.id);
+            setClearedLearnings(updated);
+            shouldAutoAdvanceVariantRef.current = false;
+          } else if (shouldAutoAdvanceVariantRef.current) {
+            const nextVarIdx = variants.findIndex((_, i) => !nextPassed.includes(i));
+            if (nextVarIdx >= 0) {
+              clearVariantTimer();
+              variantTimerRef.current = window.setTimeout(() => {
+                variantTimerRef.current = null;
+                setLearningVariantIndex(nextVarIdx);
+                setBattleState(
+                  buildMissionBattle(activeLearningMission, learningPlayerBp, nextVarIdx)
+                );
+                setIsPlaying(true);
+              }, 900);
+            }
+          }
+        }
+      } else if (
         gameMode === 'tutorial' &&
         battleState.winnerId === 'player' &&
         battleState.winType === 'elimination'
@@ -641,19 +838,54 @@ export function App() {
         setClearedTutorials(updated);
       }
     }
-  }, [battleState.status, battleState.winnerId, battleState.winType, gameMode, activeStage.id]);
+  }, [
+    battleState.status,
+    battleState.winnerId,
+    battleState.winType,
+    gameMode,
+    activeLearningMission,
+    learningVariantIndex,
+    passedLearningVariants,
+    learningPlayerBp,
+    buildMissionBattle,
+    clearVariantTimer,
+    activeStage.id,
+  ]);
+
+  useEffect(() => () => clearVariantTimer(), [clearVariantTimer]);
 
   const handleTogglePlay = () => {
+    clearVariantTimer();
     if (battleState.status === 'finished') {
+      if (
+        gameMode === 'learning' &&
+        activeLearningMission.variants &&
+        activeLearningMission.variants.length > 1 &&
+        passedLearningVariants.length >= activeLearningMission.variants.length
+      ) {
+        setPassedLearningVariants([]);
+        setLearningVariantIndex(0);
+        shouldAutoAdvanceVariantRef.current = true;
+        setBattleState(buildMissionBattle(activeLearningMission, learningPlayerBp, 0));
+        setIsPlaying(true);
+        return;
+      }
+      shouldAutoAdvanceVariantRef.current = true;
       const fresh = buildInitialBattle(currentPlayerBp, currentEnemyList);
       setBattleState(fresh);
       setIsPlaying(true);
     } else {
-      setIsPlaying((p) => !p);
+      setIsPlaying((p) => {
+        const nextPlay = !p;
+        shouldAutoAdvanceVariantRef.current = nextPlay;
+        return nextPlay;
+      });
     }
   };
 
   const handleStepOnce = () => {
+    clearVariantTimer();
+    shouldAutoAdvanceVariantRef.current = false;
     setIsPlaying(false);
     setBattleState((prev) => {
       if (prev.status === 'finished') return prev;
@@ -680,17 +912,31 @@ export function App() {
           <div className="mode-switcher">
             <button
               type="button"
+              className={`nav-tab ${gameMode === 'learning' ? 'active' : ''}`}
+              onClick={() => handleSelectLearning(learningIndex)}
+            >
+              <GraduationCap size={15} /> 課題学習
+            </button>
+            <button
+              type="button"
               className={`nav-tab ${gameMode === 'tutorial' ? 'active' : ''}`}
               onClick={() => handleSelectTutorial(tutorialIndex)}
             >
-              <BookOpen size={15} /> チュートリアル
+              <BookOpen size={15} /> 開発訓練
             </button>
             <button
               type="button"
               className={`nav-tab ${gameMode === 'free' ? 'active' : ''}`}
               onClick={handleSwitchToFree}
             >
-              <Swords size={15} /> テストグラウンド
+              <Swords size={15} /> 機体開発
+            </button>
+            <button
+              type="button"
+              className="nav-tab"
+              onClick={() => {}}
+            >
+              （未定）
             </button>
           </div>
         )}
@@ -723,7 +969,7 @@ export function App() {
                 { id: 'mobile', label: 'スマホ' },
                 { id: 'code', label: 'コード' },
                 { id: 'balanced', label: '標準' },
-                { id: 'battle', label: 'バトル' },
+                // { id: 'battle', label: 'バトル' },
               ] as Array<{ id: LayoutPreset; label: string }>
             ).map((opt) => (
               <button
@@ -824,47 +1070,64 @@ export function App() {
               }
         }
       >
-        {/* Left Pane: Mission Info (if tutorial) + 2D Chip Grid Editor */}
+        {/* Left Pane: Mission Info (if learning/tutorial) + 2D Chip Grid Editor */}
         <section className="pane-left">
-          {!isMobileLayout && gameMode === 'tutorial' && (
-            <div className="tutorial-banner">
-              <div className="tut-head">
-                <div>
-                  <span className="tut-badge">STAGE {activeStage.number}</span>
-                  <strong>{activeStage.title}</strong>
-                  <span className="tut-sub"> — {activeStage.subtitle}</span>
+          {!isMobileLayout && (gameMode === 'learning' || gameMode === 'tutorial') && (() => {
+            const isLearning = gameMode === 'learning';
+            const badgeText = isLearning
+              ? `LESSON ${activeLearningMission.lessonNumber} · ${activeLearningMission.missionCode}`
+              : `STAGE ${activeStage.number}`;
+            const titleText = isLearning ? activeLearningMission.title : activeStage.title;
+            const subText = isLearning ? activeLearningMission.subtitle : activeStage.subtitle;
+            const descText = isLearning
+              ? activeLearningMission.description
+              : activeStage.description;
+            const goalText = isLearning
+              ? activeLearningMission.goalDescription
+              : activeStage.goalDescription;
+            const hintList = isLearning ? activeLearningMission.hints : activeStage.hints;
+            return (
+              <div className="tutorial-banner">
+                <div className="tut-head">
+                  <div className="tut-title-block">
+                    <div className="tut-title-row">
+                      <span className="tut-badge">{badgeText}</span>
+                      <strong>{titleText}</strong>
+                    </div>
+                    <div className="tut-sub">{subText}</div>
+                  </div>
+                  <div className="tut-btns">
+                    <button
+                      type="button"
+                      className={`mini-btn ${showHints ? 'active' : ''}`}
+                      onClick={() => setShowHints((v) => !v)}
+                    >
+                      <HelpCircle size={12} /> ヒント
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={handleLoadStarterSolution}
+                      title="このミッションの模範解答プログラムを入力します"
+                    >
+                      模範解答
+                    </button>
+                  </div>
                 </div>
-                <div className="tut-btns">
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    onClick={() => setShowHints((v) => !v)}
-                  >
-                    <HelpCircle size={12} /> ヒント
-                  </button>
-                  <button
-                    type="button"
-                    className="mini-btn"
-                    onClick={handleLoadTutorialSolution}
-                    title="このステージの模範解答プログラムを入力します"
-                  >
-                    模範解答を入力
-                  </button>
-                </div>
+                <p className="tut-desc">{descText}</p>
+                {showHints && (
+                  <ul className="tut-hints">
+                    <li>
+                      <strong>目標:</strong> {goalText}
+                    </li>
+                    {hintList.map((h, i) => (
+                      <li key={i}>{h}</li>
+                    ))}
+                  </ul>
+                )}
               </div>
-              <p className="tut-desc">{activeStage.description}</p>
-              {showHints && (
-                <ul className="tut-hints">
-                  <li>
-                    <strong>目標:</strong> {activeStage.goalDescription}
-                  </li>
-                  {activeStage.hints.map((h, i) => (
-                    <li key={i}>{h}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
+            );
+          })()}
 
           <GridEditor
             program={currentPlayerBp.program}
@@ -876,7 +1139,16 @@ export function App() {
             tankName={currentPlayerBp.name}
             trace={playerTank?.trace}
             isPlaying={isPlaying}
-            allowedChips={!isMobileLayout && gameMode === 'tutorial' ? activeStage.allowedChips : undefined}
+            allowLearningChips={!isMobileLayout && gameMode === 'learning'}
+            allowedChips={
+              !isMobileLayout
+                ? gameMode === 'learning'
+                  ? activeLearningMission.allowedChips
+                  : gameMode === 'tutorial'
+                    ? activeStage.allowedChips
+                    : undefined
+                : undefined
+            }
             mobileMode={isMobileLayout}
             requestedSidebarTab={requestedSidebarTab}
             onChangeProgram={handleChangeProgram}
@@ -899,6 +1171,79 @@ export function App() {
 
         {/* Right Pane: 3D Battle Viewport & Telemetry */}
         <section id="mobile-battle-section" className="pane-right">
+          {!isMobileLayout && gameMode === 'learning' && (
+            <div className="battle-top-controls tutorial-top-controls">
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={learningIndex <= 0}
+                onClick={() => handleSelectLearning(learningIndex - 1)}
+                title="前のミッションへ"
+              >
+                <ChevronLeft size={13} /> 前へ
+              </button>
+
+              <label className="battle-ctrl-item tutorial-select-wrap">
+                <select
+                  aria-label="学習ミッション選択"
+                  value={learningIndex}
+                  onChange={(e) => handleSelectLearning(Number(e.target.value))}
+                >
+                  {LEARNING_MISSIONS.map((m, idx) => {
+                    const cleared = clearedLearnings.includes(m.id);
+                    const cleanTitle = m.title.replace(/\s*\(\d+×\d+\)$/, '');
+                    return (
+                      <option key={m.id} value={idx}>
+                        {cleared ? '✓ ' : ''}
+                        {m.missionCode} ({m.playerStarter.program.gridSize}×
+                        {m.playerStarter.program.gridSize}): {cleanTitle}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={learningIndex >= LEARNING_MISSIONS.length - 1}
+                onClick={() => handleSelectLearning(learningIndex + 1)}
+                title="次のミッションへ"
+              >
+                次へ <ChevronRight size={13} />
+              </button>
+
+              <span className="arena-size-badge" title={LESSON_1_TITLES[activeLearningMission.lessonNumber]}>
+                広さ: {ARENA_SIZE_SPECS[activeLearningMission.arenaSize].label}
+              </span>
+
+              <span className="tutorial-progress-badge">
+                達成: {clearedLearnings.length} / {LEARNING_MISSIONS.length}
+              </span>
+
+              {activeLearningMission.variants && activeLearningMission.variants.length > 1 && (
+                <div className="variant-pill-group">
+                  {activeLearningMission.variants.map((v, vIdx) => {
+                    const isPassed = passedLearningVariants.includes(vIdx);
+                    const isCur = learningVariantIndex === vIdx;
+                    return (
+                      <button
+                        key={v.id}
+                        type="button"
+                        className={`mini-btn ${isCur ? 'active' : ''}`}
+                        onClick={() => handleSelectLearningVariant(vIdx)}
+                        title={`${v.label} を表示・確認`}
+                      >
+                        {isPassed ? '✓ ' : ''}
+                        {v.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {!isMobileLayout && gameMode === 'tutorial' && (
             <div className="battle-top-controls tutorial-top-controls">
               <button
@@ -917,16 +1262,25 @@ export function App() {
                   value={tutorialIndex}
                   onChange={(e) => handleSelectTutorial(Number(e.target.value))}
                 >
-                  {TUTORIAL_STAGES.map((st, idx) => {
-                    const cleared = clearedTutorials.includes(st.id);
-                    const cleanTitle = st.title.replace(/\s*\(\d+×\d+\)$/, '');
-                    return (
-                      <option key={st.id} value={idx}>
-                        {cleared ? '✓ ' : ''}St.{st.number} ({st.playerStarter.program.gridSize}×
-                        {st.playerStarter.program.gridSize}): {cleanTitle}
-                      </option>
-                    );
-                  })}
+                  {([1, 2, 3, 4] as const)
+                    .filter((sec) =>
+                      TUTORIAL_STAGES.some((st) => (st.section ?? 1) === sec)
+                    )
+                    .map((sec) => (
+                      <optgroup key={sec} label={TUTORIAL_SECTION_TITLES[sec]}>
+                        {TUTORIAL_STAGES.map((st, idx) => {
+                          if ((st.section ?? 1) !== sec) return null;
+                          const cleared = clearedTutorials.includes(st.id);
+                          const cleanTitle = st.title.replace(/\s*\(\d+×\d+\)$/, '');
+                          return (
+                            <option key={st.id} value={idx}>
+                              {cleared ? '✓ ' : ''}St.{st.number} ({st.playerStarter.program.gridSize}×
+                              {st.playerStarter.program.gridSize}): {cleanTitle}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
                 </select>
               </label>
 
@@ -1215,36 +1569,98 @@ export function App() {
                 <div className="clock-tick">Tick {battleState.tick}</div>
               </div>
 
-              <div className="hud-tank hud-enemy">
-                <div className="hud-name-row">
-                  <span className="hp-num">
-                    {enemyTank ? `${Math.ceil(enemyTank.hp)} / ${enemyTank.maxHp}` : '0'}
-                  </span>
-                  <strong>{currentEnemyBp.name}</strong>
-                  <span
-                    className="color-dot"
-                    style={{
-                      backgroundColor: enemyTank?.blueprint.color ?? getAutoTankColor(1),
-                    }}
-                  />
+              {gameMode === 'learning' && !enemyTank ? (
+                <div className="hud-tank hud-enemy">
+                  <div className="hud-name-row">
+                    <span className="hp-num">
+                      {playerTank?.halted
+                        ? 'stop() 停止'
+                        : playerTank?.turnState
+                          ? '旋回待機中'
+                          : playerTank?.fireState
+                            ? '冷却待機中'
+                            : playerTank?.moveState
+                              ? '移動中'
+                              : '実行中'}
+                    </span>
+                    <strong>ミッション {activeLearningMission.missionCode}</strong>
+                  </div>
+                  <div className="hud-substats">
+                    {(battleState.arena.targets?.length ?? 0) > 0 && (
+                      <span>
+                        🎈 風船:{' '}
+                        {(battleState.arena.targets ?? []).filter((t) => t.popped).length}/
+                        {battleState.arena.targets!.length}
+                      </span>
+                    )}
+                    {(battleState.arena.tiles ?? []).some((t) => t.kind === 'checkpoint') && (
+                      <span>
+                        🚩 CP:{' '}
+                        {
+                          (battleState.arena.tiles ?? []).filter(
+                            (t) => t.kind === 'checkpoint' && t.visited
+                          ).length
+                        }
+                        /
+                        {(battleState.arena.tiles ?? []).filter((t) => t.kind === 'checkpoint').length}
+                      </span>
+                    )}
+                    {activeLearningMission.goalRule.reachGoalTile && (
+                      <span>
+                        🏁 ゴール:{' '}
+                        {(battleState.arena.tiles ?? []).some(
+                          (t) =>
+                            t.kind === 'goal' &&
+                            playerTank &&
+                            playerTank.x >= t.x &&
+                            playerTank.x <= t.x + t.width &&
+                            playerTank.y >= t.y &&
+                            playerTank.y <= t.y + t.height
+                        )
+                          ? '到達'
+                          : '未到達'}
+                      </span>
+                    )}
+                    <span>
+                      🧱 壁接触: {playerTank?.stats.wallHits ?? 0}
+                      {activeLearningMission.goalRule.maxWallHits !== undefined
+                        ? `/${activeLearningMission.goalRule.maxWallHits}`
+                        : ''}
+                    </span>
+                  </div>
                 </div>
-                <div className="hp-track">
-                  <div
-                    className="hp-fill enemy-hp"
-                    style={{
-                      width: enemyTank
-                        ? `${Math.max(0, (enemyTank.hp / enemyTank.maxHp) * 100)}%`
-                        : '0%',
-                      background: enemyTank?.blueprint.color ?? getAutoTankColor(1),
-                    }}
-                  />
+              ) : (
+                <div className="hud-tank hud-enemy">
+                  <div className="hud-name-row">
+                    <span className="hp-num">
+                      {enemyTank ? `${Math.ceil(enemyTank.hp)} / ${enemyTank.maxHp}` : '0'}
+                    </span>
+                    <strong>{currentEnemyBp.name}</strong>
+                    <span
+                      className="color-dot"
+                      style={{
+                        backgroundColor: enemyTank?.blueprint.color ?? getAutoTankColor(1),
+                      }}
+                    />
+                  </div>
+                  <div className="hp-track">
+                    <div
+                      className="hp-fill enemy-hp"
+                      style={{
+                        width: enemyTank
+                          ? `${Math.max(0, (enemyTank.hp / enemyTank.maxHp) * 100)}%`
+                          : '0%',
+                        background: enemyTank?.blueprint.color ?? getAutoTankColor(1),
+                      }}
+                    />
+                  </div>
+                  <div className="hud-substats">
+                    <span>{enemyTank?.radarLock ? '⚠ ロック中' : '索敵中'}</span>
+                    <span>main_cd: {enemyTank ? enemyTank.gunHeat.toFixed(2) : '0.00'}</span>
+                    <span>sp_cd: {enemyTank ? enemyTank.subCooldown : 0}t</span>
+                  </div>
                 </div>
-                <div className="hud-substats">
-                  <span>{enemyTank?.radarLock ? '⚠ ロック中' : '索敵中'}</span>
-                  <span>main_cd: {enemyTank ? enemyTank.gunHeat.toFixed(2) : '0.00'}</span>
-                  <span>sp_cd: {enemyTank ? enemyTank.subCooldown : 0}t</span>
-                </div>
-              </div>
+              )}
             </div>
           ) : (
             <div className="battle-hud-multi">
@@ -1311,7 +1727,9 @@ export function App() {
                     { id: 'chase_p2', label: '相手追従' },
                     { id: 'orbit', label: 'フリー視点' },
                   ] as Array<{ id: CameraMode; label: string }>
-                ).map((cam) => (
+                )
+                  .filter((cam) => cam.id !== 'chase_p2' || Boolean(enemyTank))
+                  .map((cam) => (
                   <button
                     key={cam.id}
                     type="button"
@@ -1379,31 +1797,53 @@ export function App() {
 
             {/* Match Result Overlay */}
             {battleState.status === 'finished' && (() => {
+              const isLearning = gameMode === 'learning';
+              const variants = activeLearningMission.variants;
+              const hasVariants = isLearning && Boolean(variants && variants.length > 1);
+              const nextUnpassedVarIdx = hasVariants
+                ? variants!.findIndex((_, i) => !passedLearningVariants.includes(i))
+                : -1;
+              const isAllVariantsCleared = !hasVariants || nextUnpassedVarIdx < 0;
               const isPlayerWin = battleState.winnerId === 'player';
+              const isMissionWin = isLearning && isPlayerWin && battleState.winType === 'mission';
               const isEliminationWin = isPlayerWin && battleState.winType === 'elimination';
               const isTutorialDecisionOnly =
                 gameMode === 'tutorial' && isPlayerWin && !isEliminationWin;
               const titleClass =
-                isPlayerWin && !isTutorialDecisionOnly
+                (isPlayerWin && !isTutorialDecisionOnly) || isMissionWin
                   ? 'win'
-                  : battleState.winnerId === 'draw' || isTutorialDecisionOnly
+                  : battleState.winnerId === 'draw' && !isLearning
                     ? 'draw'
-                    : 'lose';
-              const titleText = isEliminationWin
-                ? 'VICTORY!'
-                : isPlayerWin
-                  ? gameMode === 'tutorial'
-                    ? 'TIME UP'
-                    : 'DECISION WIN!'
-                  : battleState.winnerId === 'draw'
-                    ? 'DRAW'
-                    : 'DEFEAT';
+                    : isTutorialDecisionOnly
+                      ? 'draw'
+                      : 'lose';
+              const titleText = isMissionWin
+                ? isAllVariantsCleared
+                  ? 'MISSION CLEAR!'
+                  : 'PATTERN CLEAR!'
+                : isLearning
+                  ? 'TRY AGAIN'
+                  : isEliminationWin
+                    ? 'VICTORY!'
+                    : isPlayerWin
+                      ? gameMode === 'tutorial'
+                        ? 'TIME UP'
+                        : 'DECISION WIN!'
+                      : battleState.winnerId === 'draw'
+                        ? 'DRAW'
+                        : 'DEFEAT';
+              const resultReasonText =
+                isMissionWin && hasVariants
+                  ? isAllVariantsCleared
+                    ? `全${variants!.length}パターンの検証をクリアしました！`
+                    : `${variants![learningVariantIndex].label} 合格！ 続いて別パターンをテストします…`
+                  : battleState.endReason;
               return (
                 <div className="result-overlay">
                   <div className="result-card">
                     <div className={`result-title ${titleClass}`}>{titleText}</div>
                     <p className="result-reason">
-                      {battleState.endReason}
+                      {resultReasonText}
                       {isTutorialDecisionOnly
                         ? '（チュートリアル達成には敵機の撃破が必要です）'
                         : ''}
@@ -1411,24 +1851,46 @@ export function App() {
 
                     {playerTank && (
                       <div className="result-stats">
-                        <div>
-                          <span>発射数</span>
-                          <strong>{playerTank.stats.shotsFired}</strong>
-                        </div>
-                        <div>
-                          <span>命中率</span>
-                          <strong>
-                            {playerTank.stats.shotsFired > 0
-                              ? `${Math.round(
-                                  (playerTank.stats.shotsHit / playerTank.stats.shotsFired) * 100
-                                )}%`
-                              : '0%'}
-                          </strong>
-                        </div>
-                        <div>
-                          <span>与ダメージ</span>
-                          <strong>{playerTank.stats.damageDealt.toFixed(1)}</strong>
-                        </div>
+                        {isLearning ? (
+                          <>
+                            <div>
+                              <span>クリア時間</span>
+                              <strong>
+                                {(battleState.tick / BASE_TPS).toFixed(1)}s ({battleState.tick}t)
+                              </strong>
+                            </div>
+                            <div>
+                              <span>壁・障害物接触</span>
+                              <strong>{playerTank.stats.wallHits}回</strong>
+                            </div>
+                            <div>
+                              <span>発射数</span>
+                              <strong>{playerTank.stats.shotsFired}</strong>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div>
+                              <span>発射数</span>
+                              <strong>{playerTank.stats.shotsFired}</strong>
+                            </div>
+                            <div>
+                              <span>命中率</span>
+                              <strong>
+                                {playerTank.stats.shotsFired > 0
+                                  ? `${Math.round(
+                                      (playerTank.stats.shotsHit / playerTank.stats.shotsFired) *
+                                        100
+                                    )}%`
+                                  : '0%'}
+                              </strong>
+                            </div>
+                            <div>
+                              <span>与ダメージ</span>
+                              <strong>{playerTank.stats.damageDealt.toFixed(1)}</strong>
+                            </div>
+                          </>
+                        )}
                       </div>
                     )}
 
@@ -1436,10 +1898,54 @@ export function App() {
                       <button
                         type="button"
                         className="btn-secondary"
-                        onClick={() => resetBattleWith(currentPlayerBp, currentEnemyList)}
+                        onClick={() => {
+                          if (isLearning && hasVariants && isAllVariantsCleared) {
+                            setPassedLearningVariants([]);
+                            handleSelectLearningVariant(0, false);
+                          } else {
+                            resetBattleWith(currentPlayerBp, currentEnemyList);
+                          }
+                        }}
                       >
-                        <RotateCcw size={15} /> もう一度戦う
+                        <RotateCcw size={15} /> {isLearning ? 'もう一度挑戦' : 'もう一度戦う'}
                       </button>
+                      {isLearning &&
+                        isMissionWin &&
+                        !isAllVariantsCleared &&
+                        nextUnpassedVarIdx >= 0 && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() => handleSelectLearningVariant(nextUnpassedVarIdx, true)}
+                          >
+                            次パターンをテスト ({variants![nextUnpassedVarIdx].label}){' '}
+                            <ChevronRight size={15} />
+                          </button>
+                        )}
+                      {isLearning &&
+                        isMissionWin &&
+                        isAllVariantsCleared &&
+                        learningIndex < LEARNING_MISSIONS.length - 1 && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() => handleSelectLearning(learningIndex + 1)}
+                          >
+                            次のミッションへ <ChevronRight size={15} />
+                          </button>
+                        )}
+                      {isLearning &&
+                        isMissionWin &&
+                        isAllVariantsCleared &&
+                        learningIndex === LEARNING_MISSIONS.length - 1 && (
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() => handleSelectTutorial(0)}
+                          >
+                            開発訓練へ進む <ChevronRight size={15} />
+                          </button>
+                        )}
                       {gameMode === 'tutorial' &&
                         isEliminationWin &&
                         tutorialIndex < TUTORIAL_STAGES.length - 1 && (
@@ -1467,7 +1973,15 @@ export function App() {
                 onClick={handleTogglePlay}
               >
                 {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-                {isPlaying ? '一時停止' : battleState.status === 'finished' ? '再戦スタート' : 'バトル開始'}
+                {isPlaying
+                  ? '一時停止'
+                  : battleState.status === 'finished'
+                    ? gameMode === 'learning'
+                      ? '再実行'
+                      : '再戦スタート'
+                    : gameMode === 'learning'
+                      ? '実行スタート'
+                      : 'バトル開始'}
               </button>
 
               <button

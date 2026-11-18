@@ -10,6 +10,7 @@ import {
 } from '../data/parts';
 import {
   ArenaConfig,
+  ArenaTile,
   ExecutionEdge,
   ExecutionTrace,
   GridCell,
@@ -25,6 +26,7 @@ import {
   computeWallAwayTurnSign,
   distanceBetween,
   normalizeAngle180,
+  normalizeAngle360,
   ProximityTarget,
   raycastWallDistance,
   scanProximity,
@@ -59,6 +61,15 @@ export function findSubDefCell(
     }
   }
   return null;
+}
+
+function isTankInsideTile(tank: TankRuntime, tile: ArenaTile): boolean {
+  return (
+    tank.x >= tile.x &&
+    tank.x <= tile.x + tile.width &&
+    tank.y >= tile.y &&
+    tank.y <= tile.y + tile.height
+  );
 }
 
 function isValidOrthoTransition(
@@ -102,11 +113,22 @@ export function runTankChipProgram(
   const edges: ExecutionEdge[] = [];
   const startCoord = findStartCell(program.cells);
 
-  if (!startCoord) {
+  if (!startCoord || tank.halted) {
     return {
       commands,
       trace: { visited, edges, stepsUsed: 0, truncated: false },
     };
+  }
+
+  // Release any edge-triggered floor tile latch as soon as the tank exits that tile
+  if (tank.tileEdgeState) {
+    const tiles = arena.tiles ?? [];
+    for (const [edgeCoordKey, tileId] of Object.entries(tank.tileEdgeState)) {
+      const matched = tiles.find((t) => t.id === tileId);
+      if (!matched || !isTankInsideTile(tank, matched)) {
+        delete tank.tileEdgeState[edgeCoordKey];
+      }
+    }
   }
 
   let current: GridCoord | null = startCoord;
@@ -152,61 +174,133 @@ export function runTankChipProgram(
           (c.type === 'loop_while' && String(c.params.cond ?? '') !== 'var_a_lt'))
     );
 
-  // Resume active time.sleep() or timed move(duration > 0) across ticks
-  const activeTimed = tank.sleepState
-    ? { kind: 'sleep' as const, state: tank.sleepState, expectedType: 'wire' as const }
-    : tank.moveState
-      ? { kind: 'move' as const, state: tank.moveState, expectedType: 'act_move' as const }
-      : null;
-  if (activeTimed) {
-    const timedCoord = activeTimed.state.coord;
-    const timedCell = program.cells[timedCoord.y]?.[timedCoord.x];
-    if (!timedCell || timedCell.type !== activeTimed.expectedType) {
-      if (activeTimed.kind === 'sleep') tank.sleepState = null;
-      else tank.moveState = null;
+  // Resume active turn(..., wait=True), time.sleep(), or timed move(duration > 0) across ticks
+  const resumeTimedNext = (
+    coord: GridCoord,
+    cell: GridCell,
+    savedCallStack?: CallFrame[]
+  ): GridCoord | null => {
+    if (savedCallStack && savedCallStack.length > 0) {
+      callStack = cloneCallStack(savedCallStack);
+    }
+    const resumeNext = cell.next ?? null;
+    if (isValidOrthoTransition(coord, resumeNext, program.cells)) {
+      edges.push({
+        from: { x: coord.x, y: coord.y },
+        to: { x: resumeNext.x, y: resumeNext.y },
+        branch: 'next',
+      });
+      return resumeNext;
+    }
+    return unwindCallStack();
+  };
+
+  if (tank.turnState) {
+    const ts = tank.turnState;
+    const expectedType = ts.axis === 'body' ? 'act_turn_body' : 'act_turn_turret';
+    const turnCell = program.cells[ts.coord.y]?.[ts.coord.x];
+    if (!turnCell || turnCell.type !== expectedType) {
+      tank.turnState = null;
     } else {
-      visited.push({ x: timedCoord.x, y: timedCoord.y });
+      visited.push({ x: ts.coord.x, y: ts.coord.y });
       steps += 1;
-      activeTimed.state.remainingTicks -= 1;
-      if (activeTimed.state.remainingTicks > 0) {
-        if (activeTimed.kind === 'move' && tank.moveState) {
-          commands.targetSpeedRatio = tank.moveState.speedRatio;
+      const curAngle = ts.axis === 'body' ? tank.bodyAngle : tank.turretAngle;
+      const actualStep = normalizeAngle180(curAngle - ts.lastAngle);
+      ts.remainingDelta -= actualStep;
+      ts.lastAngle = curAngle;
+      ts.remainingTicks -= 1;
+
+      const fixedTurretDone =
+        ts.axis === 'turret' && Boolean(CHASSIS_SPECS[tank.blueprint.assembly.chassis]?.fixedTurret);
+      const err = ts.isDelta
+        ? ts.remainingDelta
+        : normalizeAngle180(ts.targetAbsAngle - curAngle);
+      const isDone = fixedTurretDone || Math.abs(err) <= 0.5 || ts.remainingTicks <= 0;
+
+      if (!isDone) {
+        if (ts.axis === 'body') {
+          commands.targetSpeedRatio = 0;
+          commands.bodyTurnDelta = err;
+        } else {
+          commands.turretTurnDelta = err;
         }
         return {
           commands,
           trace: { visited, edges, stepsUsed: steps, truncated: false },
         };
       }
-      if (activeTimed.state.callStack && activeTimed.state.callStack.length > 0) {
-        callStack = cloneCallStack(activeTimed.state.callStack);
-      }
-      if (activeTimed.kind === 'sleep') tank.sleepState = null;
-      else tank.moveState = null;
-      const resumeNext = timedCell.next ?? null;
-      if (isValidOrthoTransition(timedCoord, resumeNext, program.cells)) {
-        edges.push({
-          from: { x: timedCoord.x, y: timedCoord.y },
-          to: { x: resumeNext.x, y: resumeNext.y },
-          branch: 'next',
-        });
-        current = resumeNext;
-      } else {
-        current = unwindCallStack();
-      }
+
+      const savedCallStack = ts.callStack;
+      tank.turnState = null;
+      current = resumeTimedNext(ts.coord, turnCell, savedCallStack);
     }
-  } else if (tank.loopStack && tank.loopStack.length > 0) {
-    // Resume active Python for/while loop until its exit condition completes
-    while (tank.loopStack.length > 0) {
-      const top = tank.loopStack[tank.loopStack.length - 1];
-      const loopCell = program.cells[top.coord.y]?.[top.coord.x];
-      if (isMultiTickLoopCell(loopCell)) {
-        current = { x: top.coord.x, y: top.coord.y };
-        if (top.callStack && top.callStack.length > 0) {
-          callStack = cloneCallStack(top.callStack);
-        }
-        break;
+  } else if (tank.fireState) {
+    const fs = tank.fireState;
+    const fireCell = program.cells[fs.coord.y]?.[fs.coord.x];
+    if (!fireCell || fireCell.type !== 'act_fire') {
+      tank.fireState = null;
+    } else {
+      visited.push({ x: fs.coord.x, y: fs.coord.y });
+      steps += 1;
+      fs.remainingTicks -= 1;
+      const gunReady = tank.gunHeat <= 0.0001;
+      if (!gunReady && fs.remainingTicks > 0) {
+        return {
+          commands,
+          trace: { visited, edges, stepsUsed: steps, truncated: false },
+        };
       }
-      tank.loopStack.pop();
+      if (gunReady) {
+        commands.firePower = fs.firePower;
+      }
+      const savedCallStack = fs.callStack;
+      tank.fireState = null;
+      current = resumeTimedNext(fs.coord, fireCell, savedCallStack);
+    }
+  } else {
+    const activeTimed = tank.sleepState
+      ? { kind: 'sleep' as const, state: tank.sleepState, expectedType: 'wire' as const }
+      : tank.moveState
+        ? { kind: 'move' as const, state: tank.moveState, expectedType: 'act_move' as const }
+        : null;
+    if (activeTimed) {
+      const timedCoord = activeTimed.state.coord;
+      const timedCell = program.cells[timedCoord.y]?.[timedCoord.x];
+      if (!timedCell || timedCell.type !== activeTimed.expectedType) {
+        if (activeTimed.kind === 'sleep') tank.sleepState = null;
+        else tank.moveState = null;
+      } else {
+        visited.push({ x: timedCoord.x, y: timedCoord.y });
+        steps += 1;
+        activeTimed.state.remainingTicks -= 1;
+        if (activeTimed.state.remainingTicks > 0) {
+          if (activeTimed.kind === 'move' && tank.moveState) {
+            commands.targetSpeedRatio = tank.moveState.speedRatio;
+          }
+          return {
+            commands,
+            trace: { visited, edges, stepsUsed: steps, truncated: false },
+          };
+        }
+        const savedCallStack = activeTimed.state.callStack;
+        if (activeTimed.kind === 'sleep') tank.sleepState = null;
+        else tank.moveState = null;
+        current = resumeTimedNext(timedCoord, timedCell, savedCallStack);
+      }
+    } else if (tank.loopStack && tank.loopStack.length > 0) {
+      // Resume active Python for/while loop until its exit condition completes
+      while (tank.loopStack.length > 0) {
+        const top = tank.loopStack[tank.loopStack.length - 1];
+        const loopCell = program.cells[top.coord.y]?.[top.coord.x];
+        if (isMultiTickLoopCell(loopCell)) {
+          current = { x: top.coord.x, y: top.coord.y };
+          if (top.callStack && top.callStack.length > 0) {
+            callStack = cloneCallStack(top.callStack);
+          }
+          break;
+        }
+        tank.loopStack.pop();
+      }
     }
   }
 
@@ -263,7 +357,7 @@ export function runTankChipProgram(
       }
       const subKey = String(cell.params.sub ?? 'A').trim().toUpperCase();
       const rawNext = cell.next ?? null;
-      const returnCoord = isValidOrthoTransition(current, rawNext, program.cells)
+      const returnCoord: GridCoord | null = isValidOrthoTransition(current, rawNext, program.cells)
         ? rawNext
         : null;
       const defCoord = findSubDefCell(program.cells, subKey);
@@ -310,6 +404,79 @@ export function runTankChipProgram(
             pushPrintOutput(formatChipDebugPrint(cell, tank));
           }
           break;
+        }
+      } else if (cell.type === 'act_halt') {
+        commands.targetSpeedRatio = 0;
+        commands.bodyTurnDelta = 0;
+        commands.turretTurnDelta = 0;
+        commands.radarTurnDelta = 0;
+        tank.moveState = null;
+        tank.sleepState = null;
+        tank.turnState = null;
+        tank.fireState = null;
+        tank.loopStack = [];
+        tank.halted = true;
+        if (Number(cell.params._print ?? 0) === 1) {
+          pushPrintOutput(formatChipDebugPrint(cell, tank));
+        }
+        break;
+      } else if (cell.type === 'act_fire' && Number(cell.params.wait ?? 0) === 1) {
+        if (tank.gunHeat > 0.0001) {
+          const firePower = resolveFirePower(
+            cell.params.power,
+            tank.blueprint.assembly.mainGun
+          ).power;
+          tank.fireState = {
+            coord: { x: current.x, y: current.y },
+            firePower,
+            remainingTicks: 180,
+            ...(callStack.length > 0 ? { callStack: cloneCallStack(callStack) } : {}),
+          };
+          if (Number(cell.params._print ?? 0) === 1) {
+            pushPrintOutput(formatChipDebugPrint(cell, tank));
+          }
+          break;
+        }
+      } else if (
+        (cell.type === 'act_turn_body' || cell.type === 'act_turn_turret') &&
+        Number(cell.params.wait ?? 0) === 1
+      ) {
+        const isBody = cell.type === 'act_turn_body';
+        const isFixedTurret =
+          !isBody && Boolean(CHASSIS_SPECS[tank.blueprint.assembly.chassis]?.fixedTurret);
+        if (isBody) {
+          commands.targetSpeedRatio = 0;
+        }
+        if (!isFixedTurret) {
+          const resolved = isBody
+            ? resolveBodyTurnDelta(cell.params, tank, tick, arena, coordMode, commands)
+            : resolveTurretTurnDelta(cell.params, tank, coordMode);
+          if (resolved.delta !== null && Math.abs(resolved.delta) > 0.5) {
+            const curAngle = isBody ? tank.bodyAngle : tank.turretAngle;
+            const maxWaitTicks = Math.max(
+              40,
+              Math.min(400, Math.ceil(Math.abs(resolved.delta) * 1.2) + 20)
+            );
+            if (isBody) {
+              commands.bodyTurnDelta = resolved.delta;
+            } else {
+              commands.turretTurnDelta = resolved.delta;
+            }
+            tank.turnState = {
+              coord: { x: current.x, y: current.y },
+              axis: resolved.axis,
+              isDelta: resolved.isDelta,
+              targetAbsAngle: resolved.targetAbsAngle,
+              remainingDelta: resolved.delta,
+              lastAngle: curAngle,
+              remainingTicks: maxWaitTicks,
+              ...(callStack.length > 0 ? { callStack: cloneCallStack(callStack) } : {}),
+            };
+            if (Number(cell.params._print ?? 0) === 1) {
+              pushPrintOutput(formatChipDebugPrint(cell, tank));
+            }
+            break;
+          }
         }
       }
       const coordKey = `${current.x},${current.y}`;
@@ -382,6 +549,7 @@ function formatChipDebugPrint(
       if (p.direction === 'left_closer') return `wall(L<=R): ${tf}`;
       return `wall_near(${p.dist ?? 110}): ${tf}`;
     case 'cond_proximity':
+      if (p.mode === 'front') return `prox(front<=${p.dist ?? 90}): ${tf}`;
       if (p.mode === 'left_closer') return `prox(L<=R): ${tf}`;
       if (p.mode === 'left_open') return `prox(L_open>${p.dist ?? 90}): ${tf}`;
       if (p.mode === 'right_open') return `prox(R_open>${p.dist ?? 90}): ${tf}`;
@@ -408,6 +576,15 @@ function formatChipDebugPrint(
       return `under_lock: ${tf}`;
     case 'cond_mode':
       return `mode==${p.mode ?? 1}: ${tf} (m=${tank.mode})`;
+    case 'cond_floor_tile':
+      return `on_tile(${p.target ?? 'goal'}${Number(p.edge ?? 0) === 1 ? ',edge' : ''}): ${tf}`;
+    case 'cond_mission_state': {
+      const check = String(p.check ?? 'targets_remaining');
+      if (check === 'targets_cleared') return `targets_left==0: ${tf}`;
+      if (check === 'checkpoints_remaining') return `checkpoints_left>0: ${tf}`;
+      if (check === 'checkpoints_cleared') return `checkpoints_done: ${tf}`;
+      return `targets_left>0: ${tf}`;
+    }
     case 'loop_while':
       return `while(${String(p.cond ?? 'loop')}): ${tf} (a=${tank.counters.A ?? 0})`;
     case 'loop_for':
@@ -428,25 +605,33 @@ function formatChipDebugPrint(
     }
     case 'mode_set':
       return `mode = ${tank.mode}`;
+    case 'act_halt':
+      return 'stop()';
     case 'act_move':
       return `move(${p.speedPercent ?? 80}%)`;
-    case 'act_turn_body':
-      if (p.mode === 'wall_away') return `turn_body(回避${p.angle ?? 12}°)`;
-      if (p.mode === 'turret_rel') return `turn_body(砲塔${p.angle ?? 0}°)`;
+    case 'act_turn_body': {
+      const waitTag = Number(p.wait ?? 0) === 1 ? '(待)' : '';
+      if (p.mode === 'wall_away') return `turn_body(回避${p.angle ?? 12}°)${waitTag}`;
+      if (p.mode === 'turret_rel') return `turn_body(砲塔${p.angle ?? 0}°)${waitTag}`;
       return p.mode === 'enemy_rel'
-        ? `turn_body(敵${p.angle ?? 0}°)`
-        : `turn_body(${p.angle ?? 4}°)`;
-    case 'act_turn_turret':
-      if (p.mode === 'body_rel') return `turn_turret(車体${p.angle ?? 0}°)`;
-      return `turn_turret(${p.angle ?? 6}°)`;
+        ? `turn_body(敵${p.angle ?? 0}°)${waitTag}`
+        : `turn_body(${p.angle ?? 4}°)${waitTag}`;
+    }
+    case 'act_turn_turret': {
+      const waitTag = Number(p.wait ?? 0) === 1 ? '(待)' : '';
+      if (p.mode === 'body_rel') return `turn_turret(車体${p.angle ?? 0}°)${waitTag}`;
+      return `turn_turret(${p.angle ?? 6}°)${waitTag}`;
+    }
     case 'act_aim_enemy':
       return `aim(${p.lead ?? 'direct'})`;
     case 'act_turn_radar':
       if (p.mode === 'lock_enemy') return 'radar(lock)';
       if (p.mode === 'sweep') return `radar(±${p.angle ?? 60}°)`;
       return `radar(${p.angle ?? 14}°)`;
-    case 'act_fire':
-      return `fire_main("${normalizeFirePowerTier(p.power, tank.blueprint.assembly.mainGun)}")`;
+    case 'act_fire': {
+      const waitTag = Number(p.wait ?? 0) === 1 ? '(待)' : '';
+      return `fire_main("${normalizeFirePowerTier(p.power, tank.blueprint.assembly.mainGun)}")${waitTag}`;
+    }
     case 'act_sub_weapon':
       return `fire_sp(残${tank.subAmmo})`;
     default:
@@ -517,11 +702,14 @@ function evaluateCondition(
         if (!tank.detectedEnemy || tick - tank.detectedEnemy.lastSeenTick > RADAR_MEMORY_TICKS) {
           return false;
         }
-        const absBearing = vectorToAngle(
-          tank.detectedEnemy.x - tank.x,
-          tank.detectedEnemy.y - tank.y
-        );
-        return Math.abs(normalizeAngle180(absBearing - tank.turretAngle)) > val;
+        const targetAngle =
+          tank.lastAimAngle !== null &&
+          tank.lastAimAngle !== undefined &&
+          tank.lastAimTick !== undefined &&
+          tick - tank.lastAimTick <= 2
+            ? tank.lastAimAngle
+            : vectorToAngle(tank.detectedEnemy.x - tank.x, tank.detectedEnemy.y - tank.y);
+        return Math.abs(normalizeAngle180(targetAngle - tank.turretAngle)) > val;
       }
       if (cond === 'var_a_lt') {
         return (tank.counters['A'] ?? 0) < val;
@@ -638,6 +826,42 @@ function evaluateCondition(
         radius: CHASSIS_SPECS[t.blueprint.assembly.chassis].radius,
         hp: t.hp,
       }));
+
+      if (mode === 'front') {
+        if (target !== 'tanks') {
+          const rayDist = raycastWallDistance(
+            tank.x,
+            tank.y,
+            tank.bodyAngle,
+            distCheck + chassis.radius + 5,
+            arena.width,
+            arena.height,
+            arena.obstacles
+          );
+          if (rayDist <= distCheck + chassis.radius) {
+            return true;
+          }
+        }
+        if (target !== 'walls') {
+          const fwd = angleToVector(tank.bodyAngle);
+          for (const ot of otherTanks) {
+            if (ot.id === tank.id || ot.hp <= 0) continue;
+            const dx = ot.x - tank.x;
+            const dy = ot.y - tank.y;
+            const along = dx * fwd.dx + dy * fwd.dy;
+            if (along <= 0) continue;
+            const perp = Math.abs(dx * -fwd.dy + dy * fwd.dx);
+            const hitBand = chassis.radius + ot.radius;
+            if (perp <= hitBand) {
+              const chord = Math.sqrt(Math.max(0, hitBand * hitBand - perp * perp));
+              if (along - chord <= distCheck) {
+                return true;
+              }
+            }
+          }
+        }
+        return false;
+      }
 
       let approachingDir: { dx: number; dy: number; minDot?: number } | undefined;
       if (mode === 'approaching') {
@@ -809,9 +1033,206 @@ function evaluateCondition(
     case 'cond_mode': {
       return tank.mode === Number(p.mode ?? 0);
     }
+    case 'cond_floor_tile': {
+      const target = String(p.target ?? 'goal');
+      const isEdgeOnly = Number(p.edge ?? 0) === 1;
+      const tiles = arena.tiles ?? [];
+      let matchedTile: ArenaTile | null = null;
+      for (const tile of tiles) {
+        if (!isTankInsideTile(tank, tile)) continue;
+        if (target === 'goal' && tile.kind === 'goal') {
+          matchedTile = tile;
+          break;
+        }
+        if (target === 'checkpoint' && tile.kind === 'checkpoint' && !tile.visited) {
+          matchedTile = tile;
+          break;
+        }
+        if (target === 'hazard' && tile.kind === 'hazard') {
+          matchedTile = tile;
+          break;
+        }
+        if (target === 'any_color' && tile.kind === 'color') {
+          matchedTile = tile;
+          break;
+        }
+        if (
+          (target === 'red' || target === 'blue' || target === 'green' || target === 'yellow') &&
+          tile.kind === 'color' &&
+          tile.color === target
+        ) {
+          matchedTile = tile;
+          break;
+        }
+      }
+      if (!matchedTile) {
+        if (isEdgeOnly && tank.tileEdgeState && coordKey) {
+          delete tank.tileEdgeState[coordKey];
+        }
+        return false;
+      }
+      if (!isEdgeOnly) {
+        return true;
+      }
+      if (!tank.tileEdgeState) {
+        tank.tileEdgeState = {};
+      }
+      if (coordKey && tank.tileEdgeState[coordKey] === matchedTile.id) {
+        return false;
+      }
+      if (coordKey) {
+        tank.tileEdgeState[coordKey] = matchedTile.id;
+      }
+      return true;
+    }
+    case 'cond_mission_state': {
+      const check = String(p.check ?? 'targets_remaining');
+      const targetsLeft = (arena.targets ?? []).filter((t) => !t.popped).length;
+      const checkpointsLeft = (arena.tiles ?? []).filter(
+        (t) => t.kind === 'checkpoint' && !t.visited
+      ).length;
+      if (check === 'targets_remaining') return targetsLeft > 0;
+      if (check === 'targets_cleared') return targetsLeft === 0;
+      if (check === 'checkpoints_remaining') return checkpointsLeft > 0;
+      if (check === 'checkpoints_cleared') return checkpointsLeft === 0;
+      return false;
+    }
     default:
       return false;
   }
+}
+
+interface TurnResolveResult {
+  axis: 'body' | 'turret';
+  isDelta: boolean;
+  delta: number | null;
+  targetAbsAngle: number;
+}
+
+function resolveBodyTurnDelta(
+  p: Record<string, string | number>,
+  tank: TankRuntime,
+  tick: number,
+  arena: ArenaConfig,
+  coordMode: 'relative' | 'absolute',
+  commands: TankTickCommands
+): TurnResolveResult {
+  const rawMode = String(p.mode ?? 'auto');
+  const effectiveMode =
+    rawMode === 'auto' ? (coordMode === 'absolute' ? 'heading' : 'delta') : rawMode;
+  const ang = Number(p.angle ?? 0);
+  if (effectiveMode === 'enemy_rel') {
+    if (tank.detectedEnemy && tick - tank.detectedEnemy.lastSeenTick <= RADAR_MEMORY_TICKS) {
+      const absBearing = vectorToAngle(
+        tank.detectedEnemy.x - tank.x,
+        tank.detectedEnemy.y - tank.y
+      );
+      const targetAbsAngle = normalizeAngle360(absBearing + ang);
+      return {
+        axis: 'body',
+        isDelta: false,
+        delta: normalizeAngle180(targetAbsAngle - tank.bodyAngle),
+        targetAbsAngle,
+      };
+    }
+    return { axis: 'body', isDelta: false, delta: null, targetAbsAngle: tank.bodyAngle };
+  }
+  if (effectiveMode === 'turret_rel') {
+    const targetAbsAngle = normalizeAngle360(tank.turretAngle + ang);
+    return {
+      axis: 'body',
+      isDelta: false,
+      delta: normalizeAngle180(targetAbsAngle - tank.bodyAngle),
+      targetAbsAngle,
+    };
+  }
+  if (effectiveMode === 'last_hit') {
+    if (tank.lastHitAngle !== null) {
+      const targetAbsAngle = normalizeAngle360(tank.lastHitAngle + ang);
+      return {
+        axis: 'body',
+        isDelta: false,
+        delta: normalizeAngle180(targetAbsAngle - tank.bodyAngle),
+        targetAbsAngle,
+      };
+    }
+    return { axis: 'body', isDelta: false, delta: null, targetAbsAngle: tank.bodyAngle };
+  }
+  if (effectiveMode === 'wall_away') {
+    const chassis = CHASSIS_SPECS[tank.blueprint.assembly.chassis];
+    let moveSign = 1;
+    if (Math.abs(tank.speed) > 0.1) {
+      moveSign = tank.speed >= 0 ? 1 : -1;
+    } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
+      moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
+    }
+    const moveHeading = moveSign < 0 ? tank.bodyAngle + 180 : tank.bodyAngle;
+    const mag = Math.abs(ang || 12);
+    const turnSign = computeWallAwayTurnSign(
+      { x: tank.x, y: tank.y, radius: chassis.radius },
+      moveHeading,
+      arena.width,
+      arena.height,
+      arena.obstacles
+    );
+    const signedDelta = turnSign * mag;
+    return {
+      axis: 'body',
+      isDelta: true,
+      delta: signedDelta,
+      targetAbsAngle: normalizeAngle360(tank.bodyAngle + signedDelta),
+    };
+  }
+  if (effectiveMode === 'heading') {
+    const targetAbsAngle = normalizeAngle360(ang);
+    return {
+      axis: 'body',
+      isDelta: false,
+      delta: normalizeAngle180(targetAbsAngle - tank.bodyAngle),
+      targetAbsAngle,
+    };
+  }
+  return {
+    axis: 'body',
+    isDelta: true,
+    delta: ang,
+    targetAbsAngle: normalizeAngle360(tank.bodyAngle + ang),
+  };
+}
+
+function resolveTurretTurnDelta(
+  p: Record<string, string | number>,
+  tank: TankRuntime,
+  coordMode: 'relative' | 'absolute'
+): TurnResolveResult {
+  const rawMode = String(p.mode ?? 'auto');
+  const effectiveMode =
+    rawMode === 'auto' ? (coordMode === 'absolute' ? 'heading' : 'delta') : rawMode;
+  const ang = Number(p.angle ?? 0);
+  if (effectiveMode === 'body_rel') {
+    const targetAbsAngle = normalizeAngle360(tank.bodyAngle + ang);
+    return {
+      axis: 'turret',
+      isDelta: false,
+      delta: normalizeAngle180(targetAbsAngle - tank.turretAngle),
+      targetAbsAngle,
+    };
+  }
+  if (effectiveMode === 'heading') {
+    const targetAbsAngle = normalizeAngle360(ang);
+    return {
+      axis: 'turret',
+      isDelta: false,
+      delta: normalizeAngle180(targetAbsAngle - tank.turretAngle),
+      targetAbsAngle,
+    };
+  }
+  return {
+    axis: 'turret',
+    isDelta: true,
+    delta: ang,
+    targetAbsAngle: normalizeAngle360(tank.turretAngle + ang),
+  };
 }
 
 function executeActionCell(
@@ -832,6 +1253,7 @@ function executeActionCell(
     case 'wire':
     case 'sub_def':
     case 'sub_call':
+    case 'act_halt':
       break;
     case 'counter_op': {
       const reg = String(p.reg ?? 'A');
@@ -862,60 +1284,16 @@ function executeActionCell(
       break;
     }
     case 'act_turn_body': {
-      const rawMode = String(p.mode ?? 'auto');
-      const effectiveMode =
-        rawMode === 'auto' ? (coordMode === 'absolute' ? 'heading' : 'delta') : rawMode;
-      const ang = Number(p.angle ?? 0);
-      if (effectiveMode === 'enemy_rel') {
-        if (tank.detectedEnemy && tick - tank.detectedEnemy.lastSeenTick <= RADAR_MEMORY_TICKS) {
-          const absBearing = vectorToAngle(
-            tank.detectedEnemy.x - tank.x,
-            tank.detectedEnemy.y - tank.y
-          );
-          commands.bodyTurnDelta = normalizeAngle180(absBearing + ang - tank.bodyAngle);
-        }
-      } else if (effectiveMode === 'turret_rel') {
-        commands.bodyTurnDelta = normalizeAngle180(tank.turretAngle + ang - tank.bodyAngle);
-      } else if (effectiveMode === 'last_hit') {
-        if (tank.lastHitAngle !== null) {
-          commands.bodyTurnDelta = normalizeAngle180(tank.lastHitAngle + ang - tank.bodyAngle);
-        }
-      } else if (effectiveMode === 'wall_away') {
-        const chassis = CHASSIS_SPECS[tank.blueprint.assembly.chassis];
-        let moveSign = 1;
-        if (Math.abs(tank.speed) > 0.1) {
-          moveSign = tank.speed >= 0 ? 1 : -1;
-        } else if (Math.abs(commands.targetSpeedRatio) > 0.01) {
-          moveSign = commands.targetSpeedRatio >= 0 ? 1 : -1;
-        }
-        const moveHeading = moveSign < 0 ? tank.bodyAngle + 180 : tank.bodyAngle;
-        const mag = Math.abs(ang || 12);
-        const turnSign = computeWallAwayTurnSign(
-          { x: tank.x, y: tank.y, radius: chassis.radius },
-          moveHeading,
-          arena.width,
-          arena.height,
-          arena.obstacles
-        );
-        commands.bodyTurnDelta = turnSign * mag;
-      } else if (effectiveMode === 'heading') {
-        commands.bodyTurnDelta = normalizeAngle180(ang - tank.bodyAngle);
-      } else {
-        commands.bodyTurnDelta = ang;
+      const resolved = resolveBodyTurnDelta(p, tank, tick, arena, coordMode, commands);
+      if (resolved.delta !== null) {
+        commands.bodyTurnDelta = resolved.delta;
       }
       break;
     }
     case 'act_turn_turret': {
-      const rawMode = String(p.mode ?? 'auto');
-      const effectiveMode =
-        rawMode === 'auto' ? (coordMode === 'absolute' ? 'heading' : 'delta') : rawMode;
-      const ang = Number(p.angle ?? 0);
-      if (effectiveMode === 'body_rel') {
-        commands.turretTurnDelta = normalizeAngle180(tank.bodyAngle + ang - tank.turretAngle);
-      } else if (effectiveMode === 'heading') {
-        commands.turretTurnDelta = normalizeAngle180(ang - tank.turretAngle);
-      } else {
-        commands.turretTurnDelta = ang;
+      const resolved = resolveTurretTurnDelta(p, tank, coordMode);
+      if (resolved.delta !== null) {
+        commands.turretTurnDelta = resolved.delta;
       }
       break;
     }
@@ -944,7 +1322,10 @@ function executeActionCell(
         } else {
           desiredAbsAngle = vectorToAngle(enemy.x - tank.x, enemy.y - tank.y);
         }
-        commands.turretTurnDelta = normalizeAngle180(desiredAbsAngle + offset - tank.turretAngle);
+        const resolvedAim = normalizeAngle360(desiredAbsAngle + offset);
+        tank.lastAimAngle = resolvedAim;
+        tank.lastAimTick = tick;
+        commands.turretTurnDelta = normalizeAngle180(resolvedAim - tank.turretAngle);
       }
       break;
     }

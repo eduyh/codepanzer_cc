@@ -347,10 +347,21 @@ button {
 
 .tut-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 4px;
+}
+
+.tut-title-block {
+  min-width: 0;
+}
+
+.tut-title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 
 .tut-badge {
@@ -368,11 +379,14 @@ button {
 .tut-sub {
   color: var(--text-muted);
   font-size: 12px;
+  margin-top: 2px;
 }
 
 .tut-btns {
   display: flex;
   gap: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .tut-desc {
@@ -996,6 +1010,13 @@ button {
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.param-checkbox-row input[type='checkbox'] {
+  accent-color: #38bdf8;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
 }
 
 .print-debug-toggle {
@@ -1694,6 +1715,13 @@ button {
   border-radius: 999px;
   padding: 3px 9px;
   white-space: nowrap;
+}
+
+.variant-pill-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
 }
 
 .battle-hud {
@@ -2600,7 +2628,8 @@ button {
   font-size: 14.5px;
 }
 
-.app-shell.ui-scale-large .print-debug-toggle input {
+.app-shell.ui-scale-large .print-debug-toggle input,
+.app-shell.ui-scale-large .param-checkbox-row input[type='checkbox'] {
   width: 18px;
   height: 18px;
 }
@@ -2744,7 +2773,8 @@ button {
   padding: 8px 12px;
 }
 
-.app-shell.ui-scale-xlarge .print-debug-toggle input {
+.app-shell.ui-scale-xlarge .print-debug-toggle input,
+.app-shell.ui-scale-xlarge .param-checkbox-row input[type='checkbox'] {
   width: 20px;
   height: 20px;
 }

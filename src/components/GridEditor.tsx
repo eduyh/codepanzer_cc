@@ -80,6 +80,7 @@ interface GridEditorProps {
   trace?: ExecutionTrace;
   isPlaying: boolean;
   allowedChips?: ChipType[];
+  allowLearningChips?: boolean;
   mobileMode?: boolean;
   requestedSidebarTab?: { mode: 'palette' | 'code'; nonce: number } | null;
   onChangeProgram: (
@@ -155,24 +156,26 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
     case 'act_turn_body': {
       const ang = Number(p.angle ?? 0);
       const sign = ang >= 0 ? '+' : '';
+      const waitTag = Number(p.wait ?? 0) === 1 ? (lang === 'en' ? ' [w]' : ' [待]') : '';
       if (p.mode === 'wall_away') {
-        return lang === 'en' ? `away ${Math.abs(ang)}°` : `壁回避${Math.abs(ang)}°`;
+        return `${lang === 'en' ? `away ${Math.abs(ang)}°` : `壁回避${Math.abs(ang)}°`}${waitTag}`;
       }
       if (p.mode === 'enemy_rel') {
-        return lang === 'en' ? `e${sign}${ang}°` : `敵${sign}${ang}°`;
+        return `${lang === 'en' ? `e${sign}${ang}°` : `敵${sign}${ang}°`}${waitTag}`;
       }
       if (p.mode === 'turret_rel') {
-        return lang === 'en' ? `t${sign}${ang}°` : `砲塔${sign}${ang}°`;
+        return `${lang === 'en' ? `t${sign}${ang}°` : `砲塔${sign}${ang}°`}${waitTag}`;
       }
-      return `${ang}°`;
+      return `${ang}°${waitTag}`;
     }
     case 'act_turn_turret': {
       const ang = Number(p.angle ?? 0);
+      const waitTag = Number(p.wait ?? 0) === 1 ? (lang === 'en' ? ' [w]' : ' [待]') : '';
       if (p.mode === 'body_rel') {
         const sign = ang >= 0 ? '+' : '';
-        return lang === 'en' ? `b${sign}${ang}°` : `車体${sign}${ang}°`;
+        return `${lang === 'en' ? `b${sign}${ang}°` : `車体${sign}${ang}°`}${waitTag}`;
       }
-      return `${p.angle}°`;
+      return `${p.angle}°${waitTag}`;
     }
     case 'act_turn_radar':
       if (p.mode === 'lock_enemy') return lang === 'en' ? 'lock' : '追尾';
@@ -188,7 +191,8 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
           : '直接';
     case 'act_fire': {
       const tier = normalizeFirePowerTier(p.power);
-      return FIRE_POWER_TIER_LABELS[tier][lang];
+      const waitTag = Number(p.wait ?? 0) === 1 ? (lang === 'en' ? ' [w]' : ' [待]') : '';
+      return `${FIRE_POWER_TIER_LABELS[tier][lang]}${waitTag}`;
     }
     case 'cond_enemy_sector':
       return `±${p.halfWidth}°`;
@@ -200,6 +204,7 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
       if (p.direction === 'front_right') return lang === 'en' ? `FR${p.dist}` : `右前${p.dist}px`;
       return `${p.dist}px`;
     case 'cond_proximity':
+      if (p.mode === 'front') return lang === 'en' ? `F<=${p.dist ?? 90}` : `前${p.dist ?? 90}px`;
       if (p.mode === 'left_closer') return lang === 'en' ? 'L<R' : '左<右';
       if (p.mode === 'left_open') return lang === 'en' ? `LO>${p.dist ?? 90}` : `左空>${p.dist ?? 90}`;
       if (p.mode === 'right_open') return lang === 'en' ? `RO>${p.dist ?? 90}` : `右空>${p.dist ?? 90}`;
@@ -223,6 +228,38 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
     case 'mode_set':
     case 'cond_mode':
       return `m=${p.mode}`;
+    case 'cond_floor_tile': {
+      const t = String(p.target ?? 'goal');
+      const edgeTag = Number(p.edge ?? 0) === 1 ? (lang === 'en' ? ' [1x]' : ' [踏]') : '';
+      const base =
+        t === 'goal'
+          ? lang === 'en'
+            ? 'goal'
+            : 'ゴール'
+          : t === 'checkpoint'
+            ? lang === 'en'
+              ? 'cp'
+              : 'CP'
+            : t === 'any_color'
+              ? lang === 'en'
+                ? 'color'
+                : '色床'
+              : t === 'hazard'
+                ? lang === 'en'
+                  ? 'hazard'
+                  : '危険'
+                : t;
+      return `${base}${edgeTag}`;
+    }
+    case 'cond_mission_state': {
+      const chk = String(p.check ?? 'targets_remaining');
+      if (chk === 'targets_cleared') return lang === 'en' ? 'tgt=0' : '的=0';
+      if (chk === 'checkpoints_remaining') return lang === 'en' ? 'cp>0' : 'CP>0';
+      if (chk === 'checkpoints_cleared') return lang === 'en' ? 'cp=0' : 'CP済';
+      return lang === 'en' ? 'tgt>0' : '的>0';
+    }
+    case 'act_halt':
+      return '';
     default:
       return '';
   }
@@ -279,6 +316,17 @@ function formatPythonConditionExpr(type: ChipType, params: Record<string, string
       return 'under_lock()';
     case 'cond_mode':
       return `mode == ${p.mode ?? 1}`;
+    case 'cond_floor_tile': {
+      const edgeSuffix = Number(p.edge ?? 0) === 1 ? ', edge=True' : '';
+      return `on_tile("${p.target ?? 'goal'}"${edgeSuffix})`;
+    }
+    case 'cond_mission_state': {
+      const check = String(p.check ?? 'targets_remaining');
+      if (check === 'targets_cleared') return 'targets_left() == 0';
+      if (check === 'checkpoints_remaining') return 'checkpoints_left() > 0';
+      if (check === 'checkpoints_cleared') return 'checkpoints_done()';
+      return 'targets_left() > 0';
+    }
     default:
       return 'True';
   }
@@ -306,22 +354,30 @@ function formatPythonActionStmt(type: ChipType, params: Record<string, string | 
     }
     case 'mode_set':
       return `mode = ${p.mode ?? 1}`;
+    case 'act_halt':
+      return 'stop()';
     case 'act_move':
       return Number(p.duration ?? 0) > 0
         ? `move(speed=${p.speedPercent ?? 80}, duration=${p.duration})`
         : `move(speed=${p.speedPercent ?? 80})`;
-    case 'act_turn_body':
-      return `turn_body(mode="${p.mode ?? 'auto'}", angle=${p.angle ?? 4})`;
-    case 'act_turn_turret':
-      return `turn_turret(mode="${p.mode ?? 'auto'}", angle=${p.angle ?? 6})`;
+    case 'act_turn_body': {
+      const waitSuffix = Number(p.wait ?? 0) === 1 ? ', wait=True' : '';
+      return `turn_body(mode="${p.mode ?? 'auto'}", angle=${p.angle ?? 4}${waitSuffix})`;
+    }
+    case 'act_turn_turret': {
+      const waitSuffix = Number(p.wait ?? 0) === 1 ? ', wait=True' : '';
+      return `turn_turret(mode="${p.mode ?? 'auto'}", angle=${p.angle ?? 6}${waitSuffix})`;
+    }
     case 'act_aim_enemy':
       return `aim_enemy(lead="${p.lead ?? 'direct'}", offset=${p.offset ?? 0})`;
     case 'act_turn_radar':
       return p.mode === 'lock_enemy'
         ? 'turn_radar(mode="lock_enemy")'
         : `turn_radar(mode="${p.mode ?? 'sweep'}", angle=${p.angle ?? 60})`;
-    case 'act_fire':
-      return `fire_main(power="${normalizeFirePowerTier(p.power)}")`;
+    case 'act_fire': {
+      const waitSuffix = Number(p.wait ?? 0) === 1 ? ', wait=True' : '';
+      return `fire_main(power="${normalizeFirePowerTier(p.power)}"${waitSuffix})`;
+    }
     case 'act_sub_weapon':
       return 'fire_sp()';
     default:
@@ -701,7 +757,9 @@ export function transpileProgramToLines(
       coord,
       indent,
     });
-    walk(cell.next, indent, nextAncestors, depth + 1, stopKey);
+    if (cell.type !== 'act_halt') {
+      walk(cell.next, indent, nextAncestors, depth + 1, stopKey);
+    }
   };
 
   // Emit defined subroutines (def sub_a(): .. def sub_d():) before def on_tick():
@@ -773,6 +831,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   trace,
   isPlaying,
   allowedChips,
+  allowLearningChips = false,
   mobileMode = false,
   requestedSidebarTab = null,
   onChangeProgram,
@@ -1541,6 +1600,13 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     if (isFixedTurret && (c.type === 'act_turn_turret' || c.type === 'act_aim_enemy')) {
       return false;
     }
+    if (
+      c.learningOnly &&
+      !allowLearningChips &&
+      !(hasChipLimit && allowedChips!.includes(c.type))
+    ) {
+      return false;
+    }
     if (hasChipLimit && !showAllTutorialChips && !allowedChips!.includes(c.type)) {
       return false;
     }
@@ -1643,7 +1709,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   );
 
   const visibleGridSizes = mobileMode
-    ? ALLOWED_GRID_SIZES.filter((gs) => gs <= 6 || gs === size)
+    ? ALLOWED_GRID_SIZES.filter((gs) => gs <= 8 || gs === size)
     : ALLOWED_GRID_SIZES;
 
   return (
@@ -2286,13 +2352,24 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                 {selectedDef.paramSchema.length > 0 && (
                   <div className="param-list">
                     {selectedDef.paramSchema.map((field) => (
-                      <label key={field.key} className="param-row">
+                      <label
+                        key={field.key}
+                        className={
+                          field.type === 'boolean' ? 'param-row param-checkbox-row' : 'param-row'
+                        }
+                      >
                         <span>
                           {displayLang === 'en'
                             ? `${field.labelEn} (${field.label})`
                             : field.label}
                         </span>
-                        {field.type === 'select' ? (
+                        {field.type === 'boolean' ? (
+                          <input
+                            type="checkbox"
+                            checked={Number(selectedCell.params[field.key] ?? 0) === 1}
+                            onChange={(e) => handleUpdateParam(field.key, e.target.checked ? 1 : 0)}
+                          />
+                        ) : field.type === 'select' ? (
                           <select
                             value={
                               selectedCell.type === 'act_fire' && field.key === 'power'
@@ -2455,6 +2532,26 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                             </div>
                           );
                         })}
+                      </div>
+                    ) : selectedCell.type === 'act_halt' ? (
+                      <div className="branch-box branch-next">
+                        <div className="branch-head">
+                          <span>終端チップ（ここで停止）</span>
+                        </div>
+                        <div className="dir-pad-row">
+                          <span className="dir-pad-hint">
+                            実行すると移動・旋回・発砲を停止し、以降のTickでも実行を終了します（出力先の配線は不要です）
+                          </span>
+                          {selectedCell.next && (
+                            <button
+                              type="button"
+                              className="mini-btn"
+                              onClick={() => handleUnlink('next')}
+                            >
+                              <Unlink size={12} /> 接続解除
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ) : (
                       <div className="branch-box branch-next">

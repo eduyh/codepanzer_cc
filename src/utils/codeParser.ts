@@ -398,6 +398,13 @@ function parseKwOrPosArgs(rawArgs: string): {
   return { kw, pos };
 }
 
+function parseBoolFlag(val: string | number | undefined): number {
+  if (val === undefined) return 0;
+  if (typeof val === 'number') return val !== 0 ? 1 : 0;
+  const s = String(val).trim().toLowerCase();
+  return s === 'true' || s === '1' ? 1 : 0;
+}
+
 function parseConditionLine(expr: string): {
   type: ChipType;
   params: Record<string, string | number>;
@@ -484,6 +491,37 @@ function parseConditionLine(expr: string): {
   if (/^mode\s*==\s*(\d+)$/.test(e)) {
     const m = e.match(/^mode\s*==\s*(\d+)$/);
     return { type: 'cond_mode', params: { mode: Number(m?.[1] ?? 1) } };
+  }
+  if (/^on_tile\((.*)\)$/.test(e)) {
+    const m = e.match(/^on_tile\((.*)\)$/);
+    const { kw, pos } = parseKwOrPosArgs(m?.[1] ?? '');
+    const rawTarget = String(kw.target ?? kw.kind ?? kw.color ?? pos[0] ?? 'goal').trim();
+    const target = rawTarget === 'color' ? 'any_color' : rawTarget;
+    return {
+      type: 'cond_floor_tile',
+      params: { target, edge: parseBoolFlag(kw.edge ?? kw.once) },
+    };
+  }
+  if (/^targets_left\(\s*\)\s*(==|<=|>|>=|!=)\s*(\d+)$/.test(e)) {
+    const m = e.match(/^targets_left\(\s*\)\s*(==|<=|>|>=|!=)\s*(\d+)$/);
+    const op = m?.[1];
+    const num = Number(m?.[2] ?? 0);
+    const check =
+      (op === '==' || op === '<=') && num === 0 ? 'targets_cleared' : 'targets_remaining';
+    return { type: 'cond_mission_state', params: { check } };
+  }
+  if (/^checkpoints_left\(\s*\)\s*(==|<=|>|>=|!=)\s*(\d+)$/.test(e)) {
+    const m = e.match(/^checkpoints_left\(\s*\)\s*(==|<=|>|>=|!=)\s*(\d+)$/);
+    const op = m?.[1];
+    const num = Number(m?.[2] ?? 0);
+    const check =
+      (op === '==' || op === '<=') && num === 0
+        ? 'checkpoints_cleared'
+        : 'checkpoints_remaining';
+    return { type: 'cond_mission_state', params: { check } };
+  }
+  if (/^checkpoints_done\(\s*\)$/.test(e)) {
+    return { type: 'cond_mission_state', params: { check: 'checkpoints_cleared' } };
   }
   const distMatch = e.match(/^(?:enemy_dist|enemy_distance\(\))\s*(<=|>=|<|>)\s*(\d+(?:\.\d+)?)$/);
   if (distMatch) {
@@ -604,6 +642,7 @@ function parseActionLine(stmt: string): {
         params: {
           mode: modeVal,
           angle: Number(kw.angle ?? kw.deg ?? pos[0] ?? defaultAng),
+          wait: parseBoolFlag(kw.wait),
         },
       };
     }
@@ -613,6 +652,7 @@ function parseActionLine(stmt: string): {
         params: {
           mode: 'turret_rel',
           angle: Number(kw.offset ?? kw.angle ?? pos[0] ?? 0),
+          wait: parseBoolFlag(kw.wait),
         },
       };
     case 'turn_body_to_enemy':
@@ -621,6 +661,7 @@ function parseActionLine(stmt: string): {
         params: {
           mode: 'enemy_rel',
           angle: Number(kw.offset ?? kw.angle ?? pos[0] ?? 90),
+          wait: parseBoolFlag(kw.wait),
         },
       };
     case 'turn_turret':
@@ -632,6 +673,7 @@ function parseActionLine(stmt: string): {
         params: {
           mode: modeVal,
           angle: Number(kw.angle ?? kw.deg ?? pos[0] ?? defaultAng),
+          wait: parseBoolFlag(kw.wait),
         },
       };
     }
@@ -641,8 +683,12 @@ function parseActionLine(stmt: string): {
         params: {
           mode: 'body_rel',
           angle: Number(kw.offset ?? kw.angle ?? pos[0] ?? 0),
+          wait: parseBoolFlag(kw.wait),
         },
       };
+    case 'stop':
+    case 'halt':
+      return { type: 'act_halt', params: {} };
     case 'aim_enemy':
     case 'aimEnemy':
       return {
@@ -682,7 +728,10 @@ function parseActionLine(stmt: string): {
     case 'fire':
       return {
         type: 'act_fire',
-        params: { power: kw.power ?? pos[0] ?? 'normal' },
+        params: {
+          power: kw.power ?? pos[0] ?? 'normal',
+          wait: parseBoolFlag(kw.wait),
+        },
       };
     case 'fire_sp':
     case 'use_sp':
@@ -1104,7 +1153,7 @@ export function parsePythonSourceToProgram(
           }
         }
       } else {
-        node.nextId = nextNodeId;
+        node.nextId = node.type === 'act_halt' ? null : nextNodeId;
       }
     }
   };
@@ -1124,6 +1173,7 @@ export function parsePythonSourceToProgram(
   const cells = createEmptyCells(targetSize);
   const coordMap = new Map<number, GridCoord>();
   const placedSet = new Set<number>();
+  const nodeByCoord = new Map<string, ParsedStatement>();
 
   const ORTHO_DIRS: GridCoord[] = [
     { x: 1, y: 0 },
@@ -1155,10 +1205,35 @@ export function parsePythonSourceToProgram(
     return total;
   };
 
+  const countUnplacedOutLinks = (st: ParsedStatement): number => {
+    let need = 0;
+    if (st.nextId && !placedSet.has(st.nextId)) need++;
+    if (st.yesId && !placedSet.has(st.yesId)) need++;
+    if (st.noId && !placedSet.has(st.noId)) need++;
+    return need;
+  };
+
+  const countStarvedNeighbors = (cx: number, cy: number, ownerAnchor: GridCoord | null): number => {
+    let starved = 0;
+    for (const d of ORTHO_DIRS) {
+      const nx = cx + d.x;
+      const ny = cy + d.y;
+      if (ownerAnchor && nx === ownerAnchor.x && ny === ownerAnchor.y) continue;
+      const neighborNode = nodeByCoord.get(`${nx},${ny}`);
+      if (!neighborNode) continue;
+      const needed = countUnplacedOutLinks(neighborNode);
+      if (needed > 0 && countFreeOrthoNeighbors(nx, ny) - 1 < needed) {
+        starved += 1;
+      }
+    }
+    return starved;
+  };
+
   const placeSingle = (node: ParsedStatement, c: GridCoord) => {
     if (placedSet.has(node.id)) return;
     placedSet.add(node.id);
     coordMap.set(node.id, c);
+    nodeByCoord.set(`${c.x},${c.y}`, node);
     cells[c.y][c.x] = makeCell(`src_${node.id}_${c.x}_${c.y}`, node.type, node.params);
   };
 
@@ -1216,7 +1291,8 @@ export function parsePythonSourceToProgram(
   const claimBestFreeCoord = (
     anchor: GridCoord | null,
     needRemainingAfter: number,
-    requireDiamond: boolean
+    requireDiamond: boolean,
+    minFreeNeighbors = 0
   ): GridCoord => {
     if (anchor) {
       const candidates = ORTHO_DIRS.map((d, dirIdx) => ({
@@ -1226,16 +1302,19 @@ export function parsePythonSourceToProgram(
       })).filter((c) => isCellFree(c.x, c.y));
 
       if (candidates.length > 0) {
+        const minNeeded = Math.max(needRemainingAfter > 0 ? 1 : 0, minFreeNeighbors);
         const scored = candidates.map((c) => {
           const freeAfter = countFreeOrthoNeighbors(c.x, c.y);
           const hasDiamond = requireDiamond ? findDiamondsAt(c.x, c.y).length > 0 : true;
-          const isDeadEnd = needRemainingAfter > 0 && freeAfter === 0;
-          return { ...c, freeAfter, hasDiamond, isDeadEnd };
+          const isDeadEnd = freeAfter < minNeeded;
+          const starved = countStarvedNeighbors(c.x, c.y, anchor);
+          return { ...c, freeAfter, hasDiamond, isDeadEnd, starved };
         });
 
         scored.sort((a, b) => {
           if (a.hasDiamond !== b.hasDiamond) return a.hasDiamond ? -1 : 1;
           if (a.isDeadEnd !== b.isDeadEnd) return a.isDeadEnd ? 1 : -1;
+          if (a.starved !== b.starved) return a.starved - b.starved;
           if (a.freeAfter !== b.freeAfter) return a.freeAfter - b.freeAfter;
           return a.dirIdx - b.dirIdx;
         });
@@ -1276,7 +1355,7 @@ export function parsePythonSourceToProgram(
       const remainingAfter = list.length - 1 - i + countSubtree(node.yesBody) + countSubtree(node.noBody);
 
       if (!placedSet.has(node.id)) {
-        const c = claimBestFreeCoord(anchor, remainingAfter, diamond);
+        const c = claimBestFreeCoord(anchor, remainingAfter, diamond, countUnplacedOutLinks(node));
         placeSingle(node, c);
       }
       const c = coordMap.get(node.id)!;
@@ -1304,11 +1383,21 @@ export function parsePythonSourceToProgram(
           const yesHead = node.yesBody[0];
           const noHead = node.noBody[0];
           if (!placedSet.has(yesHead.id)) {
-            const yc = claimBestFreeCoord(c, Math.max(0, countSubtree(node.yesBody) - 1), false);
+            const yc = claimBestFreeCoord(
+              c,
+              Math.max(0, countSubtree(node.yesBody) - 1),
+              false,
+              countUnplacedOutLinks(yesHead)
+            );
             placeSingle(yesHead, yc);
           }
           if (!placedSet.has(noHead.id)) {
-            const nc = claimBestFreeCoord(c, Math.max(0, countSubtree(node.noBody) - 1), false);
+            const nc = claimBestFreeCoord(
+              c,
+              Math.max(0, countSubtree(node.noBody) - 1),
+              false,
+              countUnplacedOutLinks(noHead)
+            );
             placeSingle(noHead, nc);
           }
 

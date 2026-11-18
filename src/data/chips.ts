@@ -293,6 +293,24 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
       },
     ],
   },
+  act_halt: {
+    type: 'act_halt',
+    category: 'flow',
+    name: 'プログラム停止 stop()',
+    nameEn: 'stop()',
+    shortLabel: 'stop()',
+    shortLabelEn: 'stop()',
+    description:
+      '移動・旋回・発砲をすべて停止し、以降の Tick でもプログラムを実行せず完全停止します。ゴール到達や作業完了時に使います。',
+    pythonSyntax: 'stop()',
+    conceptTag: '実行終了・完全停止 (Halt)',
+    signatureInfo: '引数: なし → 戻り値: None (戦車を停止し以降のTickを終了)',
+    learningTip:
+      '「ゴールに着いたら停止する」「ターゲットをすべてクリアしたら止まる」といった完了処理に使う命令です。一度実行されると移動や旋回を止め、リセットまで待機状態を維持します。',
+    isCondition: false,
+    defaultParams: {},
+    paramSchema: [],
+  },
   cond_enemy_detected: {
     type: 'cond_enemy_detected',
     category: 'condition',
@@ -501,6 +519,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         type: 'select',
         options: [
           { value: 'approaching', label: '全周 (接近中のみ)', labelEn: '"approaching"' },
+          { value: 'front', label: '前方のみ (車体正面)', labelEn: '"front"' },
           { value: 'any', label: '全周 (無条件)', labelEn: '"any"' },
           { value: 'left_closer', label: '左右比較 (左の方が近い)', labelEn: '"left_closer"' },
           { value: 'left_open', label: '左側が開いている (左手法)', labelEn: '"left_open"' },
@@ -673,7 +692,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
           { value: 'mod0', label: '剰余0 (% val == 0)', labelEn: '% val == 0' },
         ],
       },
-      { key: 'value', label: '比較値', labelEn: 'value', type: 'number', min: 1, max: 999, step: 1 },
+      { key: 'value', label: '比較値', labelEn: 'value', type: 'number', min: -999, max: 999, step: 1 },
     ],
   },
   cond_incoming_shell: {
@@ -751,6 +770,96 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
       },
     ],
   },
+  cond_floor_tile: {
+    type: 'cond_floor_tile',
+    category: 'condition',
+    learningOnly: true,
+    name: 'if 床タイル:',
+    nameEn: 'if on_tile():',
+    shortLabel: 'if タイル',
+    shortLabelEn: 'if on_tile:',
+    description:
+      '戦車の中心が指定した種別・色の床タイル上にあると True (青/then)、そうでなければ False (赤/else) へ分岐します。（学習モード専用）',
+    pythonSyntax: 'if on_tile("goal"):',
+    conceptTag: '環境センサー分岐 (Floor Tile)',
+    signatureInfo: '引数: target: str, edge?: bool → 戻り値: bool (True / False)',
+    learningTip:
+      '足元にあるゴールやチェックポイント、色タイル（赤・青・緑・黄）、危険タイルを判別します。「踏んだ瞬間のみ (edge=True)」をONにすると、同じタイルを踏み続けている間は再判定せず離れてから再度判定するため、タイル上での連続旋回ループを防げます。',
+    isCondition: true,
+    defaultParams: { target: 'goal', edge: 0 },
+    paramSchema: [
+      {
+        key: 'target',
+        label: '判定対象タイル',
+        labelEn: 'target',
+        type: 'select',
+        options: [
+          { value: 'goal', label: 'ゴール (goal)', labelEn: '"goal"' },
+          { value: 'checkpoint', label: '未通過チェックポイント (checkpoint)', labelEn: '"checkpoint"' },
+          { value: 'any_color', label: '任意の色タイル (color)', labelEn: '"color"' },
+          { value: 'red', label: '赤タイル (red)', labelEn: '"red"' },
+          { value: 'blue', label: '青タイル (blue)', labelEn: '"blue"' },
+          { value: 'green', label: '緑タイル (green)', labelEn: '"green"' },
+          { value: 'yellow', label: '黄タイル (yellow)', labelEn: '"yellow"' },
+          { value: 'hazard', label: '危険タイル (hazard)', labelEn: '"hazard"' },
+        ],
+      },
+      {
+        key: 'edge',
+        label: '踏んだ瞬間のみ (edge)',
+        labelEn: 'on enter only (edge)',
+        type: 'boolean',
+      },
+    ],
+  },
+  cond_mission_state: {
+    type: 'cond_mission_state',
+    category: 'condition',
+    learningOnly: true,
+    name: 'if ミッション状況:',
+    nameEn: 'if targets_left() > 0:',
+    shortLabel: 'if ミッション',
+    shortLabelEn: 'if mission:',
+    description:
+      'マップ上のターゲット残数やチェックポイントの達成状況に応じて True (青/then) / False (赤/else) へ分岐します。（学習モード専用）',
+    pythonSyntax: 'if targets_left() > 0:',
+    conceptTag: '達成状況の条件判定 (Mission State)',
+    signatureInfo: '引数: check: str → 戻り値: bool (True / False)',
+    learningTip:
+      '「ターゲットがまだ残っているか」「すべてのチェックポイントを踏み終えたか」を調べます。条件を満たした後にゴールへ向かう分岐などが組めます。',
+    isCondition: true,
+    defaultParams: { check: 'targets_remaining' },
+    paramSchema: [
+      {
+        key: 'check',
+        label: '判定条件',
+        labelEn: 'check',
+        type: 'select',
+        options: [
+          {
+            value: 'targets_remaining',
+            label: 'ターゲット残りあり (targets_left() > 0)',
+            labelEn: 'targets_left() > 0',
+          },
+          {
+            value: 'targets_cleared',
+            label: 'ターゲット全破壊済み (targets_left() == 0)',
+            labelEn: 'targets_left() == 0',
+          },
+          {
+            value: 'checkpoints_remaining',
+            label: '未通過チェックポイントあり (checkpoints_left() > 0)',
+            labelEn: 'checkpoints_left() > 0',
+          },
+          {
+            value: 'checkpoints_cleared',
+            label: 'チェックポイント全通過 (checkpoints_done())',
+            labelEn: 'checkpoints_done()',
+          },
+        ],
+      },
+    ],
+  },
   act_move: {
     type: 'act_move',
     category: 'action',
@@ -798,14 +907,14 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'turn_body()',
     shortLabelEn: 'turn_body()',
     description:
-      '相対角速度での旋回・絶対方位(北=0°)への旋回に加え、敵方向基準(enemy_rel)や砲塔方向基準(turret_rel: angle=0で砲塔正面へ車体を向ける)でも制御できます。',
+      '相対角度での旋回・絶対方位(北=0°)への旋回に加え、敵方向基準(enemy_rel)や砲塔方向基準(turret_rel)でも制御できます。「完了まで待機」を有効にすると目標角度に到達するまで停止して旋回し続け、完了後に次のチップへ進みます。',
     pythonSyntax: 'turn_body(mode="auto", angle=4)',
-    conceptTag: '関数呼び出し (座標基準とベクトル角度)',
-    signatureInfo: '引数: mode: str, angle: float → 戻り値: None',
+    conceptTag: '関数呼び出し (座標基準とブロッキング制御)',
+    signatureInfo: '引数: mode: str, angle: float, wait?: bool → 戻り値: None',
     learningTip:
-      '同じ `turn_body()` でも `mode` により挙動が変わります。`mode="wall_away"` にすると最寄りの壁から離れる方向へ自動旋回でき、`mode="turret_rel"` に `angle=0` を渡すと砲塔が向いている方向へ車体正面を向けられます（固い正面装甲を敵に向け直す操作に有効）。`mode="enemy_rel"` に `angle=90` で側面旋回になります。',
+      '同じ `turn_body()` でも `mode` や `wait` により挙動が変わります。`wait=True` をONにすると、例えば `mode="delta", angle=90, wait=True` で移動を一時停止しながら90°旋回し終えてから次の前進チップへ素直に進めます。',
     isCondition: false,
-    defaultParams: { mode: 'auto', angle: 4 },
+    defaultParams: { mode: 'auto', angle: 4, wait: 0 },
     paramSchema: [
       {
         key: 'mode',
@@ -814,7 +923,7 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         type: 'select',
         options: [
           { value: 'auto', label: '座標モード自動', labelEn: '"auto"' },
-          { value: 'delta', label: '相対角速度 (右+/左-)', labelEn: '"delta"' },
+          { value: 'delta', label: '相対角度 (右+/左-)', labelEn: '"delta"' },
           { value: 'heading', label: '絶対方位 (北=0°)', labelEn: '"heading"' },
           { value: 'wall_away', label: '壁回避方向へ (自動)', labelEn: '"wall_away"' },
           { value: 'turret_rel', label: '砲塔方向基準 (0°で砲塔向き)', labelEn: '"turret_rel"' },
@@ -832,6 +941,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         step: 1,
         unit: '°',
       },
+      {
+        key: 'wait',
+        label: '完了まで待機 (wait)',
+        labelEn: 'wait until done',
+        type: 'boolean',
+      },
     ],
   },
   act_turn_turret: {
@@ -842,14 +957,14 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'turn_turret()',
     shortLabelEn: 'turn_turret()',
     description:
-      '相対回転・絶対方位(北=0°)に加え、車体正面基準(body_rel: angle=0で車体の進行方向正面へ砲塔を向ける)も指定できます。',
+      '相対回転・絶対方位(北=0°)に加え、車体正面基準(body_rel)も指定できます。「完了まで待機」を有効にすると指定角度を向き終えるまで次のチップへ進まず待機します。',
     pythonSyntax: 'turn_turret(angle=6)',
     conceptTag: '関数呼び出し (独立アクチュエータ)',
-    signatureInfo: '引数: mode: str, angle: float → 戻り値: None',
+    signatureInfo: '引数: mode: str, angle: float, wait?: bool → 戻り値: None',
     learningTip:
-      '車体とは独立して砲塔の向きだけを変える関数です。巡航中に `mode="body_rel", angle=0` を使うと砲塔を車体正面へ戻し、砲塔基準のレーダー首振りで進行方向を索敵できます。',
+      '車体とは独立して砲塔の向きだけを変える関数です。`wait=True` にすると砲塔が目標角度（例: `mode="delta", angle=90, wait=True`）に向き終わってから次の発砲チップへ進めます。',
     isCondition: false,
-    defaultParams: { mode: 'auto', angle: 6 },
+    defaultParams: { mode: 'auto', angle: 6, wait: 0 },
     paramSchema: [
       {
         key: 'mode',
@@ -872,6 +987,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
         max: 360,
         step: 1,
         unit: '°',
+      },
+      {
+        key: 'wait',
+        label: '完了まで待機 (wait)',
+        labelEn: 'wait until done',
+        type: 'boolean',
       },
     ],
   },
@@ -963,14 +1084,15 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'fire_main(power="normal")',
     shortLabel: 'fire_main()',
     shortLabelEn: 'fire_main()',
-    description: '主砲の射撃モード（速弱・標準・遅強）を指定して発射します。実効パワー・弾速・冷却は搭載中の主砲性能で自動決定されます。',
+    description:
+      '主砲の射撃モード（速弱・標準・遅強）を指定して発射します。「発射完了まで待機」を有効にすると、冷却完了を待ってから確実に発射して次のチップへ進みます。',
     pythonSyntax: 'fire_main(power="normal")',
-    conceptTag: '関数呼び出し (モード切り替え)',
-    signatureInfo: '引数: power: "fast" | "normal" | "heavy" → 戻り値: None',
+    conceptTag: '関数呼び出し (モード切り替えと発射待機)',
+    signatureInfo: '引数: power: "fast" | "normal" | "heavy", wait?: bool → 戻り値: None',
     learningTip:
-      '同じ関数 `fire_main(power)` でも引数によって弾速と威力が変わります。遠距離で動く敵には `"fast"`（速弱：高弾速・短冷却）、通常時は `"normal"`（標準）、近距離や重装甲には `"heavy"`（遅強：高ダメージ）を使い分けましょう。',
+      '同じ関数 `fire_main(power)` でも引数によって弾速と威力が変わります。連続射撃の順次処理で不発を防ぎたいときは `wait=True` をONにすると、冷却が0になるまで待ってから発射して次へ進めます。',
     isCondition: false,
-    defaultParams: { power: 'normal' },
+    defaultParams: { power: 'normal', wait: 0 },
     paramSchema: [
       {
         key: 'power',
@@ -982,6 +1104,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
           { value: 'normal', label: '標準 (バランス)', labelEn: '"normal" (Balanced)' },
           { value: 'heavy', label: '遅強 (低弾速・高威力・長冷却)', labelEn: '"heavy" (Heavy / High)' },
         ],
+      },
+      {
+        key: 'wait',
+        label: '発射可能まで待機 (wait)',
+        labelEn: 'wait until ready',
+        type: 'boolean',
       },
     ],
   },

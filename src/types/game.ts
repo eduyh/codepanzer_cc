@@ -86,6 +86,7 @@ export type ChipCategory = 'flow' | 'condition' | 'action' | 'sub';
 export type ChipType =
   | 'start'
   | 'wire'
+  | 'act_halt'
   | 'sub_def'
   | 'sub_call'
   | 'loop_while'
@@ -106,6 +107,8 @@ export type ChipType =
   | 'cond_incoming_shell'
   | 'cond_under_lock'
   | 'cond_mode'
+  | 'cond_floor_tile'
+  | 'cond_mission_state'
   | 'act_move'
   | 'act_turn_body'
   | 'act_turn_turret'
@@ -120,7 +123,7 @@ export interface ChipParamField {
   key: string;
   label: string;
   labelEn: string;
-  type: 'number' | 'select';
+  type: 'number' | 'select' | 'boolean';
   min?: number;
   max?: number;
   step?: number;
@@ -131,6 +134,7 @@ export interface ChipParamField {
 export interface ChipDefinition {
   type: ChipType;
   category: ChipCategory;
+  learningOnly?: boolean;
   name: string;
   nameEn: string;
   shortLabel: string;
@@ -245,6 +249,8 @@ export interface TankRuntime {
   lastHitTick: number;
   lastAttackHitTick: number;
   lastHitAngle: number | null;
+  lastAimAngle?: number | null;
+  lastAimTick?: number;
   wallHitCooldown: number;
   lastTankCollisionTick?: number;
   tankCollisionStreak?: number;
@@ -279,6 +285,32 @@ export interface TankRuntime {
       subKey: string;
     }>;
   } | null;
+  turnState?: {
+    coord: GridCoord;
+    axis: 'body' | 'turret';
+    isDelta: boolean;
+    targetAbsAngle: number;
+    remainingDelta: number;
+    lastAngle: number;
+    remainingTicks: number;
+    callStack?: Array<{
+      returnCoord: GridCoord | null;
+      callerCoord: GridCoord;
+      subKey: string;
+    }>;
+  } | null;
+  fireState?: {
+    coord: GridCoord;
+    firePower: number;
+    remainingTicks: number;
+    callStack?: Array<{
+      returnCoord: GridCoord | null;
+      callerCoord: GridCoord;
+      subKey: string;
+    }>;
+  } | null;
+  halted?: boolean;
+  tileEdgeState?: Record<string, string>;
   activePrintSpeech?: { lines: string[]; tick: number } | null;
   mode: number;
   trace: ExecutionTrace;
@@ -331,6 +363,53 @@ export interface ArenaObstacle {
   height: number;
 }
 
+export type FloorTileKind = 'goal' | 'checkpoint' | 'color' | 'hazard';
+export type FloorTileColor = 'red' | 'blue' | 'green' | 'yellow';
+
+export interface ArenaTile {
+  id: string;
+  kind: FloorTileKind;
+  color?: FloorTileColor;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  visited?: boolean;
+  order?: number;
+}
+
+export interface ArenaTarget {
+  id: string;
+  kind: 'shoot_balloon' | 'ram_balloon';
+  x: number;
+  y: number;
+  vx?: number;
+  vy?: number;
+  radius: number;
+  hp: number;
+  maxHp: number;
+  popped?: boolean;
+  color?: string;
+  label?: string;
+  patrol?: {
+    ax: number;
+    ay: number;
+    bx: number;
+    by: number;
+    speed: number;
+    dir?: 1 | -1;
+  };
+}
+
+export interface LearningGoalRule {
+  reachGoalTile?: boolean;
+  requireStop?: boolean;
+  requireAllCheckpoints?: boolean;
+  requireAllTargetsPopped?: boolean;
+  requireEnemiesDefeated?: boolean;
+  maxWallHits?: number;
+}
+
 export type ArenaSizeId = 'tiny' | 'small' | 'medium' | 'large';
 
 export interface ArenaConfig {
@@ -339,6 +418,9 @@ export interface ArenaConfig {
   height: number;
   maxTicks: number;
   obstacles: ArenaObstacle[];
+  tiles?: ArenaTile[];
+  targets?: ArenaTarget[];
+  learningRule?: LearningGoalRule;
   teamBattle?: boolean;
 }
 
@@ -376,8 +458,43 @@ export interface BattleState {
   explosions: BattleExplosion[];
   status: 'running' | 'finished';
   winnerId: string | null;
-  winType?: 'elimination' | 'decision' | 'draw' | 'defeat' | null;
+  winType?: 'elimination' | 'decision' | 'draw' | 'defeat' | 'mission' | null;
   endReason: string | null;
+}
+
+export interface LearningArenaVariant {
+  id: string;
+  label: string;
+  arenaSize?: ArenaSizeId;
+  obstacles: ArenaObstacle[];
+  tiles?: ArenaTile[];
+  targets?: ArenaTarget[];
+  playerSpawn?: SpawnPoint;
+  enemies?: TankBlueprint[];
+  enemySpawns?: SpawnPoint[];
+}
+
+export interface LearningMission {
+  id: string;
+  lessonNumber: 1 | 2 | 3 | 4;
+  missionCode: string;
+  title: string;
+  subtitle: string;
+  description: string;
+  goalDescription: string;
+  hints: string[];
+  arenaSize: ArenaSizeId;
+  obstacles: ArenaObstacle[];
+  tiles?: ArenaTile[];
+  targets?: ArenaTarget[];
+  variants?: LearningArenaVariant[];
+  maxTicks: number;
+  playerSpawn: SpawnPoint;
+  playerStarter: TankBlueprint;
+  goalRule: LearningGoalRule;
+  allowedChips: ChipType[];
+  enemies?: TankBlueprint[];
+  enemySpawns?: SpawnPoint[];
 }
 
 export interface SpawnPoint {
@@ -390,6 +507,7 @@ export interface SpawnPoint {
 
 export interface TutorialStage {
   id: string;
+  section?: 1 | 2 | 3 | 4;
   number: number;
   title: string;
   subtitle: string;

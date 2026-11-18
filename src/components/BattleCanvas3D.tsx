@@ -2,7 +2,74 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { CHASSIS_SPECS, RADAR_SPECS } from '../data/parts';
 import { angleToVector, degToRad } from '../engine/math';
-import { BattleState, CameraMode, TankRuntime } from '../types/game';
+import { ArenaTile, BattleState, CameraMode, TankRuntime } from '../types/game';
+
+function resolveTileColors(tile: ArenaTile): { fill: number; border: number; hex: string; label?: string } {
+  if (tile.kind === 'goal') {
+    return { fill: 0x06b6d4, border: 0x67e8f9, hex: '#06b6d4', label: 'GOAL' };
+  }
+  if (tile.kind === 'checkpoint') {
+    return tile.visited
+      ? { fill: 0x334155, border: 0x4ade80, hex: '#475569', label: 'OK' }
+      : { fill: 0xf59e0b, border: 0xfde047, hex: '#f59e0b', label: tile.order ? `CP${tile.order}` : 'CP' };
+  }
+  if (tile.kind === 'hazard') {
+    return { fill: 0xdc2626, border: 0xf97316, hex: '#ef4444', label: '!' };
+  }
+  switch (tile.color) {
+    case 'blue':
+      return { fill: 0x1d4ed8, border: 0x60a5fa, hex: '#1d4ed8' };
+    case 'green':
+      return { fill: 0x22c55e, border: 0x4ade80, hex: '#22c55e' };
+    case 'yellow':
+      return { fill: 0xeab308, border: 0xfacc15, hex: '#eab308' };
+    default:
+      return { fill: 0xef4444, border: 0xf87171, hex: '#ef4444' };
+  }
+}
+
+/** Build a high-contrast cyan & white checkerboard GOAL texture for colorblind-safe visibility. */
+function createGoalTileTexture(): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = 'rgba(6, 182, 212, 0.56)';
+  ctx.fillRect(0, 0, size, size);
+
+  // Outer checkerboard frame along edges
+  const cell = 32;
+  const count = size / cell;
+  for (let row = 0; row < count; row += 1) {
+    for (let col = 0; col < count; col += 1) {
+      const isBorder = row === 0 || row === count - 1 || col === 0 || col === count - 1;
+      if (!isBorder) continue;
+      ctx.fillStyle = (row + col) % 2 === 0 ? 'rgba(248, 250, 252, 0.92)' : 'rgba(8, 145, 178, 0.88)';
+      ctx.fillRect(col * cell, row * cell, cell, cell);
+    }
+  }
+
+  // Center pill badge + GOAL label
+  ctx.fillStyle = 'rgba(8, 51, 68, 0.78)';
+  ctx.fillRect(46, 94, size - 92, 68);
+  ctx.strokeStyle = 'rgba(103, 232, 249, 0.95)';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(46, 94, size - 92, 68);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 42px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('GOAL', size / 2, size / 2 + 2);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
 
 interface BattleCanvas3DProps {
   battleState: BattleState;
@@ -494,11 +561,16 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     rebuildArenaStage(stateRef.current.arena.width, stateRef.current.arena.height);
 
     // Dynamic entity pools
+    const tileGroup = new THREE.Group();
+    scene.add(tileGroup);
+    let lastTileSignature = '';
+
     const obstacleGroup = new THREE.Group();
     scene.add(obstacleGroup);
     let lastObstacleSignature = '';
 
     const tankVisuals = new Map<string, TankVisual>();
+    const targetGroups = new Map<string, { group: THREE.Group; sphere: THREE.Mesh; baseY: number; phase: number }>();
     const projectileMeshes = new Map<string, THREE.Mesh>();
     const mineMeshes = new Map<string, THREE.Mesh>();
     const smokeMeshes = new Map<string, THREE.Mesh>();
@@ -592,6 +664,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
 
     const smoothCamPos = new THREE.Vector3(0, 820, 460);
     const smoothLookAt = new THREE.Vector3(0, 0, 0);
+    const goalTileTexture = createGoalTileTexture();
 
     let animFrameId = 0;
     const renderLoop = () => {
@@ -606,6 +679,121 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       }
       const halfW = arenaW / 2;
       const halfH = arenaH / 2;
+
+      // Sync Floor Tiles (goal, checkpoint, color, hazard)
+      const tiles = st.arena.tiles ?? [];
+      const tileSig = `${dimsKey}:${JSON.stringify(
+        tiles.map((t) => [t.id, t.kind, t.color, t.visited, t.x, t.y, t.width, t.height])
+      )}`;
+      if (tileSig !== lastTileSignature) {
+        lastTileSignature = tileSig;
+        while (tileGroup.children.length > 0) {
+          const child = tileGroup.children[0];
+          tileGroup.remove(child);
+          child.traverse((obj) => {
+            if (obj instanceof THREE.Mesh || obj instanceof THREE.LineSegments) {
+              obj.geometry.dispose();
+              const mat = obj.material;
+              if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
+              else mat.dispose();
+            }
+          });
+        }
+        for (const tile of tiles) {
+          const { fill, border } = resolveTileColors(tile);
+          const padGeo = new THREE.PlaneGeometry(tile.width, tile.height);
+          padGeo.rotateX(-Math.PI / 2);
+          const isGoal = tile.kind === 'goal';
+          const padMat = isGoal && goalTileTexture
+            ? new THREE.MeshBasicMaterial({
+                map: goalTileTexture,
+                transparent: true,
+                opacity: 0.92,
+                depthWrite: false,
+              })
+            : new THREE.MeshBasicMaterial({
+                color: fill,
+                transparent: true,
+                opacity: tile.kind === 'checkpoint' && tile.visited ? 0.22 : 0.44,
+                depthWrite: false,
+              });
+          const pad = new THREE.Mesh(padGeo, padMat);
+          pad.position.set(
+            tile.x + tile.width / 2 - halfW,
+            isGoal ? 0.85 : 0.7,
+            tile.y + tile.height / 2 - halfH
+          );
+          tileGroup.add(pad);
+
+          const frameGeo = new THREE.EdgesGeometry(new THREE.BoxGeometry(tile.width, isGoal ? 2.2 : 1.5, tile.height));
+          const frameMat = new THREE.LineBasicMaterial({ color: border });
+          const frame = new THREE.LineSegments(frameGeo, frameMat);
+          frame.position.set(
+            tile.x + tile.width / 2 - halfW,
+            isGoal ? 1.15 : 0.9,
+            tile.y + tile.height / 2 - halfH
+          );
+          tileGroup.add(frame);
+
+          if (isGoal) {
+            const outerR = Math.min(tile.width, tile.height) * 0.4;
+            const ringGeo = new THREE.RingGeometry(outerR * 0.8, outerR, 32);
+            ringGeo.rotateX(-Math.PI / 2);
+            const ringMat = new THREE.MeshBasicMaterial({
+              color: 0xe0f2fe,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.9,
+              depthWrite: false,
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.set(
+              tile.x + tile.width / 2 - halfW,
+              1.1,
+              tile.y + tile.height / 2 - halfH
+            );
+            tileGroup.add(ring);
+
+            // 4 corner goal beacon pylons so GOAL stands out clearly in 3D view
+            const inset = 6;
+            const cx = tile.x + tile.width / 2 - halfW;
+            const cz = tile.y + tile.height / 2 - halfH;
+            const hx = Math.max(8, tile.width / 2 - inset);
+            const hz = Math.max(8, tile.height / 2 - inset);
+            const corners: Array<[number, number]> = [
+              [cx - hx, cz - hz],
+              [cx + hx, cz - hz],
+              [cx - hx, cz + hz],
+              [cx + hx, cz + hz],
+            ];
+            for (const [px, pz] of corners) {
+              const postGeo = new THREE.CylinderGeometry(2.8, 3.6, 14, 10);
+              const postMat = new THREE.MeshBasicMaterial({ color: 0x67e8f9 });
+              const post = new THREE.Mesh(postGeo, postMat);
+              post.position.set(px, 7, pz);
+              tileGroup.add(post);
+            }
+          } else if (tile.kind === 'checkpoint') {
+            const ringR = Math.min(tile.width, tile.height) * 0.3;
+            const ringGeo = new THREE.RingGeometry(ringR * 0.72, ringR, 28);
+            ringGeo.rotateX(-Math.PI / 2);
+            const ringMat = new THREE.MeshBasicMaterial({
+              color: border,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: tile.visited ? 0.3 : 0.85,
+              depthWrite: false,
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.position.set(
+              tile.x + tile.width / 2 - halfW,
+              1.05,
+              tile.y + tile.height / 2 - halfH
+            );
+            tileGroup.add(ring);
+          }
+        }
+      }
 
       // Sync Obstacles if changed
       const obsSig = JSON.stringify(st.arena.obstacles);
@@ -893,6 +1081,69 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
         }
       }
 
+      // Sync Learning Mode Targets / Balloons
+      const nowBob = performance.now() * 0.004;
+      const activeTargetIds = new Set<string>();
+      for (const tgt of st.arena.targets ?? []) {
+        if (tgt.popped) continue;
+        activeTargetIds.add(tgt.id);
+        let vis = targetGroups.get(tgt.id);
+        if (!vis) {
+          const group = new THREE.Group();
+          const col = new THREE.Color(tgt.color ?? (tgt.kind === 'ram_balloon' ? '#ec4899' : '#f43f5e'));
+          const baseRingGeo = new THREE.RingGeometry(tgt.radius * 0.65, tgt.radius * 0.98, 24);
+          baseRingGeo.rotateX(-Math.PI / 2);
+          const baseRingMat = new THREE.MeshBasicMaterial({
+            color: col,
+            transparent: true,
+            opacity: tgt.kind === 'ram_balloon' ? 0.75 : 0.45,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          });
+          const baseRing = new THREE.Mesh(baseRingGeo, baseRingMat);
+          baseRing.position.y = 0.95;
+          group.add(baseRing);
+
+          const baseY = tgt.kind === 'ram_balloon' ? tgt.radius * 0.95 + 4 : 28;
+          const stringGeo = new THREE.CylinderGeometry(0.9, 0.9, baseY, 6);
+          const stringMat = new THREE.MeshBasicMaterial({ color: 0xe2e8f0 });
+          const stringMesh = new THREE.Mesh(stringGeo, stringMat);
+          stringMesh.position.y = baseY / 2;
+          group.add(stringMesh);
+
+          const sphereGeo = new THREE.SphereGeometry(tgt.radius * 0.85, 18, 14);
+          const sphereMat = new THREE.MeshStandardMaterial({
+            color: col,
+            emissive: col,
+            emissiveIntensity: 0.25,
+            roughness: 0.28,
+            metalness: 0.08,
+          });
+          const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+          sphere.position.y = baseY;
+          sphere.castShadow = true;
+          group.add(sphere);
+
+          scene.add(group);
+          vis = { group, sphere, baseY, phase: (tgt.x + tgt.y) * 0.02 };
+          targetGroups.set(tgt.id, vis);
+        }
+        vis.group.position.set(tgt.x - halfW, 0, tgt.y - halfH);
+        vis.sphere.position.y = vis.baseY + Math.sin(nowBob + vis.phase) * 2.5;
+      }
+      for (const [id, vis] of targetGroups.entries()) {
+        if (!activeTargetIds.has(id)) {
+          scene.remove(vis.group);
+          vis.group.traverse((obj) => {
+            if (obj instanceof THREE.Mesh) {
+              obj.geometry.dispose();
+              (obj.material as THREE.Material).dispose();
+            }
+          });
+          targetGroups.delete(id);
+        }
+      }
+
       // Camera Modes
       const mode = cameraModeRef.current;
       const targetPos = new THREE.Vector3();
@@ -953,6 +1204,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerUp);
       domEl.removeEventListener('wheel', onWheel);
+      goalTileTexture?.dispose();
       renderer.dispose();
     };
   }, []);
@@ -1010,6 +1262,52 @@ const BattleCanvas2DFallback: React.FC<{
       ctx.stroke();
     }
 
+    // Floor Tiles
+    for (const tile of battleState.arena.tiles ?? []) {
+      const { hex, label } = resolveTileColors(tile);
+      ctx.save();
+      ctx.globalAlpha = tile.kind === 'checkpoint' && tile.visited ? 0.22 : tile.kind === 'goal' ? 0.52 : 0.44;
+      ctx.fillStyle = hex;
+      ctx.fillRect(tile.x, tile.y, tile.width, tile.height);
+      if (tile.kind === 'goal') {
+        const checkerSize = 16;
+        ctx.globalAlpha = 0.78;
+        for (let sx = tile.x; sx < tile.x + tile.width - 1; sx += checkerSize) {
+          for (let sy = tile.y; sy < tile.y + tile.height - 1; sy += checkerSize) {
+            const onEdge =
+              sx === tile.x ||
+              sy === tile.y ||
+              sx + checkerSize >= tile.x + tile.width ||
+              sy + checkerSize >= tile.y + tile.height;
+            if (!onEdge) continue;
+            const ix = Math.floor((sx - tile.x) / checkerSize);
+            const iy = Math.floor((sy - tile.y) / checkerSize);
+            if ((ix + iy) % 2 === 0) {
+              ctx.fillStyle = '#f8fafc';
+              ctx.fillRect(
+                sx,
+                sy,
+                Math.min(checkerSize, tile.x + tile.width - sx),
+                Math.min(checkerSize, tile.y + tile.height - sy)
+              );
+            }
+          }
+        }
+      }
+      ctx.globalAlpha = 0.92;
+      ctx.strokeStyle = tile.kind === 'goal' ? '#67e8f9' : hex;
+      ctx.lineWidth = tile.kind === 'goal' ? 3 : 2.5;
+      ctx.strokeRect(tile.x, tile.y, tile.width, tile.height);
+      if (label) {
+        ctx.fillStyle = '#f8fafc';
+        ctx.font = 'bold 14px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, tile.x + tile.width / 2, tile.y + tile.height / 2);
+      }
+      ctx.restore();
+    }
+
     // Obstacles
     ctx.fillStyle = '#334155';
     ctx.strokeStyle = '#64748b';
@@ -1024,6 +1322,20 @@ const BattleCanvas2DFallback: React.FC<{
       ctx.beginPath();
       ctx.arc(mine.x, mine.y, 7, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    // Target Balloons
+    for (const tgt of battleState.arena.targets ?? []) {
+      if (tgt.popped) continue;
+      ctx.save();
+      ctx.fillStyle = tgt.color ?? (tgt.kind === 'ram_balloon' ? '#ec4899' : '#f43f5e');
+      ctx.beginPath();
+      ctx.arc(tgt.x, tgt.y, tgt.radius * 0.85, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
     }
 
     // Tanks

@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { transpileProgramToLines } from '../../components/GridEditor';
 import { CHIP_DEFINITIONS } from '../../data/chips';
+import { LEARNING_MISSIONS, resolveMissionVariant } from '../../data/learningMissions';
 import { CHASSIS_SPECS, CPU_SPECS, cpuIdForGridSize } from '../../data/parts';
 import {
   buildProgram,
@@ -255,6 +256,7 @@ describe('Deterministic 3-Axis Simulator & Gun Heat', () => {
         maxTicks: stage.maxTicks,
         playerSpawn: stage.playerSpawn,
         enemySpawn: stage.enemySpawn,
+        enemyHpScale: stage.enemyHpScale,
       });
       for (let i = 0; i < (stage.maxTicks ?? 3600); i++) {
         stepBattleTick(state);
@@ -439,10 +441,15 @@ def on_tick():
     }
   });
 
-  it('fits every Tutorial Stage into 4x4 (St.1-18) with matching enemy sizes and clean Python round-trip', () => {
-    expect(TUTORIAL_STAGES.length).toBe(18);
+  it('fits every Development Training Stage (Parts 1-4: St.1-19) into expected CPU grids with clean Python round-trip', () => {
+    expect(TUTORIAL_STAGES.length).toBe(19);
     for (const stage of TUTORIAL_STAGES) {
-      const expectedSize = 4;
+      const expectedSize =
+        stage.number <= 6 || (stage.number >= 11 && stage.number <= 13)
+          ? 4
+          : stage.number >= 18
+            ? 8
+            : 6;
       const expectedCpu = cpuIdForGridSize(expectedSize);
       const maxBlocks = expectedSize * expectedSize;
 
@@ -1860,5 +1867,814 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
       }
     }
   });
+
+  it('executes blocking wait=True turns, stop() (act_halt), and learning-mode condition chips accurately', () => {
+    // 1. Sequential move -> turn_body(delta=90, wait=True) -> move -> stop()
+    const seqSrc = [
+      'def on_tick():',
+      '  move(speed=100, duration=0.2)',
+      '  turn_body(mode="delta", angle=90, wait=True)',
+      '  move(speed=100, duration=0.25)',
+      '  stop()',
+    ].join('\n');
+    const seqParsed = parsePythonSourceToProgram(seqSrc, 6, 'relative');
+    expect(seqParsed.ok).toBe(true);
+    if (!seqParsed.ok) return;
+
+    const seqBp: TankBlueprint = {
+      ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'compact_6x6' },
+      program: seqParsed.program,
+    };
+    let battle = createBattleState({
+      player: seqBp,
+      enemy: ENEMY_DUMMY,
+      arenaSize: 'medium',
+      playerSpawn: { x: 400, y: 600, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+      enemySpawn: { x: 950, y: 600, bodyAngle: 180, turretAngle: 180, radarAngle: 180 },
+    });
+
+    let sawTurnWait = false;
+    let sawMoveStopWhileWaiting = false;
+    let haltedTick = -1;
+    let headingAfterTurn = -1;
+
+    for (let t = 0; t < 80; t++) {
+      battle = stepBattleTick(battle);
+      const p = battle.tanks[0];
+      if (p.turnState) {
+        sawTurnWait = true;
+        if (p.lastCommands.targetSpeedRatio === 0) {
+          sawMoveStopWhileWaiting = true;
+        }
+      } else if (sawTurnWait && headingAfterTurn < 0) {
+        headingAfterTurn = p.bodyAngle;
+      }
+      if (p.halted && haltedTick < 0) {
+        haltedTick = battle.tick;
+        // Once halted, subsequent tick should execute 0 CPU steps and command 0 speed
+        battle = stepBattleTick(battle);
+        expect(battle.tanks[0].halted).toBe(true);
+        expect(battle.tanks[0].trace.stepsUsed).toBe(0);
+        expect(battle.tanks[0].lastCommands.targetSpeedRatio).toBe(0);
+        break;
+      }
+    }
+
+    expect(sawTurnWait).toBe(true);
+    expect(sawMoveStopWhileWaiting).toBe(true);
+    expect(Math.abs(normalizeAngle180(headingAfterTurn - 90))).toBeLessThanOrEqual(0.5);
+    expect(haltedTick).toBeGreaterThan(0);
+    // Tank moved north (~y < 600) first, then turned east (90 deg) and moved east (~x > 400)
+    expect(battle.tanks[0].y).toBeLessThan(600);
+    expect(battle.tanks[0].x).toBeGreaterThan(400);
+
+    // 2. Cumulative delta +270 deg (>180) and -90 deg without wrapping shortcut
+    const runDeltaCheck = (deltaDeg: number): number => {
+      const pRes = parsePythonSourceToProgram(
+        `def on_tick():\n  turn_body(mode="delta", angle=${deltaDeg}, wait=True)\n  stop()`,
+        4,
+        'relative'
+      );
+      expect(pRes.ok).toBe(true);
+      if (!pRes.ok) return 0;
+      const bp: TankBlueprint = {
+        ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+        assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'mini_4x4' },
+        program: pRes.program,
+      };
+      let st = createBattleState({
+        player: bp,
+        enemy: ENEMY_DUMMY,
+        arenaSize: 'medium',
+        playerSpawn: { x: 400, y: 500, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+      });
+      let rotatedAccum = 0;
+      let prev = st.tanks[0].bodyAngle;
+      for (let t = 0; t < 160 && !st.tanks[0].halted; t++) {
+        st = stepBattleTick(st);
+        const cur = st.tanks[0].bodyAngle;
+        rotatedAccum += normalizeAngle180(cur - prev);
+        prev = cur;
+      }
+      expect(st.tanks[0].halted).toBe(true);
+      return rotatedAccum;
+    };
+    expect(Math.abs(runDeltaCheck(270) - 270)).toBeLessThanOrEqual(1.0);
+    expect(Math.abs(runDeltaCheck(-90) - -90)).toBeLessThanOrEqual(1.0);
+
+    // 3. Preserves loopStack (for i in range(2)) and callStack (sub_a) across turnState wait
+    const loopSubProg = buildProgram(6, 'relative', [
+      { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+      { x: 1, y: 0, type: 'loop_for', params: { iterations: 2 }, yes: { x: 1, y: 1 }, no: { x: 2, y: 0 } },
+      { x: 1, y: 1, type: 'sub_call', params: { sub: 'A' }, next: null },
+      { x: 2, y: 0, type: 'act_halt', params: {}, next: null },
+      { x: 4, y: 0, type: 'sub_def', params: { sub: 'A' }, next: { x: 4, y: 1 } },
+      { x: 4, y: 1, type: 'act_turn_body', params: { mode: 'delta', angle: 90, wait: 1 }, next: null },
+    ]);
+    let loopBattle = createBattleState({
+      player: {
+        ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+        assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'compact_6x6' },
+        program: loopSubProg,
+      },
+      enemy: ENEMY_DUMMY,
+      arenaSize: 'medium',
+      playerSpawn: { x: 400, y: 500, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+    });
+    for (let t = 0; t < 120 && !loopBattle.tanks[0].halted; t++) {
+      loopBattle = stepBattleTick(loopBattle);
+    }
+    expect(loopBattle.tanks[0].halted).toBe(true);
+    expect(Math.abs(normalizeAngle180(loopBattle.tanks[0].bodyAngle - 180))).toBeLessThanOrEqual(1.0);
+
+    // 4. act_turn_turret(wait=True) waits before firing; destroyer fixedTurret does not block
+    const turretWaitSrc = [
+      'def on_tick():',
+      '  turn_turret(mode="delta", angle=90, wait=True)',
+      '  fire_main(power="normal")',
+      '  stop()',
+    ].join('\n');
+    const twParsed = parsePythonSourceToProgram(turretWaitSrc, 4, 'relative');
+    expect(twParsed.ok).toBe(true);
+    if (twParsed.ok) {
+      let twBattle = createBattleState({
+        player: {
+          ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+          assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'mini_4x4' },
+          program: twParsed.program,
+        },
+        enemy: ENEMY_DUMMY,
+        arenaSize: 'medium',
+        playerSpawn: { x: 400, y: 500, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+      });
+      for (let t = 0; t < 40 && !twBattle.tanks[0].halted; t++) {
+        twBattle = stepBattleTick(twBattle);
+      }
+      expect(twBattle.tanks[0].halted).toBe(true);
+      expect(twBattle.tanks[0].stats.shotsFired).toBe(1);
+      expect(Math.abs(normalizeAngle180(twBattle.tanks[0].turretAngle - 90))).toBeLessThanOrEqual(0.5);
+
+      // Fixed-turret destroyer skips turret wait cleanly in 1 tick without blocking
+      let fixedBattle = createBattleState({
+        player: {
+          ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+          assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'destroyer', cpu: 'mini_4x4' },
+          program: twParsed.program,
+        },
+        enemy: ENEMY_DUMMY,
+        arenaSize: 'medium',
+        playerSpawn: { x: 400, y: 500, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+      });
+      fixedBattle = stepBattleTick(fixedBattle);
+      expect(fixedBattle.tanks[0].turnState).toBeNull();
+      expect(fixedBattle.tanks[0].halted).toBe(true);
+    }
+
+    // 5. cond_floor_tile & cond_mission_state evaluation + learningOnly visibility flags
+    expect(CHIP_DEFINITIONS.cond_floor_tile.learningOnly).toBe(true);
+    expect(CHIP_DEFINITIONS.cond_mission_state.learningOnly).toBe(true);
+    expect(CHIP_DEFINITIONS.act_halt.learningOnly).toBeUndefined();
+
+    const sensorProg = buildProgram(6, 'relative', [
+      { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+      { x: 1, y: 0, type: 'cond_floor_tile', params: { target: 'goal' }, yes: { x: 1, y: 1 }, no: { x: 2, y: 0 } },
+      { x: 1, y: 1, type: 'mode_set', params: { mode: 2 }, next: null },
+      { x: 2, y: 0, type: 'cond_mission_state', params: { check: 'targets_remaining' }, yes: { x: 2, y: 1 }, no: { x: 3, y: 0 } },
+      { x: 2, y: 1, type: 'mode_set', params: { mode: 1 }, next: null },
+      { x: 3, y: 0, type: 'act_halt', params: {}, next: null },
+    ]);
+    const sensorBattle = createBattleState({
+      player: {
+        ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+        assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'compact_6x6' },
+        program: sensorProg,
+      },
+      enemy: ENEMY_DUMMY,
+      arenaSize: 'small',
+      playerSpawn: { x: 150, y: 150, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      tiles: [
+        { id: 't_blue', kind: 'color', color: 'blue', x: 100, y: 100, width: 100, height: 100 },
+        { id: 't_cp_done', kind: 'checkpoint', x: 100, y: 100, width: 100, height: 100, visited: true },
+        { id: 't_goal', kind: 'goal', x: 500, y: 100, width: 100, height: 100 },
+      ],
+      targets: [
+        { id: 'b1', kind: 'shoot_balloon', x: 600, y: 200, radius: 18, hp: 10, maxHp: 10, popped: false },
+      ],
+    });
+    const pt = sensorBattle.tanks[0];
+    // At (150, 150): not on goal, 1 target remaining -> sets mode = 1
+    runTankChipProgram(pt, 1, sensorBattle.arena, sensorBattle.projectiles, sensorBattle.tanks);
+    expect(pt.mode).toBe(1);
+    // Pop target -> targets_remaining false -> reaches act_halt
+    sensorBattle.arena.targets![0].popped = true;
+    runTankChipProgram(pt, 2, sensorBattle.arena, sensorBattle.projectiles, sensorBattle.tanks);
+    expect(pt.halted).toBe(true);
+    // Reset halted and move onto goal tile -> cond_floor_tile('goal') true -> sets mode = 2
+    pt.halted = false;
+    pt.x = 550;
+    pt.y = 150;
+    runTankChipProgram(pt, 3, sensorBattle.arena, sensorBattle.projectiles, sensorBattle.tanks);
+    expect(pt.mode).toBe(2);
+  });
+
+  it('supports cond_proximity(mode="front"), act_fire(wait=True), and edge-triggered cond_floor_tile(edge=True)', () => {
+    // 1. cond_proximity(mode="front"): stationary forward-only ray check (ignores side corridor walls)
+    const frontProg = buildProgram(4, 'relative', [
+      { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+      { x: 1, y: 0, type: 'cond_proximity', params: { mode: 'front', target: 'walls', dist: 80 }, yes: { x: 1, y: 1 }, no: { x: 2, y: 0 } },
+      { x: 1, y: 1, type: 'mode_set', params: { mode: 1 }, next: null },
+      { x: 2, y: 0, type: 'mode_set', params: { mode: 2 }, next: null },
+    ]);
+    const corridorWallRight = { id: 'side_r', x: 335, y: 100, width: 40, height: 400 };
+    const frontWallAhead = { id: 'front_obs', x: 250, y: 120, width: 100, height: 30 };
+    const proxBattle = createBattleState({
+      player: {
+        ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+        assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'mini_4x4' },
+        program: frontProg,
+      },
+      enemy: ENEMY_DUMMY,
+      arenaSize: 'small',
+      obstacles: [corridorWallRight, frontWallAhead],
+      playerSpawn: { x: 300, y: 300, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+    });
+    const pt = proxBattle.tanks[0];
+    // Side wall is only 15px clearance to the right (335 - (300+20)), front wall is 130px ahead (>80) -> mode = 2 (False!)
+    runTankChipProgram(pt, 1, proxBattle.arena, proxBattle.projectiles, proxBattle.tanks);
+    expect(pt.mode).toBe(2);
+    // Move closer to front wall (y=210 -> clearance 210-150-20 = 40px <= 80) -> mode = 1 (True!)
+    pt.y = 210;
+    runTankChipProgram(pt, 2, proxBattle.arena, proxBattle.projectiles, proxBattle.tanks);
+    expect(pt.mode).toBe(1);
+
+    // 2. act_fire(wait=True) inside for loop fires exact 2 shots despite turn finishing before gun cooldown
+    const fireWaitSrc = [
+      'def on_tick():',
+      '  for i in range(2):',
+      '    turn_turret(mode="delta", angle=90, wait=True)',
+      '    fire_main(power="normal", wait=True)',
+      '  stop()',
+    ].join('\n');
+    const fwParsed = parsePythonSourceToProgram(fireWaitSrc, 6, 'relative');
+    expect(fwParsed.ok).toBe(true);
+    if (fwParsed.ok) {
+      let fwBattle = createBattleState({
+        player: {
+          ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+          assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', mainGun: 'standard', cpu: 'compact_6x6' },
+          program: fwParsed.program,
+        },
+        enemy: ENEMY_DUMMY,
+        arenaSize: 'medium',
+        playerSpawn: { x: 500, y: 500, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+      });
+      let sawFireWait = false;
+      for (let t = 0; t < 120 && !fwBattle.tanks[0].halted; t++) {
+        fwBattle = stepBattleTick(fwBattle);
+        if (fwBattle.tanks[0].fireState) sawFireWait = true;
+      }
+      expect(sawFireWait).toBe(true);
+      expect(fwBattle.tanks[0].halted).toBe(true);
+      expect(fwBattle.tanks[0].stats.shotsFired).toBe(2);
+      expect(Math.abs(normalizeAngle180(fwBattle.tanks[0].turretAngle - 180))).toBeLessThanOrEqual(0.5);
+    }
+
+    // 3. cond_floor_tile(edge=True) fires once on entry, suppresses while staying, and resets upon leaving
+    const edgeProg = buildProgram(4, 'relative', [
+      { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+      { x: 1, y: 0, type: 'cond_floor_tile', params: { target: 'blue', edge: 1 }, yes: { x: 1, y: 1 }, no: null },
+      { x: 1, y: 1, type: 'counter_op', params: { reg: 'A', op: 'inc', value: 1 }, next: null },
+    ]);
+    const edgeBattle = createBattleState({
+      player: {
+        ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+        assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4' },
+        program: edgeProg,
+      },
+      enemy: ENEMY_DUMMY,
+      arenaSize: 'small',
+      playerSpawn: { x: 150, y: 150, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      tiles: [
+        { id: 't_b1', kind: 'color', color: 'blue', x: 100, y: 100, width: 100, height: 100 },
+        { id: 't_b2', kind: 'color', color: 'blue', x: 300, y: 100, width: 100, height: 100 },
+      ],
+    });
+    const et = edgeBattle.tanks[0];
+    // Tick 1: enters t_b1 -> A becomes 1
+    runTankChipProgram(et, 1, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    expect(et.counters.A).toBe(1);
+    // Ticks 2 & 3: still on t_b1 -> A stays 1
+    runTankChipProgram(et, 2, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    runTankChipProgram(et, 3, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    expect(et.counters.A).toBe(1);
+    // Step onto t_b2 (different tile id) -> increments to 2
+    et.x = 350;
+    runTankChipProgram(et, 4, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    expect(et.counters.A).toBe(2);
+    // Leave tile bounds -> clears latch, then re-entering t_b2 increments to 3
+    et.x = 250;
+    runTankChipProgram(et, 5, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    et.x = 350;
+    runTankChipProgram(et, 6, edgeBattle.arena, edgeBattle.projectiles, edgeBattle.tanks);
+    expect(et.counters.A).toBe(3);
+  });
+
+  it('completes all Lesson 1 learning missions (1-1 through 1-6) with starter solutions and verifies fail guards', () => {
+    const l1Missions = LEARNING_MISSIONS.filter((m) => m.lessonNumber === 1);
+    expect(l1Missions).toHaveLength(6);
+
+    for (const mission of l1Missions) {
+      // Grid fit & Python round-trip check
+      const fit = validateGridBlockFit(
+        mission.playerStarter.program.cells,
+        mission.playerStarter.program.gridSize
+      );
+      expect(fit.valid, `${mission.id} grid fit`).toBe(true);
+      const src = transpileProgramToLines(
+        mission.playerStarter.program,
+        mission.playerStarter.name,
+        false,
+        mission.playerStarter.assembly.radar,
+        mission.playerStarter.assembly.chassis,
+        mission.playerStarter.assembly.mainGun,
+        mission.playerStarter.assembly.subWeapon
+      )
+        .map((l) => l.text)
+        .join('\n');
+      const reparsed = parsePythonSourceToProgram(
+        src,
+        mission.playerStarter.program.gridSize,
+        mission.playerStarter.program.coordinateMode
+      );
+      expect(reparsed.ok, `${mission.id} Python reparse`).toBe(true);
+
+      // Run simulation until finished
+      let st = createBattleState({
+        player: mission.playerStarter,
+        enemies: mission.enemies ?? [],
+        arenaSize: mission.arenaSize,
+        obstacles: mission.obstacles,
+        tiles: mission.tiles,
+        targets: mission.targets,
+        learningRule: mission.goalRule,
+        maxTicks: mission.maxTicks,
+        playerSpawn: mission.playerSpawn,
+        enemySpawns: mission.enemySpawns,
+      });
+
+      while (st.status === 'running' && st.tick < mission.maxTicks) {
+        st = stepBattleTick(st);
+      }
+      expect(st.status, `${mission.id} status`).toBe('finished');
+      expect(st.winnerId, `${mission.id} winner`).toBe('player');
+      expect(st.winType, `${mission.id} winType (${st.endReason})`).toBe('mission');
+      expect(st.tanks[0].stats.wallHits, `${mission.id} wallHits`).toBe(0);
+    }
+
+    // Fail guards on 1-1:
+    // (A) Without stop(), tank overshoots goal and hits east wall -> defeat
+    const m1 = l1Missions[0];
+    const noStopBp: TankBlueprint = {
+      ...m1.playerStarter,
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 3.0 }, next: null },
+      ]),
+    };
+    let noStopSt = createBattleState({
+      player: noStopBp,
+      arenaSize: m1.arenaSize,
+      obstacles: m1.obstacles,
+      tiles: m1.tiles,
+      targets: m1.targets,
+      learningRule: m1.goalRule,
+      maxTicks: m1.maxTicks,
+      playerSpawn: m1.playerSpawn,
+    });
+    while (noStopSt.status === 'running' && noStopSt.tick < m1.maxTicks) {
+      noStopSt = stepBattleTick(noStopSt);
+    }
+    expect(noStopSt.status).toBe('finished');
+    expect(noStopSt.winType).toBe('defeat');
+
+    // (B) Stopping too early fails goal check promptly -> defeat
+    const earlyStopBp: TankBlueprint = {
+      ...m1.playerStarter,
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0.5 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_halt', params: {}, next: null },
+      ]),
+    };
+    let earlySt = createBattleState({
+      player: earlyStopBp,
+      arenaSize: m1.arenaSize,
+      obstacles: m1.obstacles,
+      tiles: m1.tiles,
+      targets: m1.targets,
+      learningRule: m1.goalRule,
+      maxTicks: m1.maxTicks,
+      playerSpawn: m1.playerSpawn,
+    });
+    while (earlySt.status === 'running' && earlySt.tick < m1.maxTicks) {
+      earlySt = stepBattleTick(earlySt);
+    }
+    expect(earlySt.status).toBe('finished');
+    expect(earlySt.winType).toBe('defeat');
+    expect(earlySt.endReason).toContain('stop()');
+  });
+
+  it('completes all Lesson 2 learning missions (2-1 through 2-6) across all variants and enforces anti-hardcode checks', () => {
+    const l2Missions = LEARNING_MISSIONS.filter((m) => m.lessonNumber === 2);
+    expect(l2Missions).toHaveLength(6);
+
+    for (const mission of l2Missions) {
+      const fit = validateGridBlockFit(
+        mission.playerStarter.program.cells,
+        mission.playerStarter.program.gridSize
+      );
+      expect(fit.valid, `${mission.id} grid fit`).toBe(true);
+
+      const src = transpileProgramToLines(
+        mission.playerStarter.program,
+        mission.playerStarter.name,
+        false,
+        mission.playerStarter.assembly.radar,
+        mission.playerStarter.assembly.chassis,
+        mission.playerStarter.assembly.mainGun,
+        mission.playerStarter.assembly.subWeapon
+      )
+        .map((l) => l.text)
+        .join('\n');
+      const reparsed = parsePythonSourceToProgram(
+        src,
+        mission.playerStarter.program.gridSize,
+        mission.playerStarter.program.coordinateMode
+      );
+      expect(reparsed.ok, `${mission.id} Python reparse`).toBe(true);
+
+      const varCount = mission.variants && mission.variants.length > 0 ? mission.variants.length : 1;
+      for (let vIdx = 0; vIdx < varCount; vIdx++) {
+        const resolved = resolveMissionVariant(mission, vIdx);
+        let st = createBattleState({
+          player: mission.playerStarter,
+          enemies: resolved.enemies,
+          arenaSize: resolved.arenaSize,
+          obstacles: resolved.obstacles,
+          tiles: resolved.tiles,
+          targets: resolved.targets,
+          learningRule: mission.goalRule,
+          maxTicks: mission.maxTicks,
+          playerSpawn: resolved.playerSpawn,
+          enemySpawns: resolved.enemySpawns,
+        });
+        while (st.status === 'running' && st.tick < mission.maxTicks) {
+          st = stepBattleTick(st);
+        }
+        const dbg = `pos=(${Math.round(st.tanks[0].x)},${Math.round(st.tanks[0].y)},ang=${Math.round(st.tanks[0].bodyAngle)}) halted=${st.tanks[0].halted} cps=${(st.arena.tiles ?? []).filter((t) => t.kind === 'checkpoint').map((t) => `${t.id}:${Boolean(t.visited)}`).join(',')} tgts=${(st.arena.targets ?? []).map((t) => `${t.id}:${Boolean(t.popped)}`).join(',')}`;
+        expect(st.status, `${mission.id} var=${vIdx} status ${dbg}`).toBe('finished');
+        expect(st.winnerId, `${mission.id} var=${vIdx} winner (${st.endReason}) ${dbg}`).toBe('player');
+        expect(st.winType, `${mission.id} var=${vIdx} winType`).toBe('mission');
+        expect(st.tanks[0].stats.wallHits, `${mission.id} var=${vIdx} wallHits`).toBe(0);
+      }
+    }
+
+    // Anti-hardcode verification on 2-1: a fixed duration turn made for Pattern A fails on Pattern B
+    const m21 = l2Missions[0];
+    const hardcoded21: TankBlueprint = {
+      ...m21.playerStarter,
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 2.2 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_turn_body', params: { mode: 'delta', angle: -90, wait: 1 }, next: { x: 3, y: 0 } },
+        { x: 3, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 4.5 }, next: null },
+      ]),
+    };
+    const var21b = resolveMissionVariant(m21, 1);
+    let failHardSt = createBattleState({
+      player: hardcoded21,
+      arenaSize: var21b.arenaSize,
+      obstacles: var21b.obstacles,
+      tiles: var21b.tiles,
+      targets: var21b.targets,
+      learningRule: m21.goalRule,
+      maxTicks: m21.maxTicks,
+      playerSpawn: var21b.playerSpawn,
+    });
+    while (failHardSt.status === 'running' && failHardSt.tick < m21.maxTicks) {
+      failHardSt = stepBattleTick(failHardSt);
+    }
+    expect(failHardSt.status).toBe('finished');
+    expect(failHardSt.winType).toBe('defeat');
+  });
 });
+
+describe('Learning Mode Lesson 3 missions (3-1 to 3-6)', () => {
+  const l3Missions = LEARNING_MISSIONS.filter((m) => m.lessonNumber === 3);
+
+  function runLearningMissionSimulation(
+    mission: (typeof LEARNING_MISSIONS)[number],
+    bp: TankBlueprint,
+    variantIndex = 0
+  ) {
+    const resolved = resolveMissionVariant(mission, variantIndex);
+    let state = createBattleState({
+      player: bp,
+      enemies: resolved.enemies,
+      arenaSize: resolved.arenaSize,
+      obstacles: resolved.obstacles,
+      tiles: resolved.tiles,
+      targets: resolved.targets,
+      learningRule: mission.goalRule,
+      maxTicks: mission.maxTicks,
+      playerSpawn: resolved.playerSpawn,
+      enemySpawns: resolved.enemySpawns,
+    });
+    for (let i = 0; i < mission.maxTicks && state.status !== 'finished'; i += 1) {
+      state = stepBattleTick(state);
+    }
+    return state;
+  }
+
+  it('provides 6 structured Lesson 3 missions (3-1 to 3-6) on 6x6 CPU that round-trip Python', () => {
+    expect(l3Missions.map((m) => m.missionCode)).toEqual(['3-1', '3-2', '3-3', '3-4', '3-5', '3-6']);
+    for (const mission of l3Missions) {
+      expect(mission.playerStarter.assembly.cpu).toBe('compact_6x6');
+      expect(mission.playerStarter.program.gridSize).toBe(6);
+
+      const lines = transpileProgramToLines(
+        mission.playerStarter.program,
+        mission.playerStarter.name,
+        false,
+        mission.playerStarter.assembly.radar,
+        mission.playerStarter.assembly.chassis,
+        mission.playerStarter.assembly.mainGun,
+        mission.playerStarter.assembly.subWeapon
+      );
+      const parsed = parsePythonSourceToProgram(
+        lines.map((l) => l.text).join('\n'),
+        mission.playerStarter.program.gridSize,
+        mission.playerStarter.program.coordinateMode
+      );
+      expect(parsed.ok, `${mission.missionCode} parsePython`).toBe(true);
+      if (parsed.ok) {
+        expect(
+          validateGridBlockFit(parsed.program.cells, mission.playerStarter.program.gridSize).valid,
+          `${mission.missionCode} fit 6x6`
+        ).toBe(true);
+        const reparsedBp: TankBlueprint = {
+          ...mission.playerStarter,
+          program: parsed.program,
+        };
+        if (mission.missionCode !== '3-5') {
+          const st = runLearningMissionSimulation(mission, reparsedBp, 0);
+          expect(st.status, `${mission.missionCode} reparsed status`).toBe('finished');
+          expect(st.winType, `${mission.missionCode} reparsed win`).toBe('mission');
+        }
+      }
+      expect(lines.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('auto-clears every Lesson 3 mission and all multi-pattern variants cleanly', () => {
+    for (const mission of l3Missions) {
+      if (mission.missionCode === '3-5') continue; // verified deterministically across both random branches below
+      const variantCount = mission.variants && mission.variants.length > 0 ? mission.variants.length : 1;
+      for (let v = 0; v < variantCount; v += 1) {
+        const finalState = runLearningMissionSimulation(mission, mission.playerStarter, v);
+        expect(finalState.status, `${mission.missionCode} v${v}`).toBe('finished');
+        expect(finalState.winType, `${mission.missionCode} v${v}`).toBe('mission');
+        const player = finalState.tanks.find((t) => t.team === 'player')!;
+        if (mission.goalRule.maxWallHits !== undefined) {
+          expect(player.stats.wallHits, `${mission.missionCode} v${v} wallHits`).toBeLessThanOrEqual(
+            mission.goalRule.maxWallHits
+          );
+        }
+        if (mission.goalRule.requireAllTargetsPopped) {
+          expect(
+            (finalState.arena.targets ?? []).every((t) => t.popped),
+            `${mission.missionCode} v${v} targets popped`
+          ).toBe(true);
+        }
+        if (mission.goalRule.requireAllCheckpoints) {
+          expect(
+            (finalState.arena.tiles ?? []).filter((t) => t.kind === 'checkpoint').every((t) => t.visited),
+            `${mission.missionCode} v${v} checkpoints visited`
+          ).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('enforces variable count threshold on 3-1 (turning early at a == 1 hits ceiling wall)', () => {
+    const m31 = l3Missions.find((m) => m.missionCode === '3-1')!;
+    const earlyBp: TankBlueprint = structuredClone(m31.playerStarter);
+    for (const row of earlyBp.program.cells) {
+      for (const cell of row) {
+        if (cell?.type === 'cond_counter') {
+          cell.params.value = 1;
+        }
+      }
+    }
+    const st = runLearningMissionSimulation(m31, earlyBp, 0);
+    expect(st.winType).not.toBe('mission');
+  });
+
+  it('proves 3-4 lead prediction hits moving balloons whereas direct aiming misses', () => {
+    const m34 = l3Missions.find((m) => m.missionCode === '3-4')!;
+    const directBp: TankBlueprint = structuredClone(m34.playerStarter);
+    for (const row of directBp.program.cells) {
+      for (const cell of row) {
+        if (cell?.type === 'act_aim_enemy') {
+          cell.params.lead = 'direct';
+        }
+      }
+    }
+    const directState = runLearningMissionSimulation(m34, directBp, 0);
+    expect(directState.winType).not.toBe('mission');
+  });
+
+  it('clears 3-5 cleanly via both random.randint(0, 1) left (0) and right (1) detour branches', () => {
+    const m35 = l3Missions.find((m) => m.missionCode === '3-5')!;
+
+    const spyLeft = vi.spyOn(Math, 'random').mockReturnValue(0.05);
+    try {
+      const leftState = runLearningMissionSimulation(m35, m35.playerStarter, 0);
+      expect(leftState.status).toBe('finished');
+      expect(leftState.winType).toBe('mission');
+      const pLeft = leftState.tanks.find((t) => t.team === 'player')!;
+      expect(pLeft.stats.wallHits).toBe(0);
+      expect(pLeft.x).toBeLessThan(340);
+    } finally {
+      spyLeft.mockRestore();
+    }
+
+    const spyRight = vi.spyOn(Math, 'random').mockReturnValue(0.95);
+    try {
+      const rightState = runLearningMissionSimulation(m35, m35.playerStarter, 0);
+      expect(rightState.status).toBe('finished');
+      expect(rightState.winType).toBe('mission');
+      const pRight = rightState.tanks.find((t) => t.team === 'player')!;
+      expect(pRight.stats.wallHits).toBe(0);
+      expect(pRight.x).toBeGreaterThan(460);
+    } finally {
+      spyRight.mockRestore();
+    }
+  });
+});
+
+describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curriculum', () => {
+  const l4Missions = LEARNING_MISSIONS.filter((m) => m.lessonNumber === 4);
+
+  function runMissionSim(
+    mission: (typeof LEARNING_MISSIONS)[number],
+    bp: TankBlueprint,
+    variantIndex = 0
+  ) {
+    const resolved = resolveMissionVariant(mission, variantIndex);
+    let state = createBattleState({
+      player: bp,
+      enemies: resolved.enemies,
+      arenaSize: resolved.arenaSize,
+      obstacles: resolved.obstacles,
+      tiles: resolved.tiles,
+      targets: resolved.targets,
+      learningRule: mission.goalRule,
+      maxTicks: mission.maxTicks,
+      playerSpawn: resolved.playerSpawn,
+      enemySpawns: resolved.enemySpawns,
+    });
+    for (let i = 0; i < mission.maxTicks && state.status !== 'finished'; i += 1) {
+      state = stepBattleTick(state);
+    }
+    return state;
+  }
+
+  it('completes all 24 Learning Mode missions across 4 lessons with expected CPU sizes and Python round-trips', () => {
+    expect(LEARNING_MISSIONS).toHaveLength(24);
+    expect(l4Missions.map((m) => m.missionCode)).toEqual(['4-1', '4-2', '4-3', '4-4', '4-5', '4-6']);
+
+    const expectedSizes: Record<string, number> = {
+      '4-1': 6,
+      '4-2': 8,
+      '4-3': 6,
+      '4-4': 6,
+      '4-5': 8,
+      '4-6': 8,
+    };
+
+    for (const mission of l4Missions) {
+      const expectedGrid = expectedSizes[mission.missionCode];
+      expect(mission.playerStarter.program.gridSize).toBe(expectedGrid);
+      expect(mission.playerStarter.assembly.cpu).toBe(cpuIdForGridSize(expectedGrid as 6 | 8));
+
+      const lines = transpileProgramToLines(
+        mission.playerStarter.program,
+        mission.playerStarter.name,
+        false,
+        mission.playerStarter.assembly.radar,
+        mission.playerStarter.assembly.chassis,
+        mission.playerStarter.assembly.mainGun,
+        mission.playerStarter.assembly.subWeapon
+      );
+      const parsed = parsePythonSourceToProgram(
+        lines.map((l) => l.text).join('\n'),
+        mission.playerStarter.program.gridSize,
+        mission.playerStarter.program.coordinateMode
+      );
+      expect(parsed.ok, `${mission.missionCode} parsePython`).toBe(true);
+      if (parsed.ok) {
+        expect(
+          validateGridBlockFit(parsed.program.cells, mission.playerStarter.program.gridSize).valid,
+          `${mission.missionCode} grid fit`
+        ).toBe(true);
+        const reparsedBp: TankBlueprint = {
+          ...mission.playerStarter,
+          program: parsed.program,
+        };
+        const reparsedState = runMissionSim(mission, reparsedBp, 0);
+        expect(reparsedState.status, `${mission.missionCode} reparsed status`).toBe('finished');
+        expect(reparsedState.winType, `${mission.missionCode} reparsed win`).toBe('mission');
+      }
+    }
+  });
+
+  it('auto-clears all Lesson 4 missions and variants cleanly', () => {
+    for (const mission of l4Missions) {
+      const variantCount = mission.variants && mission.variants.length > 0 ? mission.variants.length : 1;
+      for (let v = 0; v < variantCount; v += 1) {
+        const finalState = runMissionSim(mission, mission.playerStarter, v);
+        const unvisited = (finalState.arena.tiles ?? [])
+          .filter((t) => t.kind === 'checkpoint' && !t.visited)
+          .map((t) => t.id);
+        expect(finalState.status, `${mission.missionCode} v${v} (${finalState.endReason})`).toBe('finished');
+        expect(
+          finalState.winType,
+          `${mission.missionCode} v${v}: ${finalState.endReason}; arena=${finalState.arena.width}x${finalState.arena.height}; unvisited=${unvisited.join(',')}; pos=(${Math.round(finalState.tanks[0]?.x ?? 0)},${Math.round(finalState.tanks[0]?.y ?? 0)})`
+        ).toBe('mission');
+        const player = finalState.tanks.find((t) => t.team === 'player')!;
+        if (mission.goalRule.maxWallHits !== undefined) {
+          expect(player.stats.wallHits, `${mission.missionCode} v${v} wallHits`).toBeLessThanOrEqual(
+            mission.goalRule.maxWallHits
+          );
+        }
+        if (mission.goalRule.requireAllTargetsPopped) {
+          expect(
+            (finalState.arena.targets ?? []).every((t) => t.popped),
+            `${mission.missionCode} v${v} targets popped`
+          ).toBe(true);
+        }
+        if (mission.goalRule.requireAllCheckpoints) {
+          const cps = (finalState.arena.tiles ?? []).filter((t) => t.kind === 'checkpoint');
+          expect(cps.every((t) => t.visited), `${mission.missionCode} v${v} checkpoints visited`).toBe(
+            true
+          );
+          if (mission.missionCode === '4-5') {
+            expect(cps).toHaveLength(8);
+            expect(player.mode).toBe(1);
+          }
+        }
+      }
+    }
+  });
+
+  it('proves 4-3 requires absolute heading (relative delta fails when spawn angle flips)', () => {
+    const m43 = l4Missions.find((m) => m.missionCode === '4-3')!;
+    const relBp: TankBlueprint = structuredClone(m43.playerStarter);
+    relBp.program.coordinateMode = 'relative';
+    for (const row of relBp.program.cells) {
+      for (const cell of row) {
+        if (cell?.type === 'act_turn_body') {
+          cell.params.mode = 'delta';
+        }
+      }
+    }
+    const v1Rel = runMissionSim(m43, relBp, 1);
+    expect(v1Rel.winType).not.toBe('mission');
+  });
+
+  it('proves 4-4 rewards fast lightweight assembly over heavy slow hardware within strict time limit', () => {
+    const m44 = l4Missions.find((m) => m.missionCode === '4-4')!;
+    const fastState = runMissionSim(m44, m44.playerStarter, 0);
+    expect(fastState.winType).toBe('mission');
+    expect(fastState.tick).toBeLessThanOrEqual(m44.maxTicks);
+
+    const heavyBp: TankBlueprint = structuredClone(m44.playerStarter);
+    heavyBp.assembly.chassis = 'heavy';
+    heavyBp.assembly.mainGun = 'cannon';
+    heavyBp.assembly.radar = 'long';
+    for (const row of heavyBp.program.cells) {
+      for (const cell of row) {
+        if (cell?.type === 'act_fire') {
+          cell.params.power = 'heavy';
+        }
+      }
+    }
+    const heavyState = runMissionSim(m44, heavyBp, 0);
+    expect(heavyState.winType).not.toBe('mission');
+  });
+});
+
+
 
