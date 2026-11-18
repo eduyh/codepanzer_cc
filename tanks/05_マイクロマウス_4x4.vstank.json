@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "id": "enemy_patrol",
-  "name": "外周巡回型",
+  "id": "enemy_micromouse",
+  "name": "マイクロマウス",
   "author": "CodePanzer Official",
-  "color": "#ef4444",
+  "color": "#34d399",
   "assembly": {
-    "chassis": "standard",
+    "chassis": "light",
     "mainGun": "standard",
     "radar": "balanced",
-    "cpu": "compact_6x6",
-    "subWeapon": "mine"
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
   },
   "program": {
-    "gridSize": 6,
+    "gridSize": 4,
     "coordinateMode": "relative",
     "cells": [
       [
@@ -31,7 +31,7 @@
           "id": "c_1_1_0",
           "type": "act_move",
           "params": {
-            "speedPercent": 85,
+            "speedPercent": 45,
             "duration": 0
           },
           "next": {
@@ -43,11 +43,9 @@
         },
         {
           "id": "c_2_2_0",
-          "type": "cond_proximity",
+          "type": "cond_enemy_detected",
           "params": {
-            "mode": "approaching",
-            "target": "all",
-            "dist": 120
+            "maxAgeTicks": 15
           },
           "next": null,
           "yes": {
@@ -61,121 +59,15 @@
         },
         {
           "id": "c_3_3_0",
-          "type": "act_turn_body",
-          "params": {
-            "mode": "delta",
-            "angle": 8
-          },
-          "next": {
-            "x": 3,
-            "y": 1
-          },
-          "yes": null,
-          "no": null
-        },
-        null,
-        null
-      ],
-      [
-        null,
-        {
-          "id": "c_6_1_1",
-          "type": "act_turn_radar",
-          "params": {
-            "mode": "delta",
-            "angle": 10
-          },
-          "next": null,
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_5_2_1",
-          "type": "cond_enemy_detected",
-          "params": {
-            "maxAgeTicks": 20
-          },
-          "next": null,
-          "yes": {
-            "x": 2,
-            "y": 2
-          },
-          "no": {
-            "x": 1,
-            "y": 1
-          }
-        },
-        {
-          "id": "c_4_3_1",
-          "type": "act_move",
-          "params": {
-            "speedPercent": 30,
-            "duration": 0
-          },
-          "next": {
-            "x": 2,
-            "y": 1
-          },
-          "yes": null,
-          "no": null
-        },
-        null,
-        null
-      ],
-      [
-        null,
-        null,
-        {
-          "id": "c_7_2_2",
           "type": "act_turn_radar",
           "params": {
             "mode": "lock_enemy",
-            "angle": 60
+            "angle": 0
           },
           "next": {
             "x": 3,
-            "y": 2
+            "y": 1
           },
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_8_3_2",
-          "type": "act_aim_enemy",
-          "params": {
-            "lead": "direct",
-            "offset": 0
-          },
-          "next": {
-            "x": 4,
-            "y": 2
-          },
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_9_4_2",
-          "type": "cond_enemy_sector",
-          "params": {
-            "ref": "turret",
-            "centerAngle": 0,
-            "halfWidth": 14,
-            "maxDist": 900
-          },
-          "next": null,
-          "yes": {
-            "x": 5,
-            "y": 2
-          },
-          "no": null
-        },
-        {
-          "id": "c_10_5_2",
-          "type": "act_fire",
-          "params": {
-            "power": 2
-          },
-          "next": null,
           "yes": null,
           "no": null
         }
@@ -183,25 +75,108 @@
       [
         null,
         null,
-        null,
-        null,
-        null,
-        null
+        {
+          "id": "c_6_2_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 10
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_3_1",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
       ],
       [
         null,
-        null,
-        null,
-        null,
-        null,
-        null
+        {
+          "id": "c_9_1_2",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "left_open",
+            "target": "walls",
+            "dist": 60
+          },
+          "next": null,
+          "yes": {
+            "x": 1,
+            "y": 3
+          },
+          "no": null
+        },
+        {
+          "id": "c_7_2_2",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "walls",
+            "dist": 50
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 3
+          },
+          "no": {
+            "x": 1,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_5_3_2",
+          "type": "act_fire",
+          "params": {
+            "power": "fast"
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
       ],
       [
         null,
-        null,
-        null,
-        null,
-        null,
+        {
+          "id": "c_10_1_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": -10
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_2_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 14
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
         null
       ]
     ]

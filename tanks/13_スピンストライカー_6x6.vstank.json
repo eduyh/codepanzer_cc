@@ -1,0 +1,204 @@
+{
+  "version": 1,
+  "id": "enemy_spin",
+  "name": "スピンストライカー",
+  "author": "CodePanzer Official",
+  "color": "#a855f7",
+  "assembly": {
+    "chassis": "light",
+    "mainGun": "rapid",
+    "radar": "wide",
+    "cpu": "compact_6x6",
+    "subWeapon": "missile"
+  },
+  "program": {
+    "gridSize": 6,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 90,
+            "duration": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "all",
+            "dist": 130
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 0
+          },
+          "no": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 12
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_4_2_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 3
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_5_3_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 24
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        {
+          "id": "c_6_3_2",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 15
+          },
+          "next": null,
+          "yes": {
+            "x": 4,
+            "y": 2
+          },
+          "no": {
+            "x": 3,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_8_4_2",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 5,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_5_2",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": {
+            "x": 5,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        null,
+        null,
+        {
+          "id": "c_7_3_3",
+          "type": "act_turn_turret",
+          "params": {
+            "mode": "delta",
+            "angle": 9
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_10_5_3",
+          "type": "act_sub_weapon",
+          "params": {},
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    ]
+  }
+}

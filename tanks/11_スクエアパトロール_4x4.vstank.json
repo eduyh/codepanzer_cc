@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "id": "enemy_square_patrol",
+  "name": "スクエアパトロール",
+  "author": "CodePanzer Official",
+  "color": "#facc15",
+  "assembly": {
+    "chassis": "standard",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 15
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 0
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_5_1_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 10
+          },
+          "next": {
+            "x": 2,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_6_2_1",
+          "type": "counter_op",
+          "params": {
+            "reg": "A",
+            "op": "inc",
+            "value": 1
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_3_1",
+          "type": "act_fire",
+          "params": {
+            "power": "fast"
+          },
+          "next": {
+            "x": 2,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_9_0_2",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_1_2",
+          "type": "counter_op",
+          "params": {
+            "reg": "A",
+            "op": "set",
+            "value": 0
+          },
+          "next": {
+            "x": 0,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_2_2",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "gte",
+            "value": 60
+          },
+          "next": null,
+          "yes": {
+            "x": 1,
+            "y": 2
+          },
+          "no": {
+            "x": 2,
+            "y": 3
+          }
+        },
+        null
+      ],
+      [
+        {
+          "id": "c_13_0_3",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 0,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_1_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 6
+          },
+          "next": {
+            "x": 0,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_10_2_3",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "lte",
+            "value": 38
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 3
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_11_3_3",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ]
+    ]
+  }
+}

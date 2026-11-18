@@ -3,9 +3,11 @@ import {
   CHASSIS_SPECS,
   CPU_SPECS,
   cpuIdForGridSize,
+  FIRE_POWER_TIERS,
   MAIN_GUN_SPECS,
   RADAR_SPECS,
   SUB_WEAPON_SPECS,
+  tryParseFirePowerInput,
 } from '../data/parts';
 import { clamp } from '../engine/math';
 import {
@@ -106,7 +108,6 @@ export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResu
     bp.color = '#06b6d4';
   }
 
-  const gunSpec = MAIN_GUN_SPECS[assembly.mainGun];
   const isFixedTurret = Boolean(CHASSIS_SPECS[assembly.chassis]?.fixedTurret);
 
   // 2. Program & chip parameter validation & repair
@@ -161,12 +162,8 @@ export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResu
               fixes.push(`(${x},${y}) ${cell.type}.${schema.key} invalid -> ${nextNum}`);
             }
 
-            let minBound = schema.min;
-            let maxBound = schema.max;
-            if (cell.type === 'act_fire' && schema.key === 'power') {
-              minBound = Math.max(minBound ?? gunSpec.minPower, gunSpec.minPower);
-              maxBound = Math.min(maxBound ?? gunSpec.maxPower, gunSpec.maxPower);
-            }
+            const minBound = schema.min;
+            const maxBound = schema.max;
 
             if (minBound !== undefined && nextNum < minBound) {
               fixes.push(`(${x},${y}) ${cell.type}.${schema.key} ${nextNum} -> ${minBound}`);
@@ -177,6 +174,27 @@ export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResu
             }
             repairedParams[schema.key] = nextNum;
           } else if (schema.type === 'select') {
+            if (cell.type === 'act_fire' && schema.key === 'power') {
+              const rawTier = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
+              if (
+                typeof rawTier === 'string' &&
+                (FIRE_POWER_TIERS as readonly string[]).includes(rawTier)
+              ) {
+                repairedParams[schema.key] = rawTier;
+              } else if (rawVal === undefined) {
+                const fbTier = String(fallback ?? 'normal');
+                fixes.push(`(${x},${y}) ${cell.type}.${schema.key} missing -> "${fbTier}"`);
+                repairedParams[schema.key] = fbTier;
+              } else {
+                const mappedTier = tryParseFirePowerInput(rawVal, assembly.mainGun);
+                const nextTier = mappedTier ?? 'normal';
+                fixes.push(
+                  `(${x},${y}) ${cell.type}.${schema.key} "${String(rawVal)}" -> "${nextTier}"`
+                );
+                repairedParams[schema.key] = nextTier;
+              }
+              continue;
+            }
             const str = rawVal === undefined ? String(fallback ?? '') : String(rawVal);
             const validValues = (schema.options ?? []).map((opt) => opt.value);
             if (validValues.length > 0 && !validValues.includes(str)) {

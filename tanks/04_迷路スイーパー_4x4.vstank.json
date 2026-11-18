@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "id": "enemy_shield_defender",
-  "name": "シールドディフェンダー",
+  "id": "enemy_maze_sweeper",
+  "name": "迷路スイーパー",
   "author": "CodePanzer Official",
-  "color": "#3b82f6",
+  "color": "#06b6d4",
   "assembly": {
-    "chassis": "heavy",
+    "chassis": "light",
     "mainGun": "standard",
     "radar": "balanced",
-    "cpu": "compact_6x6",
-    "subWeapon": "shield"
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
   },
   "program": {
-    "gridSize": 6,
+    "gridSize": 4,
     "coordinateMode": "relative",
     "cells": [
       [
@@ -29,9 +29,11 @@
         },
         {
           "id": "c_1_1_0",
-          "type": "cond_incoming_shell",
+          "type": "cond_proximity",
           "params": {
-            "maxDist": 230
+            "mode": "approaching",
+            "target": "walls",
+            "dist": 110
           },
           "next": null,
           "yes": {
@@ -45,168 +47,149 @@
         },
         {
           "id": "c_2_2_0",
-          "type": "cond_sub_ready",
-          "params": {},
+          "type": "cond_proximity",
+          "params": {
+            "mode": "left_closer",
+            "target": "walls",
+            "dist": 150
+          },
           "next": null,
           "yes": {
             "x": 3,
             "y": 0
           },
-          "no": null
-        },
-        {
-          "id": "c_3_3_0",
-          "type": "act_sub_weapon",
-          "params": {},
-          "next": null,
-          "yes": null,
-          "no": null
-        },
-        null,
-        null
-      ],
-      [
-        null,
-        {
-          "id": "c_4_1_1",
-          "type": "cond_proximity",
-          "params": {
-            "mode": "approaching",
-            "target": "all",
-            "dist": 140
-          },
-          "next": null,
-          "yes": {
+          "no": {
             "x": 2,
             "y": 1
-          },
-          "no": {
-            "x": 1,
-            "y": 2
           }
         },
         {
-          "id": "c_5_2_1",
+          "id": "c_3_3_0",
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
             "angle": 12
           },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_5_1_1",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 80,
+            "duration": 0
+          },
           "next": {
-            "x": 2,
+            "x": 1,
             "y": 2
           },
           "yes": null,
           "no": null
         },
-        null,
-        null,
+        {
+          "id": "c_4_2_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": -12
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
         null
       ],
       [
         null,
         {
           "id": "c_6_1_2",
-          "type": "act_move",
-          "params": {
-            "speedPercent": 65,
-            "duration": 0
-          },
-          "next": {
-            "x": 2,
-            "y": 2
-          },
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_7_2_2",
           "type": "cond_enemy_detected",
           "params": {
             "maxAgeTicks": 12
           },
           "next": null,
           "yes": {
-            "x": 3,
+            "x": 2,
             "y": 2
           },
           "no": {
-            "x": 2,
+            "x": 1,
             "y": 3
           }
         },
         {
-          "id": "c_9_3_2",
+          "id": "c_8_2_2",
           "type": "act_turn_radar",
           "params": {
             "mode": "lock_enemy",
             "angle": 60
           },
           "next": {
-            "x": 4,
+            "x": 3,
             "y": 2
           },
           "yes": null,
           "no": null
         },
         {
-          "id": "c_10_4_2",
+          "id": "c_9_3_2",
           "type": "act_aim_enemy",
           "params": {
-            "lead": "lead",
+            "lead": "direct",
             "offset": 0
           },
           "next": {
-            "x": 4,
+            "x": 3,
             "y": 3
           },
           "yes": null,
           "no": null
-        },
-        null
+        }
       ],
       [
         null,
-        null,
         {
-          "id": "c_8_2_3",
+          "id": "c_7_1_3",
           "type": "act_turn_radar",
           "params": {
-            "mode": "delta",
-            "angle": 10
+            "mode": "sweep",
+            "angle": 75
           },
           "next": null,
           "yes": null,
           "no": null
         },
-        null,
         {
-          "id": "c_11_4_3",
+          "id": "c_11_2_3",
           "type": "act_fire",
           "params": {
-            "power": 2.1
+            "power": "normal"
           },
           "next": null,
           "yes": null,
           "no": null
         },
-        null
-      ],
-      [
-        null,
-        null,
-        null,
-        null,
-        null,
-        null
-      ],
-      [
-        null,
-        null,
-        null,
-        null,
-        null,
-        null
+        {
+          "id": "c_10_3_3",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 12,
+            "maxDist": 900
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 3
+          },
+          "no": null
+        }
       ]
     ]
   }

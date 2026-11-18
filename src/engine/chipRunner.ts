@@ -1,5 +1,13 @@
 import { CHIP_DEFINITIONS } from '../data/chips';
-import { CHASSIS_SPECS, CPU_SPECS, MAIN_GUN_SPECS, RADAR_MEMORY_TICKS, RADAR_SPECS } from '../data/parts';
+import {
+  CHASSIS_SPECS,
+  CPU_SPECS,
+  MAIN_GUN_SPECS,
+  normalizeFirePowerTier,
+  RADAR_MEMORY_TICKS,
+  RADAR_SPECS,
+  resolveFirePower,
+} from '../data/parts';
 import {
   ArenaConfig,
   ExecutionEdge,
@@ -438,7 +446,7 @@ function formatChipDebugPrint(
       if (p.mode === 'sweep') return `radar(±${p.angle ?? 60}°)`;
       return `radar(${p.angle ?? 14}°)`;
     case 'act_fire':
-      return `fire_main(${p.power ?? 2.0})`;
+      return `fire_main("${normalizeFirePowerTier(p.power, tank.blueprint.assembly.mainGun)}")`;
     case 'act_sub_weapon':
       return `fire_sp(残${tank.subAmmo})`;
     default:
@@ -774,6 +782,10 @@ function evaluateCondition(
       const maxDist = Number(p.maxDist ?? 220);
       for (const proj of projectiles) {
         if (proj.ownerId === tank.id) continue;
+        if (arena.teamBattle) {
+          const owner = tanks.find((t) => t.id === proj.ownerId);
+          if (owner && owner.team === tank.team) continue;
+        }
         const d = distanceBetween(proj.x, proj.y, tank.x, tank.y);
         if (d > maxDist) continue;
         const dx = tank.x - proj.x;
@@ -967,7 +979,7 @@ function executeActionCell(
       break;
     }
     case 'act_fire': {
-      commands.firePower = Number(p.power ?? 2.0);
+      commands.firePower = resolveFirePower(p.power, tank.blueprint.assembly.mainGun).power;
       break;
     }
     case 'act_sub_weapon': {

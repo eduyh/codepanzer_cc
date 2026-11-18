@@ -133,14 +133,14 @@ describe('2D Grid Chip Runner & Coordinate Modes', () => {
           no: { x: 2, y: 0 },
         },
         { x: 1, y: 1, type: 'counter_op', params: { reg: 'A', op: 'inc', value: 1 }, next: null },
-        { x: 2, y: 0, type: 'act_fire', params: { power: 2.0 }, next: null },
+        { x: 2, y: 0, type: 'act_fire', params: { power: 'normal' }, next: null },
       ]),
     };
 
     const state1 = createBattleState({ player: inTickWhileTank, enemy: ENEMY_DUMMY });
     const res1 = runTankChipProgram(state1.tanks[0], 1, state1.arena, state1.projectiles);
     expect(state1.tanks[0].counters.A).toBe(4);
-    expect(res1.commands.firePower).toBe(2.0);
+    expect(res1.commands.firePower).toBe(1.8);
     expect(res1.trace.truncated).toBe(false);
 
     // 2. Physical loop: while(enemy_not_detected) -> radar(15°), else -> fire(1.5)
@@ -181,7 +181,7 @@ describe('2D Grid Chip Runner & Coordinate Modes', () => {
           no: { x: 2, y: 0 },
         },
         { x: 1, y: 1, type: 'act_move', params: { speedPercent: 50 }, next: null },
-        { x: 2, y: 0, type: 'act_fire', params: { power: 2.2 }, next: null },
+        { x: 2, y: 0, type: 'act_fire', params: { power: 'heavy' }, next: null },
       ]),
     };
 
@@ -192,9 +192,9 @@ describe('2D Grid Chip Runner & Coordinate Modes', () => {
       expect(r.commands.targetSpeedRatio).toBeCloseTo(0.5);
       expect(r.commands.firePower).toBeNull();
     }
-    // 4th evaluation: loop exits (no branch -> fire 2.2) and resets loop counter
+    // 4th evaluation: loop exits (no branch -> fire heavy) and resets loop counter
     const rExit = runTankChipProgram(state.tanks[0], 4, state.arena, state.projectiles);
-    expect(rExit.commands.firePower).toBe(2.2);
+    expect(rExit.commands.firePower).toBe(2.5);
     expect(state.tanks[0].loopCounters['1,0']).toBe(0);
   });
 
@@ -359,7 +359,7 @@ describe('Import / Export Share Code Serialization', () => {
 tank_name = "ゼロスリープ"
 def on_tick():
   time.sleep(0)
-  fire(power=2.0)`;
+  fire(power="normal")`;
     const zeroParsed = parsePythonSourceToProgram(sleepZeroSource, 4, 'relative');
     expect(zeroParsed.ok).toBe(true);
     if (zeroParsed.ok) {
@@ -373,7 +373,7 @@ def on_tick():
       };
       const st0 = createBattleState({ player: bp, enemy: ENEMY_DUMMY });
       const res0 = runTankChipProgram(st0.tanks[0], 1, st0.arena, st0.projectiles);
-      expect(res0.commands.firePower).toBe(2.0);
+      expect(res0.commands.firePower).toBe(1.8);
     }
 
     const sleepWaitSource = `import time
@@ -573,21 +573,32 @@ def on_tick():
     }
   });
 
-  it('validates fire_main power within 0.5..3.0 and rejects out-of-range values', () => {
-    const validMin = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=0.5)', 4, 'relative');
-    const validMax = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=3.0)', 4, 'relative');
-    expect(validMin.ok).toBe(true);
-    expect(validMax.ok).toBe(true);
+  it('validates fire_main power tiers ("fast" | "normal" | "heavy"), supports legacy numbers, and rejects invalid values', () => {
+    const validFast = parsePythonSourceToProgram('def on_tick():\n  fire_main(power="fast")', 4, 'relative');
+    const validNormal = parsePythonSourceToProgram('def on_tick():\n  fire_main(power="normal")', 4, 'relative');
+    const validHeavy = parsePythonSourceToProgram('def on_tick():\n  fire_main(power="heavy")', 4, 'relative');
+    const validLegacyMin = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=0.5)', 4, 'relative');
+    const validLegacyMax = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=3.0)', 4, 'relative');
+    expect(validFast.ok).toBe(true);
+    expect(validNormal.ok).toBe(true);
+    expect(validHeavy.ok).toBe(true);
+    expect(validLegacyMin.ok).toBe(true);
+    expect(validLegacyMax.ok).toBe(true);
 
     const tooLow = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=0.4)', 4, 'relative');
     const tooHigh = parsePythonSourceToProgram('def on_tick():\n  fire_main(power=3.5)', 4, 'relative');
+    const badTier = parsePythonSourceToProgram('def on_tick():\n  fire_main(power="ultra")', 4, 'relative');
     expect(tooLow.ok).toBe(false);
     if (!tooLow.ok) {
-      expect(tooLow.error).toContain('0.5〜3.0');
+      expect(tooLow.error).toContain('"fast"');
     }
     expect(tooHigh.ok).toBe(false);
     if (!tooHigh.ok) {
-      expect(tooHigh.error).toContain('0.5〜3.0');
+      expect(tooHigh.error).toContain('"heavy"');
+    }
+    expect(badTier.ok).toBe(false);
+    if (!badTier.ok) {
+      expect(badTier.error).toContain('"normal"');
     }
 
     expect(() =>
@@ -598,7 +609,7 @@ def on_tick():
           { x: 1, y: 0, type: 'act_fire', params: { power: 3.5 }, next: null },
         ]),
       })
-    ).toThrow(/0\.5〜3\.0/);
+    ).toThrow(/fast.*normal.*heavy/);
 
     expect(() =>
       validateAndNormalizeBlueprint({
@@ -608,24 +619,24 @@ def on_tick():
           { x: 1, y: 0, type: 'act_fire', params: { power: 0.4 }, next: null },
         ]),
       })
-    ).toThrow(/0\.5〜3\.0/);
+    ).toThrow(/fast.*normal.*heavy/);
   });
 
-  it('allows multiple simultaneous shells at power=0.5 and enforces higher damage & longer cooldown at power=3.0', () => {
+  it('allows multiple simultaneous shells with rapid "fast" tier and enforces higher damage & longer cooldown with cannon "heavy" tier', () => {
     const rapidLowBp: TankBlueprint = {
       ...DEFAULT_PLAYER_BLUEPRINT,
-      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', mainGun: 'standard' },
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', mainGun: 'rapid' },
       program: buildProgram(4, 'relative', [
         { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
-        { x: 1, y: 0, type: 'act_fire', params: { power: 0.5 }, next: null },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 'fast' }, next: null },
       ]),
     };
     const heavyHighBp: TankBlueprint = {
       ...DEFAULT_PLAYER_BLUEPRINT,
-      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', mainGun: 'standard' },
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', mainGun: 'cannon' },
       program: buildProgram(4, 'relative', [
         { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
-        { x: 1, y: 0, type: 'act_fire', params: { power: 3.0 }, next: null },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 'heavy' }, next: null },
       ]),
     };
 
@@ -685,8 +696,8 @@ def on_tick():
     ).map((l) => l.text);
     const src = lines.join('\n');
     expect(src).toContain('chassis = {"type": "heavy", "hp": 190, "speed": 2.5, "turn": 3}');
-    expect(src).toContain('radar = {"type": "long", "fov": 18, "range": 1550, "turn": 3.5}');
-    expect(src).toContain('main_gun = {"type": "cannon", "damage": 1.35, "cooling": 0.045, "turn": 4.8}');
+    expect(src).toContain('radar = {"type": "long", "fov": 22, "range": 1550, "turn": 4.2}');
+    expect(src).toContain('main_gun = {"type": "cannon", "damage": 1.35, "cooling": 0.052, "turn": 4.8}');
     expect(src).toContain('special = {"type": "shield", "ammo": 3, "cooldown": 240}');
     expect(src).not.toContain('sub_weapon =');
     expect(src).not.toContain('color =');
@@ -941,11 +952,11 @@ describe('Subroutines (A-D) & Special (SP)', () => {
       ...DEFAULT_PLAYER_BLUEPRINT,
       assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(6) },
       program: buildProgram(6, 'relative', [
-        // Main flow: start -> sub_a() -> sub_d() -> fire_main(1.5)
+        // Main flow: start -> sub_a() -> sub_d() -> fire_main(power="normal")
         { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
         { x: 1, y: 0, type: 'sub_call', params: { sub: 'A' }, next: { x: 2, y: 0 } },
         { x: 2, y: 0, type: 'sub_call', params: { sub: 'D' }, next: { x: 2, y: 1 } },
-        { x: 2, y: 1, type: 'act_fire', params: { power: 1.5 }, next: null },
+        { x: 2, y: 1, type: 'act_fire', params: { power: 'normal' }, next: null },
         // Subroutine A: move(80) -> recursive sub_a() (must be safely skipped by recursion guard)
         { x: 0, y: 4, type: 'sub_def', params: { sub: 'A' }, next: { x: 1, y: 4 } },
         { x: 1, y: 4, type: 'act_move', params: { speedPercent: 80 }, next: { x: 2, y: 4 } },
@@ -961,7 +972,7 @@ describe('Subroutines (A-D) & Special (SP)', () => {
 
     expect(res.commands.targetSpeedRatio).toBeCloseTo(0.8);
     expect(res.commands.radarTurnDelta).toBe(15);
-    expect(res.commands.firePower).toBe(1.5);
+    expect(res.commands.firePower).toBe(1.8);
     expect(res.trace.visited).toEqual([
       { x: 0, y: 0 },
       { x: 1, y: 0 },
@@ -1293,26 +1304,42 @@ describe('Turret-Relative Sweep, Under-Lock, Diagonal/Clearance Wall Sensors & B
     expect(st.tanks[0].lastCommands.targetSpeedRatio).toBeCloseTo(0);
   });
 
-  it('supports diagonal front_left/front_right and left_closer wall clearance checks', () => {
-    const testWallDir = (
-      direction: 'front_left' | 'front_right' | 'left_closer',
-      obstacles: Array<{ id: string; x: number; y: number; width: number; height: number }>
+  it('supports cond_proximity left_closer, any, and directional approaching wall clearance checks', () => {
+    const testProxMode = (
+      mode: 'left_closer' | 'any' | 'approaching',
+      obstacles: Array<{ id: string; x: number; y: number; width: number; height: number }>,
+      movingForward = false
     ) => {
+      const cells: Parameters<typeof buildProgram>[2] = movingForward
+        ? [
+            { x: 0, y: 0, type: 'start', next: { x: 0, y: 1 } },
+            { x: 0, y: 1, type: 'act_move', params: { speedPercent: 80, duration: 0 }, next: { x: 1, y: 1 } },
+            {
+              x: 1,
+              y: 1,
+              type: 'cond_proximity',
+              params: { mode, target: 'walls', dist: 140 },
+              yes: { x: 2, y: 1 },
+              no: null,
+            },
+            { x: 2, y: 1, type: 'act_fire', params: { power: 'normal' }, next: null },
+          ]
+        : [
+            { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+            {
+              x: 1,
+              y: 0,
+              type: 'cond_proximity',
+              params: { mode, target: 'walls', dist: 140 },
+              yes: { x: 2, y: 0 },
+              no: null,
+            },
+            { x: 2, y: 0, type: 'act_fire', params: { power: 'normal' }, next: null },
+          ];
       const bp: TankBlueprint = {
         ...DEFAULT_PLAYER_BLUEPRINT,
         assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(4) },
-        program: buildProgram(4, 'relative', [
-          { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
-          {
-            x: 1,
-            y: 0,
-            type: 'cond_wall_ahead',
-            params: { direction, angle: 0, dist: 140 },
-            yes: { x: 2, y: 0 },
-            no: null,
-          },
-          { x: 2, y: 0, type: 'act_fire', params: { power: 2.0 }, next: null },
-        ]),
+        program: buildProgram(4, 'relative', cells),
       };
       const st = createBattleState({
         player: bp,
@@ -1324,14 +1351,17 @@ describe('Turret-Relative Sweep, Under-Lock, Diagonal/Clearance Wall Sensors & B
     };
 
     const leftObs = [{ id: 'obs_nw', x: 310, y: 280, width: 70, height: 80 }];
-    expect(testWallDir('front_left', leftObs)).toBe(2.0);
-    expect(testWallDir('front_right', leftObs)).toBeNull();
-    expect(testWallDir('left_closer', leftObs)).toBe(2.0);
+    expect(testProxMode('left_closer', leftObs)).toBe(1.8);
+    expect(testProxMode('any', leftObs)).toBe(1.8);
+    expect(testProxMode('any', [])).toBeNull();
 
     const rightObs = [{ id: 'obs_ne', x: 420, y: 280, width: 70, height: 80 }];
-    expect(testWallDir('front_left', rightObs)).toBeNull();
-    expect(testWallDir('front_right', rightObs)).toBe(2.0);
-    expect(testWallDir('left_closer', rightObs)).toBeNull();
+    expect(testProxMode('left_closer', rightObs)).toBeNull();
+    expect(testProxMode('approaching', leftObs, true)).toBe(1.8);
+
+    const rearObs = [{ id: 'obs_s', x: 365, y: 460, width: 70, height: 80 }];
+    expect(testProxMode('any', rearObs, true)).toBe(1.8);
+    expect(testProxMode('approaching', rearObs, true)).toBeNull();
   });
 
   it('aligns body to turret (turret_rel) and turret to body (body_rel) cleanly with Python round-trip', () => {
@@ -1410,6 +1440,33 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     expect(st.tanks[2].underLock).toBe(false);
     expect(st.tanks[2].stats.damageTaken).toBe(0);
 
+    // Friendly projectile heading toward ally must not trigger incoming_shell() in teamBattle
+    const allyShellGuard = runTankChipProgram(
+      {
+        ...st.tanks[2],
+        blueprint: {
+          ...st.tanks[2].blueprint,
+          program: buildProgram(4, 'relative', [
+            { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+            {
+              x: 1,
+              y: 0,
+              type: 'cond_incoming_shell',
+              params: { maxDist: 400 },
+              yes: { x: 2, y: 0 },
+              no: null,
+            },
+            { x: 2, y: 0, type: 'act_sub_weapon', next: null },
+          ]),
+        },
+      },
+      st.tick,
+      st.arena,
+      st.projectiles,
+      st.tanks
+    );
+    expect(allyShellGuard.commands.useSubWeapon).toBe(false);
+
     // Eliminating only 1 enemy does not end the match; eliminating all enemies with active combat wins for player
     st.tanks[0].stats.shotsFired = 2;
     st.tanks[0].stats.damageDealt = 40;
@@ -1467,8 +1524,8 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     expect(battle.status).toBe('running');
   });
 
-  it('validates all 11 preset enemies (4x4 / 6x6 / 8x8) including normalization and Python round-trip', () => {
-    expect(PRESET_ENEMIES.length).toBe(11);
+  it('validates all 25 preset enemies (4x4 / 6x6 / 8x8) including normalization and Python round-trip', () => {
+    expect(PRESET_ENEMIES.length).toBe(25);
     for (const enemyBp of PRESET_ENEMIES) {
       const size = enemyBp.program.gridSize;
       const fit = validateGridBlockFit(enemyBp.program.cells, size);
@@ -1603,6 +1660,59 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     expect(stKill.winnerId).toBe('player');
     expect(stKill.winType).toBe('elimination');
     expect(stKill.endReason).toContain('撃破勝利');
+  });
+
+  it('activates updated boost (50t) and decoy (HP25, 3 ammo, 160t CD) durability accurately', () => {
+    const boostBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'light', cpu: 'mini_4x4', subWeapon: 'boost' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_sub_weapon', next: null },
+      ]),
+    };
+    const stBoost = createBattleState({ player: boostBp, enemy: ENEMY_DUMMY });
+    stepBattleTick(stBoost);
+    expect(stBoost.tanks[0].boostTicks).toBe(50);
+    expect(stBoost.tanks[0].subAmmo).toBe(2);
+
+    const decoyBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard', cpu: 'mini_4x4', subWeapon: 'decoy' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_sub_weapon', next: null },
+      ]),
+    };
+    const shooterBp: TankBlueprint = {
+      ...ENEMY_DUMMY,
+      assembly: { ...ENEMY_DUMMY.assembly, mainGun: 'rapid' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 'normal' }, next: null },
+      ]),
+    };
+    const stDecoy = createBattleState({
+      player: decoyBp,
+      enemy: shooterBp,
+      playerSpawn: { x: 200, y: 300, bodyAngle: 45, turretAngle: 45, radarAngle: 45 },
+      enemySpawn: { x: 350, y: 300, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+    });
+    stepBattleTick(stDecoy);
+    expect(stDecoy.tanks[0].subAmmo).toBe(2); // 3 max -> 2 left
+    expect(stDecoy.tanks[0].subCooldown).toBe(160);
+    expect(stDecoy.decoys?.length).toBe(1);
+    expect(stDecoy.decoys?.[0].hp).toBe(25);
+
+    // Place decoy directly in front of enemy shell -> absorbs hit without dying from 1 rapid shot (~3 dmg)
+    const decoy = stDecoy.decoys![0];
+    decoy.x = 300;
+    decoy.y = 300;
+    for (let t = 0; t < 10; t++) {
+      stepBattleTick(stDecoy);
+    }
+    expect(stDecoy.decoys?.[0].hp).toBeLessThan(25);
+    expect(stDecoy.decoys?.[0].hp).toBeGreaterThan(0);
   });
 });
 

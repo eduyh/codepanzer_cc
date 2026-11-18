@@ -13,6 +13,7 @@ import { PRESET_ENEMIES } from '../data/presets';
 import { TankBlueprint } from '../types/game';
 import {
   looksLikePythonSource,
+  MAX_BATTLE_TANKS,
   parsePythonSourceToProgram,
 } from '../utils/codeParser';
 import {
@@ -32,6 +33,7 @@ interface ShareModalProps {
   onImportAsEnemy: (bp: TankBlueprint) => void;
   onAddAsEnemy?: (bp: TankBlueprint) => void;
   canAddEnemy?: boolean;
+  maxBattleTanks?: number;
   onClose: () => void;
 }
 
@@ -42,6 +44,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   onImportAsEnemy,
   onAddAsEnemy,
   canAddEnemy = true,
+  maxBattleTanks = MAX_BATTLE_TANKS,
   onClose,
 }) => {
   const [shareTarget, setShareTarget] = useState<'player' | 'enemy'>('player');
@@ -282,7 +285,11 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                     type="button"
                     className="btn-secondary"
                     disabled={!importText.trim() || !canAddEnemy}
-                    title={canAddEnemy ? '対戦相手として追加（合計8台まで）' : '最大8台に達しています'}
+                    title={
+                      canAddEnemy
+                        ? `対戦相手として追加（合計${maxBattleTanks}台まで）`
+                        : `最大${maxBattleTanks}台に達しています`
+                    }
                     onClick={() => handleImportCode('add_enemy')}
                   >
                     + 相手に追加
@@ -302,7 +309,10 @@ export const ShareModal: React.FC<ShareModalProps> = ({
               }}
             >
               <Upload size={18} />
-              <span>.vstank.json / .py ファイルをドロップ（配布版の tanks/ フォルダ内ファイルも読込可・最大8台対戦）</span>
+              <span>
+                .vstank.json / .py ファイルをドロップ（配布版の tanks/ フォルダ内ファイルも読込可・最大
+                {maxBattleTanks}台対戦）
+              </span>
               <div className="file-btn-row">
                 <label className="mini-btn file-label">
                   自機として選択
@@ -421,7 +431,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                             type="button"
                             className="mini-btn"
                             disabled={!canAddEnemy}
-                            title={canAddEnemy ? '対戦相手に追加' : '最大8台に達しています'}
+                            title={canAddEnemy ? '対戦相手に追加' : `最大${maxBattleTanks}台に達しています`}
                             onClick={() => {
                               onAddAsEnemy(cloneBp(bp));
                               onClose();
@@ -496,7 +506,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
                             type="button"
                             className="mini-btn"
                             disabled={!canAddEnemy}
-                            title={canAddEnemy ? '対戦相手に追加' : '最大8台に達しています'}
+                            title={canAddEnemy ? '対戦相手に追加' : `最大${maxBattleTanks}台に達しています`}
                             onClick={() => {
                               onAddAsEnemy(cloneBp(bp));
                               onClose();

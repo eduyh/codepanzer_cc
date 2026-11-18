@@ -1,0 +1,224 @@
+{
+  "version": 1,
+  "id": "enemy_jagd",
+  "name": "駆逐戦車１号",
+  "author": "CodePanzer Official",
+  "color": "#be123c",
+  "assembly": {
+    "chassis": "destroyer",
+    "mainGun": "cannon",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "all",
+            "dist": 120
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 0
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "wall_away",
+            "angle": 12
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 50,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_5_0_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 75
+          },
+          "next": {
+            "x": 0,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_1_1",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 18
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 1
+          },
+          "no": {
+            "x": 0,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_7_2_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_3_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_6_0_2",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 4
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_10_2_2",
+          "type": "act_move",
+          "params": {
+            "speedPercent": -40,
+            "duration": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_3_2",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 380
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 2
+          },
+          "no": {
+            "x": 3,
+            "y": 3
+          }
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_13_1_3",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_2_3",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 12,
+            "maxDist": 950
+          },
+          "next": null,
+          "yes": {
+            "x": 1,
+            "y": 3
+          },
+          "no": null
+        },
+        {
+          "id": "c_11_3_3",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55,
+            "duration": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        }
+      ]
+    ]
+  }
+}

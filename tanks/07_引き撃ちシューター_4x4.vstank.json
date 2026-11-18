@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "id": "enemy_kiter",
+  "name": "引き撃ちシューター",
+  "author": "CodePanzer Official",
+  "color": "#10b981",
+  "assembly": {
+    "chassis": "standard",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 0,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_1_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 4
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_1_0_1",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 12
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_2_1_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "sweep",
+            "angle": 75
+          },
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_2_1",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 50,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        {
+          "id": "c_4_0_2",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 0,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_11_1_2",
+          "type": "act_move",
+          "params": {
+            "speedPercent": -70,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_10_2_2",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 380
+          },
+          "next": null,
+          "yes": {
+            "x": 1,
+            "y": 2
+          },
+          "no": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_9_3_2",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55,
+            "duration": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_5_0_3",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "lead",
+            "offset": 0
+          },
+          "next": {
+            "x": 1,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_6_1_3",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": {
+            "x": 2,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_2_3",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "walls",
+            "dist": 110
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 3
+          },
+          "no": {
+            "x": 2,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_8_3_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "wall_away",
+            "angle": 16
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
+      ]
+    ]
+  }
+}

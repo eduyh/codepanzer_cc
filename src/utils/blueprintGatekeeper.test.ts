@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { transpileProgramToLines } from '../components/GridEditor';
-import { buildProgram, DEFAULT_PLAYER_BLUEPRINT, TUTORIAL_STAGES } from '../data/presets';
+import {
+  buildProgram,
+  DEFAULT_PLAYER_BLUEPRINT,
+  ENEMY_FIXED_TURRET,
+  PRESET_ENEMIES,
+  TUTORIAL_STAGES,
+} from '../data/presets';
 import { runTankChipProgram } from '../engine/chipRunner';
 import { createBattleState, stepBattleTick } from '../engine/simulator';
 import { TankBlueprint } from '../types/game';
@@ -14,9 +20,9 @@ describe('blueprintGatekeeper', () => {
     expect(res.fixes).toEqual([]);
   });
 
-  it('clamps out-of-range numeric params, respects gun power limits, and repairs invalid select options', () => {
+  it('clamps out-of-range numeric params, migrates legacy/invalid gun power tiers, and repairs invalid select options', () => {
     const bp: TankBlueprint = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT));
-    bp.assembly.mainGun = 'rapid'; // maxPower = 2.2
+    bp.assembly.mainGun = 'rapid'; // powerTiers: { fast: 0.5, normal: 1.0, heavy: 1.5 }
     // Replace (1,2) cond_proximity with out-of-range params
     bp.program.cells[2][1] = {
       id: 'test_prox',
@@ -25,7 +31,7 @@ describe('blueprintGatekeeper', () => {
       yes: null,
       no: null,
     };
-    // Replace (5,3) act_fire with out-of-range power for rapid gun
+    // Replace (5,3) act_fire with out-of-range power -> repairs to 'normal'
     bp.program.cells[3][5] = {
       id: 'test_fire',
       type: 'act_fire',
@@ -37,7 +43,28 @@ describe('blueprintGatekeeper', () => {
     expect(res.isValid).toBe(false);
     expect(res.blueprint.program.cells[2][1]?.params.mode).toBe('approaching');
     expect(res.blueprint.program.cells[2][1]?.params.dist).toBe(300);
-    expect(res.blueprint.program.cells[3][5]?.params.power).toBe(2.2);
+    expect(res.blueprint.program.cells[3][5]?.params.power).toBe('normal');
+
+    // Legacy valid numeric powers migrate to the closest gun tier
+    const bpLegacyRapid: TankBlueprint = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT));
+    bpLegacyRapid.assembly.mainGun = 'rapid';
+    bpLegacyRapid.program.cells[3][5] = {
+      id: 'legacy_rapid',
+      type: 'act_fire',
+      params: { power: 1.5 },
+      next: null,
+    };
+    expect(validateAndRepairBlueprint(bpLegacyRapid).blueprint.program.cells[3][5]?.params.power).toBe('heavy');
+
+    const bpLegacyCannon: TankBlueprint = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT));
+    bpLegacyCannon.assembly.mainGun = 'cannon';
+    bpLegacyCannon.program.cells[3][5] = {
+      id: 'legacy_cannon',
+      type: 'act_fire',
+      params: { power: 2.0 },
+      next: null,
+    };
+    expect(validateAndRepairBlueprint(bpLegacyCannon).blueprint.program.cells[3][5]?.params.power).toBe('fast');
   });
 
   it('migrates deprecated cond_wall_ahead to cond_proximity', () => {
@@ -194,7 +221,7 @@ describe('blueprintGatekeeper', () => {
     bpSeq.program.cells[0][3] = {
       id: 'f1',
       type: 'act_fire',
-      params: { power: 2.0 },
+      params: { power: 'normal' },
       next: { x: 3, y: 1 },
     };
     bpSeq.program.cells[1][3] = {
@@ -206,7 +233,7 @@ describe('blueprintGatekeeper', () => {
     bpSeq.program.cells[1][2] = {
       id: 'f2',
       type: 'act_fire',
-      params: { power: 2.0 },
+      params: { power: 'normal' },
       next: null,
     };
 
@@ -227,7 +254,7 @@ describe('blueprintGatekeeper', () => {
     }
     // Tick 15: wakes up -> fires 1st shot and starts backward 0.4s (ticks 15..22)
     const tick15 = runTankChipProgram(pSeq, 15, bSeq.arena, bSeq.projectiles, bSeq.tanks);
-    expect(tick15.commands.firePower).toBe(2.0);
+    expect(tick15.commands.firePower).toBe(1.8);
     expect(tick15.commands.targetSpeedRatio).toBeCloseTo(-0.8, 5);
     for (let t = 16; t <= 22; t++) {
       const res = runTankChipProgram(pSeq, t, bSeq.arena, bSeq.projectiles, bSeq.tanks);
@@ -235,7 +262,7 @@ describe('blueprintGatekeeper', () => {
     }
     // Tick 23: finishes backward -> fires 2nd shot and ends cycle
     const tick23 = runTankChipProgram(pSeq, 23, bSeq.arena, bSeq.projectiles, bSeq.tanks);
-    expect(tick23.commands.firePower).toBe(2.0);
+    expect(tick23.commands.firePower).toBe(1.8);
     expect(tick23.commands.targetSpeedRatio).toBe(0);
     // Tick 24: cycle resets to start -> forward again!
     const tick24 = runTankChipProgram(pSeq, 24, bSeq.arena, bSeq.projectiles, bSeq.tanks);
@@ -382,5 +409,74 @@ describe('blueprintGatekeeper', () => {
       expect(battle.winnerId, id).toBe('player');
       expect(battle.tanks[0].stats.wallHits, `${id} wallHits`).toBe(0);
     }
+  });
+
+  it('validates all PRESET_ENEMIES cleanly and verifies new 4x4/6x6 enemy mechanics', () => {
+    expect(PRESET_ENEMIES).toHaveLength(25);
+
+    for (const enemyBp of PRESET_ENEMIES) {
+      const check = validateAndRepairBlueprint(enemyBp);
+      expect(check.isValid, `${enemyBp.id} isValid`).toBe(true);
+      expect(check.fixes, `${enemyBp.id} fixes`).toEqual([]);
+    }
+
+    const verifySpecialBattle = (bpId: string, expectKind: 'smoke' | 'boost' | 'decoy' | 'shield' | 'missile' | 'none') => {
+      const bp = PRESET_ENEMIES.find((e) => e.id === bpId)!;
+      let battle = createBattleState({
+        player: bp,
+        enemy: DEFAULT_PLAYER_BLUEPRINT,
+        arenaSize: 'medium',
+      });
+      let sawSmoke = false;
+      let sawBoost = false;
+      let sawDecoy = false;
+      let sawShield = false;
+      let sawMissile = false;
+      while (battle.status === 'running' && battle.tick < 1800) {
+        battle = stepBattleTick(battle);
+        if ((battle.smokes?.length ?? 0) > 0) sawSmoke = true;
+        if ((battle.decoys?.length ?? 0) > 0) sawDecoy = true;
+        if (battle.tanks[0].boostTicks > 0) sawBoost = true;
+        if (battle.tanks[0].shieldTicks > 0) sawShield = true;
+        if (battle.projectiles.some((p) => p.ownerId === battle.tanks[0].id && p.kind === 'missile')) {
+          sawMissile = true;
+        }
+      }
+      expect(battle.tanks[0].stats.wallHits, `${bpId} wallHits`).toBe(0);
+      expect(battle.tanks[0].stats.shotsFired, `${bpId} shotsFired`).toBeGreaterThan(0);
+      if (expectKind === 'smoke') expect(sawSmoke).toBe(true);
+      if (expectKind === 'boost') expect(sawBoost).toBe(true);
+      if (expectKind === 'decoy') expect(sawDecoy).toBe(true);
+      if (expectKind === 'shield') expect(sawShield).toBe(true);
+      if (expectKind === 'missile') expect(sawMissile).toBe(true);
+    };
+
+    verifySpecialBattle('enemy_jagd', 'none');
+    verifySpecialBattle('enemy_orbiter', 'none');
+    verifySpecialBattle('enemy_smoke_phantom', 'smoke');
+    verifySpecialBattle('enemy_boost_raider', 'boost');
+    verifySpecialBattle('enemy_decoy_tricker', 'decoy');
+    verifySpecialBattle('enemy_shuttle', 'none');
+    verifySpecialBattle('enemy_circle_gunner', 'none');
+    verifySpecialBattle('enemy_micromouse', 'none');
+    verifySpecialBattle('enemy_square_patrol', 'none');
+    verifySpecialBattle('enemy_random_walker', 'none');
+    verifySpecialBattle('enemy_gale_mirage', 'none');
+    verifySpecialBattle('enemy_aegis_command', 'shield');
+    verifySpecialBattle('enemy_dreadnought', 'missile');
+
+    // Verify Sentinel detects rear hit and turns around to destroy attacker
+    let sb = createBattleState({
+      player: ENEMY_FIXED_TURRET,
+      enemy: PRESET_ENEMIES.find((e) => e.id === 'enemy_sentinel')!,
+      arenaSize: 'small',
+      playerSpawn: { x: 180, y: 330, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      enemySpawn: { x: 640, y: 330, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+    });
+    while (sb.status === 'running' && sb.tick < 1200) {
+      sb = stepBattleTick(sb);
+    }
+    expect(sb.winnerId).toBe('enemy');
+    expect(sb.tanks[1].stats.shotsFired).toBeGreaterThan(0);
   });
 });

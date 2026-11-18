@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "id": "enemy_maze_sweeper",
-  "name": "迷路スイーパー",
+  "id": "enemy_trap_miner",
+  "name": "トラップマイナー",
   "author": "CodePanzer Official",
-  "color": "#06b6d4",
+  "color": "#eab308",
   "assembly": {
     "chassis": "light",
-    "mainGun": "standard",
-    "radar": "balanced",
-    "cpu": "mini_4x4",
-    "subWeapon": "none"
+    "mainGun": "rapid",
+    "radar": "wide",
+    "cpu": "compact_6x6",
+    "subWeapon": "mine"
   },
   "program": {
-    "gridSize": 4,
+    "gridSize": 6,
     "coordinateMode": "relative",
     "cells": [
       [
@@ -32,8 +32,8 @@
           "type": "cond_proximity",
           "params": {
             "mode": "approaching",
-            "target": "walls",
-            "dist": 150
+            "target": "all",
+            "dist": 140
           },
           "next": null,
           "yes": {
@@ -47,58 +47,79 @@
         },
         {
           "id": "c_2_2_0",
-          "type": "cond_proximity",
-          "params": {
-            "mode": "left_closer",
-            "target": "walls",
-            "dist": 150
-          },
-          "next": null,
-          "yes": {
-            "x": 3,
-            "y": 0
-          },
-          "no": {
-            "x": 2,
-            "y": 1
-          }
-        },
-        {
-          "id": "c_3_3_0",
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 12
+            "angle": 14
           },
-          "next": null,
+          "next": {
+            "x": 2,
+            "y": 1
+          },
           "yes": null,
           "no": null
-        }
+        },
+        null,
+        null,
+        null
       ],
       [
         null,
         {
-          "id": "c_5_1_1",
+          "id": "c_3_1_1",
           "type": "act_move",
           "params": {
-            "speedPercent": 80,
+            "speedPercent": 95,
             "duration": 0
           },
           "next": {
-            "x": 1,
-            "y": 2
+            "x": 2,
+            "y": 1
           },
           "yes": null,
           "no": null
         },
         {
           "id": "c_4_2_1",
-          "type": "act_turn_body",
+          "type": "cond_enemy_detected",
           "params": {
-            "mode": "delta",
-            "angle": -12
+            "maxAgeTicks": 12
           },
           "next": null,
+          "yes": {
+            "x": 3,
+            "y": 1
+          },
+          "no": {
+            "x": 2,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_6_3_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 4,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_4_1",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "lead",
+            "offset": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 2
+          },
           "yes": null,
           "no": null
         },
@@ -106,45 +127,42 @@
       ],
       [
         null,
+        null,
         {
-          "id": "c_6_1_2",
-          "type": "cond_enemy_detected",
+          "id": "c_5_2_2",
+          "type": "act_turn_radar",
           "params": {
-            "maxAgeTicks": 12
+            "mode": "sweep",
+            "angle": 90
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_8_4_2",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 340
           },
           "next": null,
           "yes": {
-            "x": 2,
+            "x": 5,
             "y": 2
           },
           "no": {
-            "x": 1,
+            "x": 4,
             "y": 3
           }
         },
         {
-          "id": "c_8_2_2",
-          "type": "act_turn_radar",
-          "params": {
-            "mode": "lock_enemy",
-            "angle": 60
-          },
+          "id": "c_9_5_2",
+          "type": "act_sub_weapon",
+          "params": {},
           "next": {
-            "x": 3,
-            "y": 2
-          },
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_9_3_2",
-          "type": "act_aim_enemy",
-          "params": {
-            "lead": "direct",
-            "offset": 0
-          },
-          "next": {
-            "x": 3,
+            "x": 5,
             "y": 3
           },
           "yes": null,
@@ -153,43 +171,49 @@
       ],
       [
         null,
+        null,
+        null,
+        null,
         {
-          "id": "c_7_1_3",
-          "type": "act_turn_radar",
+          "id": "c_10_4_3",
+          "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 10
+            "angle": 3
           },
-          "next": null,
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_11_2_3",
-          "type": "act_fire",
-          "params": {
-            "power": 2
-          },
-          "next": null,
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_10_3_3",
-          "type": "cond_enemy_sector",
-          "params": {
-            "ref": "turret",
-            "centerAngle": 0,
-            "halfWidth": 12,
-            "maxDist": 900
-          },
-          "next": null,
-          "yes": {
-            "x": 2,
+          "next": {
+            "x": 5,
             "y": 3
           },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_11_5_3",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": null,
+          "yes": null,
           "no": null
         }
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
       ]
     ]
   }

@@ -1,0 +1,239 @@
+{
+  "version": 1,
+  "id": "enemy_random_walker",
+  "name": "ランダムシューター",
+  "author": "CodePanzer Official",
+  "color": "#f472b6",
+  "assembly": {
+    "chassis": "light",
+    "mainGun": "standard",
+    "radar": "balanced",
+    "cpu": "mini_4x4",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 4,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 55,
+            "duration": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 15
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 0
+          },
+          "no": {
+            "x": 2,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_13_0_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 26
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_6_2_1",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 10
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_3_1",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "direct",
+            "offset": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_12_0_2",
+          "type": "cond_counter",
+          "params": {
+            "reg": "B",
+            "op": "eq",
+            "value": 1
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 1
+          },
+          "no": {
+            "x": 1,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_14_1_2",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": -26
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_2_2",
+          "type": "counter_op",
+          "params": {
+            "reg": "A",
+            "op": "inc",
+            "value": 1
+          },
+          "next": {
+            "x": 2,
+            "y": 3
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_5_3_2",
+          "type": "act_fire",
+          "params": {
+            "power": "fast"
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        {
+          "id": "c_11_0_3",
+          "type": "random_op",
+          "params": {
+            "reg": "B",
+            "min": 1,
+            "max": 2
+          },
+          "next": {
+            "x": 0,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_10_1_3",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "mod0",
+            "value": 28
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 3
+          },
+          "no": null
+        },
+        {
+          "id": "c_8_2_3",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "walls",
+            "dist": 120
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 3
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_9_3_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "wall_away",
+            "angle": 16
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ]
+    ]
+  }
+}

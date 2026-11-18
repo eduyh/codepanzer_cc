@@ -150,16 +150,19 @@ export const AssemblyModal: React.FC<AssemblyModalProps> = ({
               </div>
               <div className="stat-item">
                 <span>最高速度</span>
-                <strong>{(chassis.maxSpeed * 60).toFixed(0)} px/s</strong>
+                <strong>{(chassis.maxSpeed * 20).toFixed(0)} px/s</strong>
               </div>
               <div className="stat-item">
                 <span>旋回速度</span>
                 <strong>{chassis.turnRate}°/tick</strong>
               </div>
-              <div className="stat-item">
-                <span>主砲範囲</span>
+              <div
+                className="stat-item"
+                title={`主砲パワー3段階 — 速弱: P=${gun.powerTiers.fast} / 標準: P=${gun.powerTiers.normal} / 遅強: P=${gun.powerTiers.heavy}`}
+              >
+                <span>主砲3段階</span>
                 <strong>
-                  P {gun.minPower}~{gun.maxPower}
+                  {gun.powerTiers.fast} / {gun.powerTiers.normal} / {gun.powerTiers.heavy}
                 </strong>
               </div>
               <div className="stat-item">

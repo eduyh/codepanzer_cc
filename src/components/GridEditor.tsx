@@ -18,11 +18,16 @@ import { CHIP_CATEGORY_LABELS, CHIP_DEFINITIONS, CHIP_LIST } from '../data/chips
 import {
   calculateAssemblyWeight,
   CHASSIS_SPECS,
+  computeShellMetrics,
   CPU_SPECS,
   cpuIdForGridSize,
+  FIRE_POWER_TIER_LABELS,
   MAIN_GUN_SPECS,
+  normalizeFirePowerTier,
   RADAR_SPECS,
+  resolveFirePower,
   SUB_WEAPON_SPECS,
+  tryParseFirePowerInput,
 } from '../data/parts';
 import { createEmptyCells, makeCell } from '../data/presets';
 import { findStartCell } from '../engine/chipRunner';
@@ -48,14 +53,13 @@ import {
   ALLOWED_CHASSIS_IDS,
   ALLOWED_MAIN_GUN_IDS,
   ALLOWED_RADAR_IDS,
+  ALLOWED_SUB_WEAPON_IDS,
   countGridBlocks,
   isAllowedChassisId,
   isAllowedMainGunId,
   isAllowedRadarId,
   isAllowedSubWeaponId,
   looksLikePythonSource,
-  MAX_FIRE_POWER,
-  MIN_FIRE_POWER,
   parsePythonSourceToProgram,
   STANDARD_SETUP,
   validateFirePowerInCells,
@@ -184,8 +188,10 @@ function summarizeChipParams(cell: GridCell, lang: DisplayLang): string {
         : lang === 'en'
           ? 'direct'
           : '直接';
-    case 'act_fire':
-      return `p=${p.power}`;
+    case 'act_fire': {
+      const tier = normalizeFirePowerTier(p.power);
+      return FIRE_POWER_TIER_LABELS[tier][lang];
+    }
     case 'cond_enemy_sector':
       return `±${p.halfWidth}°`;
     case 'cond_enemy_dist':
@@ -317,7 +323,7 @@ function formatPythonActionStmt(type: ChipType, params: Record<string, string | 
         ? 'turn_radar(mode="lock_enemy")'
         : `turn_radar(mode="${p.mode ?? 'sweep'}", angle=${p.angle ?? 60})`;
     case 'act_fire':
-      return `fire_main(power=${p.power ?? 2.0})`;
+      return `fire_main(power="${normalizeFirePowerTier(p.power)}")`;
     case 'act_sub_weapon':
       return 'fire_sp()';
     default:
@@ -1311,15 +1317,17 @@ export const GridEditor: React.FC<GridEditorProps> = ({
 
   const handleUpdateParam = (key: string, value: string | number) => {
     if (!selectedCoord || !selectedCell) return;
+    let nextValue: string | number = value;
     if (selectedCell.type === 'act_fire' && key === 'power') {
-      const pwr = Number(value);
-      if (!Number.isFinite(pwr) || pwr < MIN_FIRE_POWER || pwr > MAX_FIRE_POWER) {
+      const parsedTier = tryParseFirePowerInput(value, safeMainGunId);
+      if (!parsedTier) {
         setGridSizeNotice({
           type: 'error',
-          text: `不正なプログラムです: fire_main の火力 (power=${value}) は ${MIN_FIRE_POWER.toFixed(1)}〜${MAX_FIRE_POWER.toFixed(1)} の範囲で指定してください。`,
+          text: `不正なプログラムです: fire_main の火力 (power=${value}) は "fast" / "normal" / "heavy" のいずれかで指定してください。`,
         });
       } else {
         setGridSizeNotice(null);
+        nextValue = parsedTier;
       }
     }
     const nextCells = cloneCells(program.cells);
@@ -1338,7 +1346,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
       }
       cell.params[key] = chosen;
     } else {
-      cell.params[key] = value;
+      cell.params[key] = nextValue;
       if (
         cell.type === 'act_turn_body' &&
         key === 'mode' &&
@@ -1563,6 +1571,16 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   const tooltipDef = tooltipTargetType ? CHIP_DEFINITIONS[tooltipTargetType] : null;
   const tooltipIndent = hoveredCodeLine?.indent ?? 0;
 
+  const equippedGunSpec = MAIN_GUN_SPECS[safeMainGunId] ?? MAIN_GUN_SPECS.standard;
+  const activeFireTierInfo =
+    tooltipTargetType === 'act_fire'
+      ? (() => {
+          const { tier, power } = resolveFirePower(tooltipTargetParams?.power, safeMainGunId);
+          const m = computeShellMetrics(safeMainGunId, power, safeChassisId);
+          return `[装備中: ${equippedGunSpec.name} — ${FIRE_POWER_TIER_LABELS[tier].ja}(P=${power}): 威力${m.damage.toFixed(1)} / 弾速${m.bulletSpeed.toFixed(1)} / 冷却${m.cooldownTicks}t]`;
+        })()
+      : null;
+
   const tooltipDisplayData: SyntaxHelpInfo | null = codeLineSyntaxHelp
     ? codeLineSyntaxHelp
     : tooltipDef && tooltipTargetType
@@ -1570,10 +1588,15 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           conceptTag: tooltipDef.conceptTag,
           signatureInfo: tooltipDef.signatureInfo,
           pythonSyntax: buildLivePythonSyntax(tooltipTargetType, tooltipTargetParams),
-          learningTip:
+          learningTip: [
+            tooltipDef.learningTip,
+            activeFireTierInfo,
             tooltipIndent > 0
-              ? `${tooltipDef.learningTip} [インデント Lv.${tooltipIndent} (${tooltipIndent * 2}スペース): Pythonでは行頭の空白で関数・if・ループの中身を表します]`
-              : tooltipDef.learningTip,
+              ? `[インデント Lv.${tooltipIndent} (${tooltipIndent * 2}スペース): Pythonでは行頭の空白で関数・if・ループの中身を表します]`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' '),
         }
       : null;
 
@@ -1893,15 +1916,17 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                             code: 'special =',
                             title: '搭載Special兵装の選択（Pythonソース内の special スペックにも反映されます）',
                             value: safeSubWeaponId,
-                            options: [
-                              { value: 'none', label: `装備なし (${SUB_WEAPON_SPECS.none.weight}t)` },
-                              { value: 'smoke', label: `煙幕 (3回 / CD180t / ${SUB_WEAPON_SPECS.smoke.weight}t)` },
-                              { value: 'boost', label: `緊急ブースト (3回 / CD160t / ${SUB_WEAPON_SPECS.boost.weight}t)` },
-                              { value: 'decoy', label: `デコイ (2回 / CD220t / ${SUB_WEAPON_SPECS.decoy.weight}t)` },
-                              { value: 'mine', label: `地雷 (5発 / CD90t / ${SUB_WEAPON_SPECS.mine.weight}t)` },
-                              { value: 'shield', label: `バリア (3回 / CD240t / ${SUB_WEAPON_SPECS.shield.weight}t)` },
-                              { value: 'missile', label: `誘導ミサイル (4発 / CD150t / ${SUB_WEAPON_SPECS.missile.weight}t)` },
-                            ],
+                            options: ALLOWED_SUB_WEAPON_IDS.map((sid) => {
+                              const sp = SUB_WEAPON_SPECS[sid];
+                              if (sid === 'none') {
+                                return { value: sid, label: `${sp.name} (${sp.weight}t)` };
+                              }
+                              const unit = sid === 'mine' || sid === 'missile' ? '発' : '回';
+                              return {
+                                value: sid,
+                                label: `${sp.name} (${sp.maxAmmo}${unit} / CD${sp.cooldownTicks}t / ${sp.weight}t)`,
+                              };
+                            }),
                             onChange: (val: string) => {
                               const resolved = isAllowedSubWeaponId(val) ? val : STANDARD_SETUP.subWeapon;
                               onChangeSubWeapon?.(resolved);
@@ -2273,7 +2298,14 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                         </span>
                         {field.type === 'select' ? (
                           <select
-                            value={String(selectedCell.params[field.key] ?? '')}
+                            value={
+                              selectedCell.type === 'act_fire' && field.key === 'power'
+                                ? normalizeFirePowerTier(
+                                    selectedCell.params[field.key],
+                                    safeMainGunId
+                                  )
+                                : String(selectedCell.params[field.key] ?? '')
+                            }
                             onChange={(e) => {
                               const raw = e.target.value;
                               const isNumeric = field.options?.every(
@@ -2282,11 +2314,30 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                               handleUpdateParam(field.key, isNumeric ? Number(raw) : raw);
                             }}
                           >
-                            {field.options?.map((opt) => (
-                              <option key={String(opt.value)} value={String(opt.value)}>
-                                {displayLang === 'en' ? opt.labelEn ?? opt.label : opt.label}
-                              </option>
-                            ))}
+                            {field.options?.map((opt) => {
+                              if (selectedCell.type === 'act_fire' && field.key === 'power') {
+                                const tier = normalizeFirePowerTier(opt.value, safeMainGunId);
+                                const tierPower = equippedGunSpec.powerTiers[tier];
+                                const m = computeShellMetrics(
+                                  safeMainGunId,
+                                  tierPower,
+                                  safeChassisId
+                                );
+                                const baseLabel =
+                                  displayLang === 'en' ? opt.labelEn ?? opt.label : opt.label;
+                                return (
+                                  <option key={String(opt.value)} value={String(opt.value)}>
+                                    {baseLabel} (P={tierPower} / 威力{m.damage.toFixed(1)} / 弾速
+                                    {m.bulletSpeed.toFixed(1)} / {m.cooldownTicks}t)
+                                  </option>
+                                );
+                              }
+                              return (
+                                <option key={String(opt.value)} value={String(opt.value)}>
+                                  {displayLang === 'en' ? opt.labelEn ?? opt.label : opt.label}
+                                </option>
+                              );
+                            })}
                           </select>
                         ) : (
                           <div className="num-input-wrap">
@@ -2613,7 +2664,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                       spellCheck={false}
                       value={sourceDraft}
                       onChange={(e) => setSourceDraft(e.target.value)}
-                      placeholder="def on_tick():&#10;  if main_cooldown == 0:&#10;    fire_main(power=2.0)"
+                      placeholder='def on_tick():&#10;  if main_cooldown == 0:&#10;    fire_main(power="normal")'
                     />
                     {liveParseResult && (
                       <div

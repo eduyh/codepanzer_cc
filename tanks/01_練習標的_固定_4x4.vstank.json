@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "enemy_dummy",
-  "name": "標的ダミー",
+  "name": "練習標的（固定）",
   "author": "CodePanzer Official",
   "color": "#64748b",
   "assembly": {

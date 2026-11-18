@@ -1,6 +1,7 @@
 import {
   calculateAssemblyWeight,
   CHASSIS_SPECS,
+  computeShellMetrics,
   MAIN_GUN_SPECS,
   RADAR_MEMORY_TICKS,
   RADAR_SPECS,
@@ -34,7 +35,7 @@ import {
 
 export const ARENA_WIDTH = 1400;
 export const ARENA_HEIGHT = 1100;
-export const DEFAULT_MAX_TICKS = 10800; // 180 seconds @ 60 TPS
+export const DEFAULT_MAX_TICKS = 3600; // 180 seconds @ 20 TPS
 export { RADAR_MEMORY_TICKS };
 
 export const ARENA_SIZE_SPECS: Record<
@@ -753,11 +754,15 @@ export function stepBattleTick(state: BattleState): BattleState {
 
     // Main gun firing
     if (commands.firePower !== null && tank.gunHeat <= 0.0001) {
-      const power = clamp(commands.firePower, gun.minPower, gun.maxPower);
-      const bulletSpeed = Math.max(4.5, (14.5 - 1.8 * power + gun.speedBonus) * 0.65);
-      const baseDamage = 2.2 * power + Math.pow(power, 1.7) * 1.6;
-      const damage = baseDamage * gun.damageMultiplier;
-      tank.gunHeat = 0.10 + power * 0.65;
+      const metrics = computeShellMetrics(
+        tank.blueprint.assembly.mainGun,
+        commands.firePower,
+        tank.blueprint.assembly.chassis
+      );
+      const power = metrics.power;
+      const bulletSpeed = metrics.bulletSpeed;
+      const damage = metrics.damage;
+      tank.gunHeat = metrics.gunHeat;
       tank.recoil = 1.0;
       tank.stats.shotsFired += 1;
 
@@ -793,7 +798,7 @@ export function stepBattleTick(state: BattleState): BattleState {
       if (tank.blueprint.assembly.subWeapon === 'shield') {
         tank.shieldTicks = 120;
       } else if (tank.blueprint.assembly.subWeapon === 'boost') {
-        tank.boostTicks = 28;
+        tank.boostTicks = 50;
       } else if (tank.blueprint.assembly.subWeapon === 'smoke') {
         if (!state.smokes) state.smokes = [];
         state.smokes.push({
@@ -815,7 +820,7 @@ export function stepBattleTick(state: BattleState): BattleState {
           x: clamp(tank.x + sideDir.dx * (r + 24), r + 10, state.arena.width - r - 10),
           y: clamp(tank.y + sideDir.dy * (r + 24), r + 10, state.arena.height - r - 10),
           radius: r,
-          hp: 1,
+          hp: 25,
           ttl: 150,
           maxTtl: 150,
           color: tank.blueprint.color,
@@ -1008,16 +1013,16 @@ export function stepBattleTick(state: BattleState): BattleState {
       if (decoy.ownerId === proj.ownerId || decoy.hp <= 0) continue;
       if (state.arena.teamBattle && attacker && decoy.team === attacker.team) continue;
       if (distanceBetween(proj.x, proj.y, decoy.x, decoy.y) <= decoy.radius + 4) {
-        decoy.hp = 0;
+        decoy.hp = Math.max(0, decoy.hp - proj.damage);
         hitDecoy = true;
         state.explosions.push({
           id: makeEntityId('exp'),
           x: decoy.x,
           y: decoy.y,
-          radius: 26,
+          radius: decoy.hp <= 0 ? 28 : 16,
           color: decoy.color,
           age: 0,
-          maxAge: 20,
+          maxAge: decoy.hp <= 0 ? 20 : 12,
         });
         break;
       }

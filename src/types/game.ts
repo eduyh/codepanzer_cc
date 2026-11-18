@@ -32,6 +32,8 @@ export interface ChassisSpec {
   coolingMultiplier?: number; // multiplier applied to main gun coolingRate
 }
 
+export type FirePowerTier = 'fast' | 'normal' | 'heavy';
+
 export interface MainGunSpec {
   id: MainGunId;
   name: string;
@@ -39,6 +41,7 @@ export interface MainGunSpec {
   weight: number;
   minPower: number;
   maxPower: number;
+  powerTiers: Record<FirePowerTier, number>;
   speedBonus: number;
   damageMultiplier: number;
   coolingRate: number; // heat cooled per tick

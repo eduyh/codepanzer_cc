@@ -1,13 +1,13 @@
 {
   "version": 1,
   "id": "enemy_berserker",
-  "name": "強襲バーサーカー",
+  "name": "改・突撃一番★",
   "author": "CodePanzer Official",
   "color": "#ec4899",
   "assembly": {
-    "chassis": "light",
+    "chassis": "standard",
     "mainGun": "rapid",
-    "radar": "wide",
+    "radar": "balanced",
     "cpu": "standard_8x8",
     "subWeapon": "missile"
   },
@@ -90,7 +90,7 @@
           "type": "cond_proximity",
           "params": {
             "mode": "approaching",
-            "target": "walls",
+            "target": "all",
             "dist": 120
           },
           "next": null,
@@ -125,8 +125,8 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "delta",
-            "angle": 10
+            "mode": "sweep",
+            "angle": 60
           },
           "next": {
             "x": 1,
@@ -159,7 +159,7 @@
             "ref": "turret",
             "centerAngle": 0,
             "halfWidth": 16,
-            "maxDist": 500
+            "maxDist": 780
           },
           "next": null,
           "yes": {
@@ -172,7 +172,7 @@
           "id": "c_12_7_1",
           "type": "act_fire",
           "params": {
-            "power": 1
+            "power": "normal"
           },
           "next": {
             "x": 7,

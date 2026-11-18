@@ -244,7 +244,10 @@ export function exportTankJsonFile(blueprint: TankBlueprint): void {
   const blob = new Blob([json], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  const safeName = blueprint.name.replace(/[^\w\u3040-\u30ff\u4e00-\u9faf-]+/g, '_');
+  const safeName = blueprint.name
+    .replace(/[^\w\u3040-\u30ff\u4e00-\u9faf\uff10-\uff19-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '');
   a.href = url;
   a.download = `${safeName || 'tank'}.vstank.json`;
   document.body.appendChild(a);

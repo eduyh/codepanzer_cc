@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "id": "player_starter_alpha",
-  "name": "テスト戦車",
-  "author": "Player",
-  "color": "#06b6d4",
+  "id": "enemy_sniper",
+  "name": "長距離スナイパー",
+  "author": "CodePanzer Official",
+  "color": "#f59e0b",
   "assembly": {
-    "chassis": "standard",
-    "mainGun": "standard",
-    "radar": "balanced",
-    "cpu": "compact_6x6",
-    "subWeapon": "missile"
+    "chassis": "heavy",
+    "mainGun": "cannon",
+    "radar": "long",
+    "cpu": "standard_8x8",
+    "subWeapon": "shield"
   },
   "program": {
-    "gridSize": 6,
+    "gridSize": 8,
     "coordinateMode": "relative",
     "cells": [
       [
@@ -31,7 +31,7 @@
           "id": "c_1_1_0",
           "type": "cond_enemy_detected",
           "params": {
-            "maxAgeTicks": 28
+            "maxAgeTicks": 25
           },
           "next": null,
           "yes": {
@@ -75,11 +75,43 @@
           "id": "c_8_4_0",
           "type": "act_move",
           "params": {
-            "speedPercent": 85,
+            "speedPercent": 55,
             "duration": 0
           },
           "next": {
-            "x": 4,
+            "x": 5,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_5_0",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "all",
+            "dist": 140
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 0
+          },
+          "no": {
+            "x": 5,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_10_6_0",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 16
+          },
+          "next": {
+            "x": 6,
             "y": 1
           },
           "yes": null,
@@ -93,8 +125,8 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "delta",
-            "angle": 10
+            "mode": "sweep",
+            "angle": 60
           },
           "next": {
             "x": 1,
@@ -105,35 +137,47 @@
         },
         null,
         null,
+        null,
         {
-          "id": "c_9_4_1",
-          "type": "cond_proximity",
+          "id": "c_11_5_1",
+          "type": "act_turn_body",
           "params": {
-            "mode": "approaching",
-            "target": "all",
-            "dist": 90
+            "mode": "delta",
+            "angle": 2
+          },
+          "next": {
+            "x": 6,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_6_1",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 7,
+            "maxDist": 1500
           },
           "next": null,
           "yes": {
-            "x": 5,
+            "x": 7,
             "y": 1
           },
           "no": {
-            "x": 4,
+            "x": 6,
             "y": 2
           }
         },
         {
-          "id": "c_10_5_1",
-          "type": "act_turn_body",
+          "id": "c_13_7_1",
+          "type": "act_fire",
           "params": {
-            "mode": "delta",
-            "angle": 14
+            "power": "heavy"
           },
-          "next": {
-            "x": 5,
-            "y": 2
-          },
+          "next": null,
           "yes": null,
           "no": null
         }
@@ -144,7 +188,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 10
+            "angle": 15
           },
           "next": null,
           "yes": null,
@@ -156,7 +200,7 @@
           "params": {
             "mode": "approaching",
             "target": "all",
-            "dist": 90
+            "dist": 140
           },
           "next": null,
           "yes": {
@@ -170,36 +214,22 @@
         },
         null,
         null,
+        null,
+        null,
         {
-          "id": "c_11_4_2",
-          "type": "act_turn_body",
+          "id": "c_14_6_2",
+          "type": "cond_hp_below",
           "params": {
-            "mode": "delta",
-            "angle": 2
-          },
-          "next": {
-            "x": 5,
-            "y": 2
-          },
-          "yes": null,
-          "no": null
-        },
-        {
-          "id": "c_12_5_2",
-          "type": "cond_enemy_sector",
-          "params": {
-            "ref": "turret",
-            "centerAngle": 0,
-            "halfWidth": 12,
-            "maxDist": 900
+            "percent": 65
           },
           "next": null,
           "yes": {
-            "x": 5,
+            "x": 6,
             "y": 3
           },
           "no": null
-        }
+        },
+        null
       ],
       [
         null,
@@ -207,7 +237,7 @@
           "id": "c_5_1_3",
           "type": "act_move",
           "params": {
-            "speedPercent": 75,
+            "speedPercent": 50,
             "duration": 0
           },
           "next": null,
@@ -217,54 +247,56 @@
         null,
         null,
         null,
-        {
-          "id": "c_13_5_3",
-          "type": "act_fire",
-          "params": {
-            "power": 2.2
-          },
-          "next": {
-            "x": 5,
-            "y": 4
-          },
-          "yes": null,
-          "no": null
-        }
-      ],
-      [
-        null,
-        null,
-        null,
-        null,
         null,
         {
-          "id": "c_14_5_4",
-          "type": "cond_incoming_shell",
-          "params": {
-            "maxDist": 200
-          },
-          "next": null,
-          "yes": {
-            "x": 5,
-            "y": 5
-          },
-          "no": null
-        }
-      ],
-      [
-        null,
-        null,
-        null,
-        null,
-        null,
-        {
-          "id": "c_15_5_5",
+          "id": "c_15_6_3",
           "type": "act_sub_weapon",
           "params": {},
           "next": null,
           "yes": null,
           "no": null
-        }
+        },
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
       ]
     ]
   }

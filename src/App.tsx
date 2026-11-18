@@ -30,6 +30,7 @@ import { validateAndRepairBlueprint } from './utils/blueprintGatekeeper';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
+  ENEMY_PATROL,
   PRESET_ENEMIES,
   TUTORIAL_STAGES,
 } from './data/presets';
@@ -66,6 +67,7 @@ import {
 } from './utils/share';
 
 const BASE_TPS = 20;
+const MAX_MOBILE_BATTLE_TANKS = 4;
 const FONT_SCALE_STORAGE_KEY = 'vstank_ui_font_scale';
 type UiFontScale = 'normal' | 'large' | 'xlarge';
 type LayoutPreset = 'mobile' | 'code' | 'balanced' | 'battle';
@@ -159,6 +161,8 @@ export function App() {
   const urlEnemy = useMemo(() => extractEnemyFromUrl(), []);
   const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>(() => getInitialLayoutPreset());
   const isMobileLayout = layoutPreset === 'mobile';
+  const maxBattleTanks = isMobileLayout ? MAX_MOBILE_BATTLE_TANKS : MAX_BATTLE_TANKS;
+  const maxEnemySlots = maxBattleTanks - 1;
 
   const [gameMode, setGameMode] = useState<'tutorial' | 'free'>(() =>
     urlEnemy || getInitialLayoutPreset() === 'mobile' ? 'free' : 'tutorial'
@@ -172,7 +176,7 @@ export function App() {
     cloneBlueprint(DEFAULT_PLAYER_BLUEPRINT)
   );
   const [freeEnemies, setFreeEnemies] = useState<TankBlueprint[]>(() => [
-    urlEnemy ? cloneBlueprint(urlEnemy) : cloneBlueprint(PRESET_ENEMIES[1]),
+    urlEnemy ? cloneBlueprint(urlEnemy) : cloneBlueprint(ENEMY_PATROL),
   ]);
   const [freeArenaSize, setFreeArenaSize] = useState<ArenaSizeId>('large');
   const [obstacleMode, setObstacleMode] = useState<ObstacleMode>('few');
@@ -185,7 +189,7 @@ export function App() {
     createBlankTutorialBlueprint(TUTORIAL_STAGES[0].playerStarter)
   );
 
-  const freeEnemyBp = freeEnemies[0] ?? PRESET_ENEMIES[1];
+  const freeEnemyBp = freeEnemies[0] ?? ENEMY_PATROL;
   const currentPlayerBp = gameMode === 'tutorial' ? tutorialPlayerBp : freePlayerBp;
   const currentEnemyList = useMemo(
     () =>
@@ -221,7 +225,7 @@ export function App() {
           teamBattle: Boolean(st.enemies && st.enemies.length > 1),
         });
       }
-      const cappedEnemies = enemiesInput.slice(0, MAX_BATTLE_TANKS - 1);
+      const cappedEnemies = enemiesInput.slice(0, maxEnemySlots);
       return createBattleState({
         player: cloneBlueprint(playerBp),
         enemies: cappedEnemies.map(cloneBlueprint),
@@ -230,7 +234,7 @@ export function App() {
         teamBattle: freeTeamBattle && cappedEnemies.length > 1,
       });
     },
-    [gameMode, tutorialIndex, obstacleMode, mapSeed, freeArenaSize, freeTeamBattle]
+    [gameMode, tutorialIndex, obstacleMode, mapSeed, freeArenaSize, freeTeamBattle, maxEnemySlots]
   );
 
   const [battleState, setBattleState] = useState<BattleState>(() =>
@@ -309,7 +313,8 @@ export function App() {
     arenaSize?: ArenaSizeId;
     teamBattle?: boolean;
   }): BattleState => {
-    const capped = (opts?.enemies ?? freeEnemies).slice(0, MAX_BATTLE_TANKS - 1);
+    const maxSlots = opts?.enemies ? Math.min(opts.enemies.length, MAX_BATTLE_TANKS - 1) : maxEnemySlots;
+    const capped = (opts?.enemies ?? freeEnemies).slice(0, maxSlots);
     const nextObsMode = opts?.obsMode ?? obstacleMode;
     const nextSeed = opts?.seed ?? mapSeed;
     const nextSize = opts?.arenaSize ?? freeArenaSize;
@@ -332,10 +337,16 @@ export function App() {
   const handleSelectLayoutPreset = (preset: LayoutPreset) => {
     setLayoutPreset(preset);
     if (preset === 'mobile') {
-      if (gameMode !== 'free') {
+      const mobileMaxSlots = MAX_MOBILE_BATTLE_TANKS - 1;
+      const trimmedEnemies = freeEnemies.slice(0, mobileMaxSlots);
+      const didTrim = trimmedEnemies.length !== freeEnemies.length;
+      if (didTrim) {
+        setFreeEnemies(trimmedEnemies);
+      }
+      if (gameMode !== 'free' || didTrim) {
         setGameMode('free');
         setIsPlaying(false);
-        setBattleState(buildFreeBattle());
+        setBattleState(buildFreeBattle({ enemies: trimmedEnemies }));
       }
       return;
     }
@@ -363,15 +374,15 @@ export function App() {
     const cloned = cloneBlueprint(enemy);
     const nextList = [...freeEnemies];
     nextList[slotIndex] = cloned;
-    const capped = nextList.slice(0, MAX_BATTLE_TANKS - 1);
+    const capped = nextList.slice(0, maxEnemySlots);
     setFreeEnemies(capped);
     setIsPlaying(false);
     setBattleState(buildFreeBattle({ enemies: capped }));
   };
 
   const handleAddFreeEnemy = (enemy: TankBlueprint) => {
-    if (freeEnemies.length >= MAX_BATTLE_TANKS - 1) return;
-    const nextList = [...freeEnemies, cloneBlueprint(enemy)].slice(0, MAX_BATTLE_TANKS - 1);
+    if (freeEnemies.length >= maxEnemySlots) return;
+    const nextList = [...freeEnemies, cloneBlueprint(enemy)].slice(0, maxEnemySlots);
     setGameMode('free');
     setFreeEnemies(nextList);
     setIsPlaying(false);
@@ -387,11 +398,11 @@ export function App() {
   };
 
   const handleLoadMultiEnemyFiles = async (files: FileList) => {
-    const maxSlots = MAX_BATTLE_TANKS - 1;
+    const maxSlots = maxEnemySlots;
     const available = maxSlots - freeEnemies.length;
     if (available <= 0) return;
     const nextList = [...freeEnemies];
-    const baseEnemy = freeEnemies[0] ?? PRESET_ENEMIES[1];
+    const baseEnemy = freeEnemies[0] ?? ENEMY_PATROL;
     for (const file of Array.from(files).slice(0, available)) {
       try {
         const text = (await file.text()).trim();
@@ -998,20 +1009,20 @@ export function App() {
                 <>
                   <label
                     className="battle-ctrl-item"
-                    title="対戦相手を追加（自機を含め最大8台まで・自動色覚対応カラー割当）"
+                    title={`対戦相手を追加（自機を含め最大${maxBattleTanks}台まで・自動色覚対応カラー割当）`}
                   >
-                    <span>参加 {1 + freeEnemies.length}/{MAX_BATTLE_TANKS}台:</span>
+                    <span>参加 {1 + freeEnemies.length}/{maxBattleTanks}台:</span>
                     <select
                       value=""
-                      disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
+                      disabled={freeEnemies.length >= maxEnemySlots}
                       onChange={(e) => {
                         const found = PRESET_ENEMIES.find((p) => p.id === e.target.value);
                         if (found) handleAddFreeEnemy(found);
                       }}
                     >
                       <option value="">
-                        {freeEnemies.length >= MAX_BATTLE_TANKS - 1
-                          ? '上限 (8台)'
+                        {freeEnemies.length >= maxEnemySlots
+                          ? `上限 (${maxBattleTanks}台)`
                           : '+ 相手を追加...'}
                       </option>
                       {PRESET_ENEMIES.map((e) => (
@@ -1025,9 +1036,9 @@ export function App() {
                   <button
                     type="button"
                     className="mini-btn"
-                    disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
+                    disabled={freeEnemies.length >= maxEnemySlots}
                     onClick={() => enemyFileInputRef.current?.click()}
-                    title="複数ファイル(.vstank.json / .py)から対戦相手を追加（最大8台まで）"
+                    title={`複数ファイル(.vstank.json / .py)から対戦相手を追加（最大${maxBattleTanks}台まで）`}
                   >
                     <Upload size={12} /> 相手読込
                   </button>
@@ -1512,7 +1523,8 @@ export function App() {
             handleSelectFreeEnemy(bp, 0);
           }}
           onAddAsEnemy={handleAddFreeEnemy}
-          canAddEnemy={freeEnemies.length < MAX_BATTLE_TANKS - 1}
+          canAddEnemy={freeEnemies.length < maxEnemySlots}
+          maxBattleTanks={maxBattleTanks}
           onClose={() => setShowShareModal(false)}
         />
       )}

@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "id": "enemy_kiter",
-  "name": "引き撃ちガンナー",
+  "id": "enemy_fixed_turret",
+  "name": "固定砲台",
   "author": "CodePanzer Official",
-  "color": "#10b981",
+  "color": "#38bdf8",
   "assembly": {
     "chassis": "standard",
     "mainGun": "standard",
@@ -61,7 +61,7 @@
           "id": "c_4_3_0",
           "type": "act_aim_enemy",
           "params": {
-            "lead": "lead",
+            "lead": "direct",
             "offset": 0
           },
           "next": {
@@ -78,93 +78,64 @@
           "id": "c_2_1_1",
           "type": "act_turn_radar",
           "params": {
-            "mode": "delta",
-            "angle": 10
+            "mode": "sweep",
+            "angle": 75
           },
           "next": null,
           "yes": null,
           "no": null
         },
-        {
-          "id": "c_6_2_1",
-          "type": "act_move",
-          "params": {
-            "speedPercent": -70,
-            "duration": 0
-          },
-          "next": {
-            "x": 2,
-            "y": 2
-          },
-          "yes": null,
-          "no": null
-        },
+        null,
         {
           "id": "c_5_3_1",
-          "type": "cond_enemy_dist",
+          "type": "act_turn_body",
           "params": {
-            "op": "lte",
-            "dist": 380
+            "mode": "turret_rel",
+            "angle": 0
           },
-          "next": null,
-          "yes": {
-            "x": 2,
-            "y": 1
-          },
-          "no": {
+          "next": {
             "x": 3,
             "y": 2
-          }
+          },
+          "yes": null,
+          "no": null
         }
       ],
       [
         null,
         null,
+        null,
         {
-          "id": "c_8_2_2",
+          "id": "c_6_3_2",
           "type": "cond_enemy_sector",
           "params": {
             "ref": "turret",
             "centerAngle": 0,
-            "halfWidth": 12,
-            "maxDist": 900
+            "halfWidth": 10,
+            "maxDist": 850
           },
           "next": null,
           "yes": {
-            "x": 2,
+            "x": 3,
             "y": 3
           },
-          "no": null
-        },
-        {
-          "id": "c_7_3_2",
-          "type": "act_move",
-          "params": {
-            "speedPercent": 50,
-            "duration": 0
-          },
-          "next": {
-            "x": 2,
-            "y": 2
-          },
-          "yes": null,
           "no": null
         }
       ],
       [
         null,
         null,
+        null,
         {
-          "id": "c_9_2_3",
+          "id": "c_7_3_3",
           "type": "act_fire",
           "params": {
-            "power": 2
+            "power": "normal"
           },
           "next": null,
           "yes": null,
           "no": null
-        },
-        null
+        }
       ]
     ]
   }

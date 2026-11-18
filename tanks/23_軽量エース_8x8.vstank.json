@@ -1,0 +1,587 @@
+{
+  "version": 1,
+  "id": "enemy_gale_mirage",
+  "name": "軽量エース",
+  "author": "CodePanzer Official",
+  "color": "#22d3ee",
+  "assembly": {
+    "chassis": "light",
+    "mainGun": "rapid",
+    "radar": "balanced",
+    "cpu": "standard_8x8",
+    "subWeapon": "none"
+  },
+  "program": {
+    "gridSize": 8,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "sub_call",
+          "params": {
+            "sub": "A"
+          },
+          "next": {
+            "x": 2,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 100,
+            "duration": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "counter_op",
+          "params": {
+            "reg": "A",
+            "op": "inc",
+            "value": 1
+          },
+          "next": {
+            "x": 4,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_4_0",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "gte",
+            "value": 56
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 0
+          },
+          "no": {
+            "x": 4,
+            "y": 1
+          }
+        },
+        {
+          "id": "c_5_5_0",
+          "type": "counter_op",
+          "params": {
+            "reg": "A",
+            "op": "set",
+            "value": 0
+          },
+          "next": {
+            "x": 5,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        {
+          "id": "c_6_4_1",
+          "type": "wire",
+          "params": {
+            "seconds": 0
+          },
+          "next": {
+            "x": 5,
+            "y": 1
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_7_5_1",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "all",
+            "dist": 130
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 1
+          },
+          "no": {
+            "x": 5,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_8_6_1",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "wall_away",
+            "angle": 16
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        {
+          "id": "c_20_0_2",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": 94
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_19_1_2",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "lte",
+            "value": 28
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_18_2_2",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 240
+          },
+          "next": null,
+          "yes": {
+            "x": 1,
+            "y": 2
+          },
+          "no": {
+            "x": 2,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_17_3_2",
+          "type": "wire",
+          "params": {
+            "seconds": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_13_4_2",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 14
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 2
+          },
+          "no": {
+            "x": 4,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_9_5_2",
+          "type": "cond_incoming_shell",
+          "params": {
+            "maxDist": 230
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 2
+          },
+          "no": {
+            "x": 4,
+            "y": 2
+          }
+        },
+        {
+          "id": "c_10_6_2",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "lte",
+            "value": 28
+          },
+          "next": null,
+          "yes": {
+            "x": 7,
+            "y": 2
+          },
+          "no": {
+            "x": 6,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_11_7_2",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": 100
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        }
+      ],
+      [
+        null,
+        {
+          "id": "c_21_1_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": -94
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_22_2_3",
+          "type": "cond_counter",
+          "params": {
+            "reg": "A",
+            "op": "lte",
+            "value": 28
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 4
+          },
+          "no": {
+            "x": 3,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_24_3_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": -30
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_14_4_3",
+          "type": "cond_hit_from",
+          "params": {
+            "zone": "any",
+            "ticks": 25
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 3
+          },
+          "no": {
+            "x": 4,
+            "y": 4
+          }
+        },
+        {
+          "id": "c_15_5_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "last_hit",
+            "angle": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_12_6_3",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": -100
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_23_2_4",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": 30
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_16_4_4",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 2
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_28_0_6",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "last_hit",
+            "angle": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_27_1_6",
+          "type": "cond_hit_from",
+          "params": {
+            "zone": "any",
+            "ticks": 25
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 6
+          },
+          "no": {
+            "x": 2,
+            "y": 6
+          }
+        },
+        {
+          "id": "c_29_2_6",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 6
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        {
+          "id": "c_37_4_6",
+          "type": "act_fire",
+          "params": {
+            "power": "fast"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_35_5_6",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 700
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 6
+          },
+          "no": {
+            "x": 4,
+            "y": 6
+          }
+        },
+        {
+          "id": "c_36_6_6",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ],
+      [
+        {
+          "id": "c_25_0_7",
+          "type": "sub_def",
+          "params": {
+            "sub": "A"
+          },
+          "next": {
+            "x": 1,
+            "y": 7
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_26_1_7",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 14
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 7
+          },
+          "no": {
+            "x": 1,
+            "y": 6
+          }
+        },
+        {
+          "id": "c_30_2_7",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 60
+          },
+          "next": {
+            "x": 3,
+            "y": 7
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_31_3_7",
+          "type": "act_aim_enemy",
+          "params": {
+            "lead": "lead",
+            "offset": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 7
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_32_4_7",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "turret",
+            "centerAngle": 0,
+            "halfWidth": 45,
+            "maxDist": 840
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 7
+          },
+          "no": null
+        },
+        {
+          "id": "c_33_5_7",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 450
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 7
+          },
+          "no": {
+            "x": 5,
+            "y": 6
+          }
+        },
+        {
+          "id": "c_34_6_7",
+          "type": "act_fire",
+          "params": {
+            "power": "heavy"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null
+      ]
+    ]
+  }
+}

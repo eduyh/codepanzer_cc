@@ -124,8 +124,10 @@ async function exportTankPresetFiles() {
       list.forEach((bp, idx) => {
         const prefix = String(idx).padStart(2, '0');
         const safeName =
-          String(bp.name || bp.id || 'tank').replace(/[^\w\u3040-\u30ff\u4e00-\u9faf-]+/g, '_') ||
-          'tank';
+          String(bp.name || bp.id || 'tank')
+            .replace(/[^\w\u3040-\u30ff\u4e00-\u9faf\uff10-\uff19-]+/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_|_$/g, '') || 'tank';
         const gridSize = bp.program?.gridSize ?? 6;
         const fileName = `${prefix}_${safeName}_${gridSize}x${gridSize}.vstank.json`;
         fs.writeFileSync(path.join(dir, fileName), JSON.stringify(bp, null, 2), 'utf8');

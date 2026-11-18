@@ -1,5 +1,11 @@
 import { CHIP_DEFINITIONS } from '../data/chips';
-import { CHASSIS_SPECS, MAIN_GUN_SPECS, RADAR_SPECS, SUB_WEAPON_SPECS } from '../data/parts';
+import {
+  CHASSIS_SPECS,
+  MAIN_GUN_SPECS,
+  RADAR_SPECS,
+  SUB_WEAPON_SPECS,
+  tryParseFirePowerInput,
+} from '../data/parts';
 import { createEmptyCells, makeCell } from '../data/presets';
 import {
   ALLOWED_GRID_SIZES,
@@ -260,9 +266,9 @@ export function validateFirePowerInCells(cells: (GridCell | null)[][]): string |
     for (let x = 0; x < row.length; x++) {
       const cell = row[x];
       if (!cell || cell.type !== 'act_fire') continue;
-      const pwr = Number(cell.params.power ?? 2.0);
-      if (!Number.isFinite(pwr) || pwr < MIN_FIRE_POWER || pwr > MAX_FIRE_POWER) {
-        return `不正なプログラムです: fire_main の火力 (power=${cell.params.power}) は ${MIN_FIRE_POWER.toFixed(1)}〜${MAX_FIRE_POWER.toFixed(1)} の範囲内である必要があります。`;
+      const rawPower = cell.params.power ?? 'normal';
+      if (tryParseFirePowerInput(rawPower) === null) {
+        return `不正なプログラムです: fire_main の火力 (power=${cell.params.power}) は "fast" / "normal" / "heavy"（または ${MIN_FIRE_POWER.toFixed(1)}〜${MAX_FIRE_POWER.toFixed(1)}）で指定する必要があります。`;
       }
     }
   }
@@ -676,7 +682,7 @@ function parseActionLine(stmt: string): {
     case 'fire':
       return {
         type: 'act_fire',
-        params: { power: Number(kw.power ?? pos[0] ?? 2.0) },
+        params: { power: kw.power ?? pos[0] ?? 'normal' },
       };
     case 'fire_sp':
     case 'use_sp':
@@ -960,13 +966,17 @@ export function parsePythonSourceToProgram(
         };
       }
       if (act.type === 'act_fire') {
-        const pwr = Number(act.params.power);
-        if (!Number.isFinite(pwr) || pwr < MIN_FIRE_POWER || pwr > MAX_FIRE_POWER) {
+        const parsedTier = tryParseFirePowerInput(
+          act.params.power,
+          parsedMainGunId ?? STANDARD_SETUP.mainGun
+        );
+        if (!parsedTier) {
           return {
             stmts,
-            error: `${cur.lineNum}行目: 不正なプログラムです。fire_main の火力 (power=${act.params.power}) は ${MIN_FIRE_POWER.toFixed(1)}〜${MAX_FIRE_POWER.toFixed(1)} の範囲で指定してください。`,
+            error: `${cur.lineNum}行目: 不正なプログラムです。fire_main の火力 (power=${act.params.power}) は "fast"（速弱）/ "normal"（標準）/ "heavy"（遅強）のいずれかで指定してください。`,
           };
         }
+        act.params.power = parsedTier;
       }
       cursor += 1;
       const node: ParsedStatement = {
