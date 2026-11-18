@@ -195,14 +195,31 @@ export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResu
               }
               continue;
             }
-            const str = rawVal === undefined ? String(fallback ?? '') : String(rawVal);
-            const validValues = (schema.options ?? []).map((opt) => opt.value);
-            if (validValues.length > 0 && !validValues.includes(str)) {
-              const fbStr = String(fallback ?? validValues[0]);
-              fixes.push(`(${x},${y}) ${cell.type}.${schema.key} "${str}" -> "${fbStr}"`);
-              repairedParams[schema.key] = fbStr;
+            const options = schema.options ?? [];
+            const validValues = options.map((opt) => opt.value);
+            const isNumericSelect =
+              validValues.length > 0 && validValues.every((v) => typeof v === 'number');
+            if (isNumericSelect) {
+              const numVal =
+                rawVal === undefined ? Number(fallback ?? validValues[0]) : Number(rawVal);
+              if (Number.isFinite(numVal) && validValues.includes(numVal)) {
+                repairedParams[schema.key] = numVal;
+              } else {
+                const fbNum = Number(fallback ?? validValues[0]);
+                fixes.push(
+                  `(${x},${y}) ${cell.type}.${schema.key} "${String(rawVal)}" -> ${fbNum}`
+                );
+                repairedParams[schema.key] = fbNum;
+              }
             } else {
-              repairedParams[schema.key] = str;
+              const str = rawVal === undefined ? String(fallback ?? '') : String(rawVal);
+              if (validValues.length > 0 && !validValues.includes(str)) {
+                const fbStr = String(fallback ?? validValues[0]);
+                fixes.push(`(${x},${y}) ${cell.type}.${schema.key} "${str}" -> "${fbStr}"`);
+                repairedParams[schema.key] = fbStr;
+              } else {
+                repairedParams[schema.key] = str;
+              }
             }
           }
         }

@@ -110,6 +110,25 @@ describe('blueprintGatekeeper', () => {
     expect(res.blueprint.program.cells[0][3]?.type).toBe('wire');
   });
 
+  it('preserves numeric select values such as mode_set and cond_mode without spurious fixes', () => {
+    const bp: TankBlueprint = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT));
+    bp.program.cells[0][2] = { id: 'm0', type: 'mode_set', params: { mode: 0 }, next: { x: 3, y: 0 } };
+    bp.program.cells[0][3] = {
+      id: 'cm0',
+      type: 'cond_mode',
+      params: { mode: 0 },
+      yes: { x: 4, y: 0 },
+      no: null,
+    };
+    bp.program.cells[0][4] = { id: 'm2', type: 'mode_set', params: { mode: 2 }, next: null };
+    const res = validateAndRepairBlueprint(bp);
+    expect(res.isValid).toBe(true);
+    expect(res.fixes).toEqual([]);
+    expect(res.blueprint.program.cells[0][2]?.params.mode).toBe(0);
+    expect(res.blueprint.program.cells[0][3]?.params.mode).toBe(0);
+    expect(res.blueprint.program.cells[0][4]?.params.mode).toBe(2);
+  });
+
   it('validates and completes all 18 Tutorial Stages (tut_1 .. tut_18) with player victory and Python round-trip', () => {
     expect(TUTORIAL_STAGES).toHaveLength(18);
     const failures: string[] = [];
@@ -411,8 +430,8 @@ describe('blueprintGatekeeper', () => {
     }
   });
 
-  it('validates all PRESET_ENEMIES cleanly and verifies new 4x4/6x6 enemy mechanics', () => {
-    expect(PRESET_ENEMIES).toHaveLength(25);
+  it('validates all PRESET_ENEMIES cleanly and verifies enemy mechanics including 12x12 masters and champion', () => {
+    expect(PRESET_ENEMIES).toHaveLength(30);
 
     for (const enemyBp of PRESET_ENEMIES) {
       const check = validateAndRepairBlueprint(enemyBp);
@@ -464,6 +483,11 @@ describe('blueprintGatekeeper', () => {
     verifySpecialBattle('enemy_gale_mirage', 'none');
     verifySpecialBattle('enemy_aegis_command', 'shield');
     verifySpecialBattle('enemy_dreadnought', 'missile');
+    verifySpecialBattle('enemy_light_master', 'none');
+    verifySpecialBattle('enemy_standard_master', 'shield');
+    verifySpecialBattle('enemy_heavy_master', 'shield');
+    verifySpecialBattle('enemy_destroyer_master', 'shield');
+    verifySpecialBattle('enemy_champion', 'shield');
 
     // Verify Sentinel detects rear hit and turns around to destroy attacker
     let sb = createBattleState({

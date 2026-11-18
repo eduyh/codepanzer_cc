@@ -6,13 +6,11 @@ import {
   Download,
   GraduationCap,
   Grid3X3,
-  Languages,
   MousePointer,
   Move,
   Trash2,
   Unlink,
   Upload,
-  Zap,
 } from 'lucide-react';
 import { CHIP_CATEGORY_LABELS, CHIP_DEFINITIONS, CHIP_LIST } from '../data/chips';
 import {
@@ -1652,8 +1650,8 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     <div className="grid-editor-panel">
       {/* Header Controls: Grid Size (4/6/8/12) + Coordinate Mode + JA/EN + CPU Steps */}
       <div className="editor-topbar">
-        <div className="grid-size-switch" title="グリッドサイズ切替 (4×4 / 6×6 / 8×8 / 12×12)">
-          <span className="coord-label">枠数:</span>
+        <div className="grid-size-switch" title="CPU（グリッドサイズ）切替 (4×4 / 6×6 / 8×8 / 12×12)">
+          <span className="coord-label">CPU</span>
           {visibleGridSizes.map((gs) => (
             <button
               key={gs}
@@ -1689,7 +1687,6 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           onClick={() => setDisplayLang((l) => (l === 'en' ? 'ja' : 'en'))}
           title="チップの英文(Python)表記と日本語表記を切り替えます"
         >
-          <Languages size={14} />
           <span>
             <strong>{displayLang === 'en' ? 'EN' : 'JP'}</strong> ⇄{' '}
             {displayLang === 'en' ? 'JP' : 'EN'}
@@ -1698,8 +1695,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
 
         <div className="editor-topbar-right">
           <div className="cpu-meter" title="使用ブロック数 / 上限 と 1Tickの実行ステップ">
-            <Zap size={14} className={trace?.truncated ? 'text-amber' : 'text-cyan'} />
-            <span>
+            <span className={trace?.truncated ? 'text-amber' : undefined}>
               {usedBlockCount}/{size * size}blk · {trace?.stepsUsed ?? 0}/{cpuSpec.maxStepsPerTick}st
             </span>
             {trace?.truncated && <span className="badge-warn">上限</span>}

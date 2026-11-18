@@ -30,7 +30,7 @@ import { validateAndRepairBlueprint } from './utils/blueprintGatekeeper';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
-  ENEMY_PATROL,
+  ENEMY_DUMMY,
   PRESET_ENEMIES,
   TUTORIAL_STAGES,
 } from './data/presets';
@@ -176,10 +176,10 @@ export function App() {
     cloneBlueprint(DEFAULT_PLAYER_BLUEPRINT)
   );
   const [freeEnemies, setFreeEnemies] = useState<TankBlueprint[]>(() => [
-    urlEnemy ? cloneBlueprint(urlEnemy) : cloneBlueprint(ENEMY_PATROL),
+    urlEnemy ? cloneBlueprint(urlEnemy) : cloneBlueprint(ENEMY_DUMMY),
   ]);
-  const [freeArenaSize, setFreeArenaSize] = useState<ArenaSizeId>('large');
-  const [obstacleMode, setObstacleMode] = useState<ObstacleMode>('few');
+  const [freeArenaSize, setFreeArenaSize] = useState<ArenaSizeId>('medium');
+  const [obstacleMode, setObstacleMode] = useState<ObstacleMode>('none');
   const [mapSeed, setMapSeed] = useState<number>(-1);
   const [freeTeamBattle, setFreeTeamBattle] = useState<boolean>(false);
   const enemyFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -189,7 +189,7 @@ export function App() {
     createBlankTutorialBlueprint(TUTORIAL_STAGES[0].playerStarter)
   );
 
-  const freeEnemyBp = freeEnemies[0] ?? ENEMY_PATROL;
+  const freeEnemyBp = freeEnemies[0] ?? ENEMY_DUMMY;
   const currentPlayerBp = gameMode === 'tutorial' ? tutorialPlayerBp : freePlayerBp;
   const currentEnemyList = useMemo(
     () =>
@@ -402,7 +402,7 @@ export function App() {
     const available = maxSlots - freeEnemies.length;
     if (available <= 0) return;
     const nextList = [...freeEnemies];
-    const baseEnemy = freeEnemies[0] ?? ENEMY_PATROL;
+    const baseEnemy = freeEnemies[0] ?? ENEMY_DUMMY;
     for (const file of Array.from(files).slice(0, available)) {
       try {
         const text = (await file.text()).trim();

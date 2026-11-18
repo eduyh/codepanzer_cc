@@ -1,0 +1,749 @@
+{
+  "version": 1,
+  "id": "enemy_destroyer_master",
+  "name": "超重マスター",
+  "author": "CodePanzer Official",
+  "color": "#e879f9",
+  "assembly": {
+    "chassis": "destroyer",
+    "mainGun": "cannon",
+    "radar": "long",
+    "cpu": "large_12x12",
+    "subWeapon": "shield"
+  },
+  "program": {
+    "gridSize": 12,
+    "coordinateMode": "relative",
+    "cells": [
+      [
+        {
+          "id": "c_0_0_0",
+          "type": "start",
+          "params": {},
+          "next": {
+            "x": 1,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_1_1_0",
+          "type": "sub_call",
+          "params": {
+            "sub": "A"
+          },
+          "next": {
+            "x": 2,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_2_2_0",
+          "type": "sub_call",
+          "params": {
+            "sub": "D"
+          },
+          "next": {
+            "x": 3,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_3_3_0",
+          "type": "sub_call",
+          "params": {
+            "sub": "C"
+          },
+          "next": {
+            "x": 4,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_4_4_0",
+          "type": "sub_call",
+          "params": {
+            "sub": "B"
+          },
+          "next": {
+            "x": 5,
+            "y": 0
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_5_5_0",
+          "type": "cond_counter",
+          "params": {
+            "reg": "B",
+            "op": "gte",
+            "value": 2
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 1
+          },
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        {
+          "id": "c_6_5_1",
+          "type": "counter_op",
+          "params": {
+            "reg": "B",
+            "op": "dec",
+            "value": 1
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_7_0_2",
+          "type": "sub_def",
+          "params": {
+            "sub": "A"
+          },
+          "next": {
+            "x": 1,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_8_1_2",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 12
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 2
+          },
+          "no": {
+            "x": 1,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_12_2_2",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "lock_enemy",
+            "angle": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 2
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_13_3_2",
+          "type": "cond_gun_ready",
+          "params": {},
+          "next": null,
+          "yes": {
+            "x": 4,
+            "y": 2
+          },
+          "no": null
+        },
+        {
+          "id": "c_14_4_2",
+          "type": "cond_enemy_sector",
+          "params": {
+            "ref": "body",
+            "centerAngle": 0,
+            "halfWidth": 18,
+            "maxDist": 1550
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 2
+          },
+          "no": null
+        },
+        {
+          "id": "c_15_5_2",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 360
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 2
+          },
+          "no": {
+            "x": 5,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_16_6_2",
+          "type": "act_fire",
+          "params": {
+            "power": "heavy"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_10_0_3",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "last_hit",
+            "angle": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_9_1_3",
+          "type": "cond_hit_from",
+          "params": {
+            "zone": "any",
+            "ticks": 24
+          },
+          "next": null,
+          "yes": {
+            "x": 0,
+            "y": 3
+          },
+          "no": {
+            "x": 2,
+            "y": 3
+          }
+        },
+        {
+          "id": "c_11_2_3",
+          "type": "act_turn_radar",
+          "params": {
+            "mode": "delta",
+            "angle": 10
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        {
+          "id": "c_17_5_3",
+          "type": "cond_enemy_dist",
+          "params": {
+            "op": "lte",
+            "dist": 500
+          },
+          "next": null,
+          "yes": {
+            "x": 6,
+            "y": 3
+          },
+          "no": {
+            "x": 5,
+            "y": 4
+          }
+        },
+        {
+          "id": "c_18_6_3",
+          "type": "act_fire",
+          "params": {
+            "power": "normal"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        null,
+        null,
+        null,
+        {
+          "id": "c_19_5_4",
+          "type": "act_fire",
+          "params": {
+            "power": "fast"
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_20_0_5",
+          "type": "sub_def",
+          "params": {
+            "sub": "B"
+          },
+          "next": {
+            "x": 1,
+            "y": 5
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_21_1_5",
+          "type": "cond_sub_ready",
+          "params": {},
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 5
+          },
+          "no": null
+        },
+        {
+          "id": "c_22_2_5",
+          "type": "cond_incoming_shell",
+          "params": {
+            "maxDist": 240
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 5
+          },
+          "no": null
+        },
+        {
+          "id": "c_23_3_5",
+          "type": "act_sub_weapon",
+          "params": {},
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_35_2_6",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 100,
+            "duration": 0
+          },
+          "next": {
+            "x": 3,
+            "y": 6
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_36_3_6",
+          "type": "wire",
+          "params": {
+            "seconds": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 6
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_39_4_6",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "enemy_rel",
+            "angle": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_32_0_7",
+          "type": "sub_def",
+          "params": {
+            "sub": "C"
+          },
+          "next": {
+            "x": 1,
+            "y": 7
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_33_1_7",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 14
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 7
+          },
+          "no": {
+            "x": 1,
+            "y": 8
+          }
+        },
+        {
+          "id": "c_34_2_7",
+          "type": "cond_mode",
+          "params": {
+            "mode": 1
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 6
+          },
+          "no": {
+            "x": 3,
+            "y": 7
+          }
+        },
+        {
+          "id": "c_37_3_7",
+          "type": "act_move",
+          "params": {
+            "speedPercent": -100,
+            "duration": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 7
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_38_4_7",
+          "type": "wire",
+          "params": {
+            "seconds": 0
+          },
+          "next": {
+            "x": 4,
+            "y": 6
+          },
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        {
+          "id": "c_40_1_8",
+          "type": "act_move",
+          "params": {
+            "speedPercent": 100,
+            "duration": 0
+          },
+          "next": {
+            "x": 2,
+            "y": 8
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_41_2_8",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "all",
+            "dist": 140
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 9
+          },
+          "no": {
+            "x": 3,
+            "y": 8
+          }
+        },
+        {
+          "id": "c_43_3_8",
+          "type": "cond_hit_from",
+          "params": {
+            "zone": "any",
+            "ticks": 24
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 9
+          },
+          "no": {
+            "x": 4,
+            "y": 8
+          }
+        },
+        {
+          "id": "c_45_4_8",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "delta",
+            "angle": 5
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_42_2_9",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "wall_away",
+            "angle": 16
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_44_3_9",
+          "type": "act_turn_body",
+          "params": {
+            "mode": "last_hit",
+            "angle": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        {
+          "id": "c_24_0_10",
+          "type": "sub_def",
+          "params": {
+            "sub": "D"
+          },
+          "next": {
+            "x": 1,
+            "y": 10
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_25_1_10",
+          "type": "cond_enemy_detected",
+          "params": {
+            "maxAgeTicks": 14
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 10
+          },
+          "no": null
+        },
+        {
+          "id": "c_26_2_10",
+          "type": "cond_proximity",
+          "params": {
+            "mode": "approaching",
+            "target": "walls",
+            "dist": 100
+          },
+          "next": null,
+          "yes": {
+            "x": 2,
+            "y": 11
+          },
+          "no": null
+        },
+        null,
+        {
+          "id": "c_31_4_10",
+          "type": "mode_set",
+          "params": {
+            "mode": 0
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      [
+        null,
+        null,
+        {
+          "id": "c_27_2_11",
+          "type": "cond_counter",
+          "params": {
+            "reg": "B",
+            "op": "lte",
+            "value": 1
+          },
+          "next": null,
+          "yes": {
+            "x": 3,
+            "y": 11
+          },
+          "no": null
+        },
+        {
+          "id": "c_28_3_11",
+          "type": "counter_op",
+          "params": {
+            "reg": "B",
+            "op": "set",
+            "value": 26
+          },
+          "next": {
+            "x": 4,
+            "y": 11
+          },
+          "yes": null,
+          "no": null
+        },
+        {
+          "id": "c_29_4_11",
+          "type": "cond_mode",
+          "params": {
+            "mode": 0
+          },
+          "next": null,
+          "yes": {
+            "x": 5,
+            "y": 11
+          },
+          "no": {
+            "x": 4,
+            "y": 10
+          }
+        },
+        {
+          "id": "c_30_5_11",
+          "type": "mode_set",
+          "params": {
+            "mode": 1
+          },
+          "next": null,
+          "yes": null,
+          "no": null
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ]
+    ]
+  }
+}

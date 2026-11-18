@@ -1485,6 +1485,531 @@ export const ENEMY_DREADNOUGHT: TankBlueprint = {
   }),
 };
 
+/**
+ * 12x12 砲塔型マスター＆チャンピオン共通ビルダー (大型AIボード向け高密度アルゴリズム)
+ * - sub_A: レーダー捕捉（未検知時は hit_from->last_hit 即応＋連続スキャン）＆ 偏差照準 ＋ 距離3段火力制御
+ * - sub_B: SP武装（弾接近シールド / 至近距離地雷）
+ * - sub_C: 接近検知壁・障害物回避 ＋ 被弾反転 ＋ 距離別弾道回避（遠距離斜め回避／近距離横波動）
+ */
+function buildMaster12x12Program(cfg: {
+  period: number;
+  halfPeriod: number;
+  wallDist: number;
+  closeDist: number;
+  closeAngle: number;
+  farAngle: number;
+  farShellAngle: number;
+  closeShellAngle: number;
+  radarScan: number;
+  radarRange: number;
+  fireCloseDist: number;
+  fireMidDist: number;
+  spMode: 'shield' | 'mine';
+  shieldDist?: number;
+}): ChipProgram {
+  type Placements = Parameters<typeof buildProgram>[2];
+  const spNodes: Placements =
+    cfg.spMode === 'shield'
+      ? [
+          { x: 0, y: 5, type: 'sub_def', params: { sub: 'B' }, next: { x: 1, y: 5 } },
+          { x: 1, y: 5, type: 'cond_sub_ready', yes: { x: 2, y: 5 }, no: null },
+          {
+            x: 2,
+            y: 5,
+            type: 'cond_incoming_shell',
+            params: { maxDist: cfg.shieldDist ?? 230 },
+            yes: { x: 3, y: 5 },
+            no: null,
+          },
+          { x: 3, y: 5, type: 'act_sub_weapon', next: null },
+        ]
+      : [
+          { x: 0, y: 5, type: 'sub_def', params: { sub: 'B' }, next: { x: 1, y: 5 } },
+          { x: 1, y: 5, type: 'cond_sub_ready', yes: { x: 2, y: 5 }, no: null },
+          {
+            x: 2,
+            y: 5,
+            type: 'cond_enemy_dist',
+            params: { op: 'lte', dist: 320 },
+            yes: { x: 3, y: 5 },
+            no: null,
+          },
+          { x: 3, y: 5, type: 'act_sub_weapon', next: null },
+        ];
+
+  return buildProgram(12, 'relative', [
+    { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+    { x: 1, y: 0, type: 'sub_call', params: { sub: 'A' }, next: { x: 2, y: 0 } },
+    { x: 2, y: 0, type: 'sub_call', params: { sub: 'B' }, next: { x: 3, y: 0 } },
+    { x: 3, y: 0, type: 'counter_op', params: { reg: 'A', op: 'inc', value: 1 }, next: { x: 4, y: 0 } },
+    {
+      x: 4,
+      y: 0,
+      type: 'cond_counter',
+      params: { reg: 'A', op: 'gte', value: cfg.period },
+      yes: { x: 4, y: 1 },
+      no: { x: 5, y: 0 },
+    },
+    { x: 4, y: 1, type: 'counter_op', params: { reg: 'A', op: 'set', value: 0 }, next: { x: 5, y: 1 } },
+    { x: 5, y: 1, type: 'wire', next: { x: 5, y: 0 } },
+    { x: 5, y: 0, type: 'sub_call', params: { sub: 'C' }, next: null },
+
+    { x: 0, y: 2, type: 'sub_def', params: { sub: 'A' }, next: { x: 1, y: 2 } },
+    {
+      x: 1,
+      y: 2,
+      type: 'cond_enemy_detected',
+      params: { maxAgeTicks: 14 },
+      yes: { x: 2, y: 2 },
+      no: { x: 1, y: 3 },
+    },
+    {
+      x: 1,
+      y: 3,
+      type: 'cond_hit_from',
+      params: { zone: 'any', ticks: 24 },
+      yes: { x: 0, y: 3 },
+      no: { x: 2, y: 3 },
+    },
+    { x: 0, y: 3, type: 'act_turn_radar', params: { mode: 'last_hit', angle: 0 }, next: null },
+    { x: 2, y: 3, type: 'act_turn_radar', params: { mode: 'delta', angle: cfg.radarScan }, next: null },
+    { x: 2, y: 2, type: 'act_turn_radar', params: { mode: 'lock_enemy', angle: 0 }, next: { x: 3, y: 2 } },
+    { x: 3, y: 2, type: 'act_aim_enemy', params: { lead: 'lead', offset: 0 }, next: { x: 4, y: 2 } },
+    { x: 4, y: 2, type: 'cond_gun_ready', yes: { x: 5, y: 2 }, no: null },
+    {
+      x: 5,
+      y: 2,
+      type: 'cond_enemy_sector',
+      params: { ref: 'turret', centerAngle: 0, halfWidth: 45, maxDist: cfg.radarRange },
+      yes: { x: 6, y: 2 },
+      no: null,
+    },
+    {
+      x: 6,
+      y: 2,
+      type: 'cond_enemy_dist',
+      params: { op: 'lte', dist: cfg.fireCloseDist },
+      yes: { x: 7, y: 2 },
+      no: { x: 6, y: 3 },
+    },
+    { x: 7, y: 2, type: 'act_fire', params: { power: 'heavy' }, next: null },
+    {
+      x: 6,
+      y: 3,
+      type: 'cond_enemy_dist',
+      params: { op: 'lte', dist: cfg.fireMidDist },
+      yes: { x: 7, y: 3 },
+      no: { x: 6, y: 4 },
+    },
+    { x: 7, y: 3, type: 'act_fire', params: { power: 'normal' }, next: null },
+    { x: 6, y: 4, type: 'act_fire', params: { power: 'fast' }, next: null },
+
+    ...spNodes,
+
+    { x: 0, y: 7, type: 'sub_def', params: { sub: 'C' }, next: { x: 1, y: 7 } },
+    { x: 1, y: 7, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: { x: 2, y: 7 } },
+    {
+      x: 2,
+      y: 7,
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'all', dist: cfg.wallDist },
+      yes: { x: 2, y: 8 },
+      no: { x: 3, y: 7 },
+    },
+    { x: 2, y: 8, type: 'act_turn_body', params: { mode: 'wall_away', angle: 16 }, next: null },
+    {
+      x: 3,
+      y: 7,
+      type: 'cond_enemy_detected',
+      params: { maxAgeTicks: 14 },
+      yes: { x: 4, y: 7 },
+      no: { x: 3, y: 6 },
+    },
+    {
+      x: 3,
+      y: 6,
+      type: 'cond_hit_from',
+      params: { zone: 'any', ticks: 24 },
+      yes: { x: 4, y: 6 },
+      no: { x: 2, y: 6 },
+    },
+    { x: 4, y: 6, type: 'act_turn_body', params: { mode: 'last_hit', angle: 0 }, next: null },
+    { x: 2, y: 6, type: 'act_turn_body', params: { mode: 'delta', angle: 3 }, next: null },
+
+    {
+      x: 4,
+      y: 7,
+      type: 'cond_enemy_dist',
+      params: { op: 'lte', dist: cfg.closeDist },
+      yes: { x: 5, y: 7 },
+      no: { x: 4, y: 8 },
+    },
+    {
+      x: 5,
+      y: 7,
+      type: 'cond_incoming_shell',
+      params: { maxDist: 220 },
+      yes: { x: 6, y: 7 },
+      no: { x: 5, y: 8 },
+    },
+    {
+      x: 6,
+      y: 7,
+      type: 'cond_counter',
+      params: { reg: 'A', op: 'lte', value: cfg.halfPeriod },
+      yes: { x: 7, y: 7 },
+      no: { x: 6, y: 6 },
+    },
+    { x: 7, y: 7, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: cfg.closeShellAngle }, next: null },
+    { x: 6, y: 6, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: -cfg.closeShellAngle }, next: null },
+    {
+      x: 5,
+      y: 8,
+      type: 'cond_counter',
+      params: { reg: 'A', op: 'lte', value: cfg.halfPeriod },
+      yes: { x: 6, y: 8 },
+      no: { x: 5, y: 9 },
+    },
+    { x: 6, y: 8, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: cfg.closeAngle }, next: null },
+    { x: 5, y: 9, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: -cfg.closeAngle }, next: null },
+
+    { x: 4, y: 8, type: 'wire', next: { x: 4, y: 9 } },
+    { x: 4, y: 9, type: 'wire', next: { x: 4, y: 10 } },
+    {
+      x: 4,
+      y: 10,
+      type: 'cond_incoming_shell',
+      params: { maxDist: 220 },
+      yes: { x: 5, y: 10 },
+      no: { x: 3, y: 10 },
+    },
+    {
+      x: 5,
+      y: 10,
+      type: 'cond_counter',
+      params: { reg: 'A', op: 'lte', value: cfg.halfPeriod },
+      yes: { x: 6, y: 10 },
+      no: { x: 5, y: 11 },
+    },
+    { x: 6, y: 10, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: cfg.farShellAngle }, next: null },
+    { x: 5, y: 11, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: -cfg.farShellAngle }, next: null },
+    {
+      x: 3,
+      y: 10,
+      type: 'cond_counter',
+      params: { reg: 'A', op: 'lte', value: cfg.halfPeriod },
+      yes: { x: 2, y: 10 },
+      no: { x: 3, y: 11 },
+    },
+    { x: 2, y: 10, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: cfg.farAngle }, next: null },
+    { x: 3, y: 11, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: -cfg.farAngle }, next: null },
+  ]);
+}
+
+/**
+ * 12x12 固定砲塔（超重）専用ビルダー
+ * - 戦闘中（enemy_detected）: 正面装甲と固定主砲を敵正面 (enemy_rel 0°) へ維持しながら後退引き撃ち (mode=0)
+ * - 後方壁接近 (walls <= 100px) 時のみカウンタ B のヒステリシス制御で一時前進 (mode=1) へ切替
+ * - 未検知（障害物遮蔽・煙幕時）: 前進＋障害物・壁回避 (target="all") で素早く射線を回復
+ */
+function buildDestroyerMaster12x12Program(cfg: {
+  radarScan: number;
+  radarRange: number;
+  fireHalf: number;
+  fireCloseDist: number;
+  fireMidDist: number;
+  shieldDist: number;
+}): ChipProgram {
+  return buildProgram(12, 'relative', [
+    { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+    { x: 1, y: 0, type: 'sub_call', params: { sub: 'A' }, next: { x: 2, y: 0 } },
+    { x: 2, y: 0, type: 'sub_call', params: { sub: 'D' }, next: { x: 3, y: 0 } },
+    { x: 3, y: 0, type: 'sub_call', params: { sub: 'C' }, next: { x: 4, y: 0 } },
+    { x: 4, y: 0, type: 'sub_call', params: { sub: 'B' }, next: { x: 5, y: 0 } },
+    { x: 5, y: 0, type: 'cond_counter', params: { reg: 'B', op: 'gte', value: 2 }, yes: { x: 5, y: 1 }, no: null },
+    { x: 5, y: 1, type: 'counter_op', params: { reg: 'B', op: 'dec', value: 1 }, next: null },
+
+    { x: 0, y: 2, type: 'sub_def', params: { sub: 'A' }, next: { x: 1, y: 2 } },
+    {
+      x: 1,
+      y: 2,
+      type: 'cond_enemy_detected',
+      params: { maxAgeTicks: 12 },
+      yes: { x: 2, y: 2 },
+      no: { x: 1, y: 3 },
+    },
+    {
+      x: 1,
+      y: 3,
+      type: 'cond_hit_from',
+      params: { zone: 'any', ticks: 24 },
+      yes: { x: 0, y: 3 },
+      no: { x: 2, y: 3 },
+    },
+    { x: 0, y: 3, type: 'act_turn_radar', params: { mode: 'last_hit', angle: 0 }, next: null },
+    { x: 2, y: 3, type: 'act_turn_radar', params: { mode: 'delta', angle: cfg.radarScan }, next: null },
+    { x: 2, y: 2, type: 'act_turn_radar', params: { mode: 'lock_enemy', angle: 0 }, next: { x: 3, y: 2 } },
+    { x: 3, y: 2, type: 'cond_gun_ready', yes: { x: 4, y: 2 }, no: null },
+    {
+      x: 4,
+      y: 2,
+      type: 'cond_enemy_sector',
+      params: { ref: 'body', centerAngle: 0, halfWidth: cfg.fireHalf, maxDist: cfg.radarRange },
+      yes: { x: 5, y: 2 },
+      no: null,
+    },
+    {
+      x: 5,
+      y: 2,
+      type: 'cond_enemy_dist',
+      params: { op: 'lte', dist: cfg.fireCloseDist },
+      yes: { x: 6, y: 2 },
+      no: { x: 5, y: 3 },
+    },
+    { x: 6, y: 2, type: 'act_fire', params: { power: 'heavy' }, next: null },
+    {
+      x: 5,
+      y: 3,
+      type: 'cond_enemy_dist',
+      params: { op: 'lte', dist: cfg.fireMidDist },
+      yes: { x: 6, y: 3 },
+      no: { x: 5, y: 4 },
+    },
+    { x: 6, y: 3, type: 'act_fire', params: { power: 'normal' }, next: null },
+    { x: 5, y: 4, type: 'act_fire', params: { power: 'fast' }, next: null },
+
+    { x: 0, y: 5, type: 'sub_def', params: { sub: 'B' }, next: { x: 1, y: 5 } },
+    { x: 1, y: 5, type: 'cond_sub_ready', yes: { x: 2, y: 5 }, no: null },
+    {
+      x: 2,
+      y: 5,
+      type: 'cond_incoming_shell',
+      params: { maxDist: cfg.shieldDist },
+      yes: { x: 3, y: 5 },
+      no: null,
+    },
+    { x: 3, y: 5, type: 'act_sub_weapon', next: null },
+
+    { x: 0, y: 10, type: 'sub_def', params: { sub: 'D' }, next: { x: 1, y: 10 } },
+    {
+      x: 1,
+      y: 10,
+      type: 'cond_enemy_detected',
+      params: { maxAgeTicks: 14 },
+      yes: { x: 2, y: 10 },
+      no: null,
+    },
+    {
+      x: 2,
+      y: 10,
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'walls', dist: 100 },
+      yes: { x: 2, y: 11 },
+      no: null,
+    },
+    {
+      x: 2,
+      y: 11,
+      type: 'cond_counter',
+      params: { reg: 'B', op: 'lte', value: 1 },
+      yes: { x: 3, y: 11 },
+      no: null,
+    },
+    { x: 3, y: 11, type: 'counter_op', params: { reg: 'B', op: 'set', value: 26 }, next: { x: 4, y: 11 } },
+    { x: 4, y: 11, type: 'cond_mode', params: { mode: 0 }, yes: { x: 5, y: 11 }, no: { x: 4, y: 10 } },
+    { x: 5, y: 11, type: 'mode_set', params: { mode: 1 }, next: null },
+    { x: 4, y: 10, type: 'mode_set', params: { mode: 0 }, next: null },
+
+    { x: 0, y: 7, type: 'sub_def', params: { sub: 'C' }, next: { x: 1, y: 7 } },
+    {
+      x: 1,
+      y: 7,
+      type: 'cond_enemy_detected',
+      params: { maxAgeTicks: 14 },
+      yes: { x: 2, y: 7 },
+      no: { x: 1, y: 8 },
+    },
+    { x: 2, y: 7, type: 'cond_mode', params: { mode: 1 }, yes: { x: 2, y: 6 }, no: { x: 3, y: 7 } },
+    { x: 2, y: 6, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: { x: 3, y: 6 } },
+    { x: 3, y: 6, type: 'wire', next: { x: 4, y: 6 } },
+    { x: 3, y: 7, type: 'act_move', params: { speedPercent: -100, duration: 0 }, next: { x: 4, y: 7 } },
+    { x: 4, y: 7, type: 'wire', next: { x: 4, y: 6 } },
+    { x: 4, y: 6, type: 'act_turn_body', params: { mode: 'enemy_rel', angle: 0 }, next: null },
+
+    { x: 1, y: 8, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: { x: 2, y: 8 } },
+    {
+      x: 2,
+      y: 8,
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'all', dist: 140 },
+      yes: { x: 2, y: 9 },
+      no: { x: 3, y: 8 },
+    },
+    { x: 2, y: 9, type: 'act_turn_body', params: { mode: 'wall_away', angle: 16 }, next: null },
+    {
+      x: 3,
+      y: 8,
+      type: 'cond_hit_from',
+      params: { zone: 'any', ticks: 24 },
+      yes: { x: 3, y: 9 },
+      no: { x: 4, y: 8 },
+    },
+    { x: 3, y: 9, type: 'act_turn_body', params: { mode: 'last_hit', angle: 0 }, next: null },
+    { x: 4, y: 8, type: 'act_turn_body', params: { mode: 'delta', angle: 5 }, next: null },
+  ]);
+}
+
+/** 26: 軽量マスター (12x12 軽量シャシー) - 76/76t 広角480px＋地雷＋軽量砲連射の高機動近接マスター */
+export const ENEMY_LIGHT_MASTER: TankBlueprint = {
+  version: 1,
+  id: 'enemy_light_master',
+  name: '軽量マスター',
+  author: 'CodePanzer Official',
+  color: '#34d399',
+  assembly: {
+    chassis: 'light',
+    mainGun: 'rapid',
+    radar: 'wide',
+    cpu: 'large_12x12',
+    subWeapon: 'mine',
+  },
+  program: buildMaster12x12Program({
+    period: 50,
+    halfPeriod: 25,
+    wallDist: 130,
+    closeDist: 250,
+    closeAngle: 90,
+    farAngle: 18,
+    farShellAngle: 65,
+    closeShellAngle: 94,
+    radarScan: 10,
+    radarRange: 500,
+    fireCloseDist: 460,
+    fireMidDist: 680,
+    spMode: 'mine',
+  }),
+};
+
+/** 27: 標準マスター (12x12 標準シャシー) - 95/100t 軽快機動力×軽量砲×弾接近バリアの標準シャシー最高峰 */
+export const ENEMY_STANDARD_MASTER: TankBlueprint = {
+  version: 1,
+  id: 'enemy_standard_master',
+  name: '標準マスター',
+  author: 'CodePanzer Official',
+  color: '#38bdf8',
+  assembly: {
+    chassis: 'standard',
+    mainGun: 'rapid',
+    radar: 'balanced',
+    cpu: 'large_12x12',
+    subWeapon: 'shield',
+  },
+  program: buildMaster12x12Program({
+    period: 52,
+    halfPeriod: 26,
+    wallDist: 130,
+    closeDist: 270,
+    closeAngle: 90,
+    farAngle: 24,
+    farShellAngle: 54,
+    closeShellAngle: 94,
+    radarScan: 6,
+    radarRange: 840,
+    fireCloseDist: 520,
+    fireMidDist: 760,
+    spMode: 'shield',
+    shieldDist: 230,
+  }),
+};
+
+/** 28: 重量マスター (12x12 重量シャシー) - 130/135t HP190重装甲×重量砲×弾接近バリアの重装決戦マスター */
+export const ENEMY_HEAVY_MASTER: TankBlueprint = {
+  version: 1,
+  id: 'enemy_heavy_master',
+  name: '重量マスター',
+  author: 'CodePanzer Official',
+  color: '#fb923c',
+  assembly: {
+    chassis: 'heavy',
+    mainGun: 'cannon',
+    radar: 'balanced',
+    cpu: 'large_12x12',
+    subWeapon: 'shield',
+  },
+  program: buildMaster12x12Program({
+    period: 52,
+    halfPeriod: 26,
+    wallDist: 130,
+    closeDist: 280,
+    closeAngle: 88,
+    farAngle: 22,
+    farShellAngle: 22,
+    closeShellAngle: 92,
+    radarScan: 6,
+    radarRange: 840,
+    fireCloseDist: 380,
+    fireMidDist: 600,
+    spMode: 'shield',
+    shieldDist: 230,
+  }),
+};
+
+/** 29: 超重マスター (12x12 超重シャシー) - 146/160t HP210・主砲冷却+20%の固定砲塔＋1550px狭角＋重量砲＋バリア */
+export const ENEMY_DESTROYER_MASTER: TankBlueprint = {
+  version: 1,
+  id: 'enemy_destroyer_master',
+  name: '超重マスター',
+  author: 'CodePanzer Official',
+  color: '#e879f9',
+  assembly: {
+    chassis: 'destroyer',
+    mainGun: 'cannon',
+    radar: 'long',
+    cpu: 'large_12x12',
+    subWeapon: 'shield',
+  },
+  program: buildDestroyerMaster12x12Program({
+    radarScan: 10,
+    radarRange: 1550,
+    fireHalf: 18,
+    fireCloseDist: 360,
+    fireMidDist: 500,
+    shieldDist: 240,
+  }),
+};
+
+/** 30: チャンピオン (12x12 現行仕様最強機) - 110/135t HP190重装甲×機動力1.00×軽量砲×弾接近バリアの統合チャンピオン */
+export const ENEMY_CHAMPION: TankBlueprint = {
+  version: 1,
+  id: 'enemy_champion',
+  name: 'チャンピオン',
+  author: 'CodePanzer Official',
+  color: '#facc15',
+  assembly: {
+    chassis: 'heavy',
+    mainGun: 'rapid',
+    radar: 'balanced',
+    cpu: 'large_12x12',
+    subWeapon: 'shield',
+  },
+  program: buildMaster12x12Program({
+    period: 52,
+    halfPeriod: 26,
+    wallDist: 130,
+    closeDist: 290,
+    closeAngle: 88,
+    farAngle: 22,
+    farShellAngle: 28,
+    closeShellAngle: 90,
+    radarScan: 6,
+    radarRange: 840,
+    fireCloseDist: 580,
+    fireMidDist: 800,
+    spMode: 'shield',
+    shieldDist: 230,
+  }),
+};
+
 export const PRESET_ENEMIES: TankBlueprint[] = [
   ENEMY_DUMMY,
   ENEMY_RUSHER,
@@ -1511,6 +2036,11 @@ export const PRESET_ENEMIES: TankBlueprint[] = [
   ENEMY_GALE_MIRAGE,
   ENEMY_AEGIS_COMMAND,
   ENEMY_DREADNOUGHT,
+  ENEMY_LIGHT_MASTER,
+  ENEMY_STANDARD_MASTER,
+  ENEMY_HEAVY_MASTER,
+  ENEMY_DESTROYER_MASTER,
+  ENEMY_CHAMPION,
 ];
 
 // ==========================================

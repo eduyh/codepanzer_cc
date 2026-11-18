@@ -1524,8 +1524,8 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     expect(battle.status).toBe('running');
   });
 
-  it('validates all 25 preset enemies (4x4 / 6x6 / 8x8) including normalization and Python round-trip', () => {
-    expect(PRESET_ENEMIES.length).toBe(25);
+  it('validates all 30 preset enemies (4x4 / 6x6 / 8x8 / 12x12) including normalization and Python round-trip', () => {
+    expect(PRESET_ENEMIES.length).toBe(30);
     for (const enemyBp of PRESET_ENEMIES) {
       const size = enemyBp.program.gridSize;
       const fit = validateGridBlockFit(enemyBp.program.cells, size);
