@@ -6,7 +6,7 @@
   "color": "#fb923c",
   "assembly": {
     "chassis": "heavy",
-    "mainGun": "cannon",
+    "mainGun": "rapid",
     "radar": "balanced",
     "cpu": "large_12x12",
     "subWeapon": "shield"
@@ -233,7 +233,7 @@
           "type": "cond_enemy_dist",
           "params": {
             "op": "lte",
-            "dist": 380
+            "dist": 520
           },
           "next": null,
           "yes": {
@@ -308,7 +308,7 @@
           "type": "cond_enemy_dist",
           "params": {
             "op": "lte",
-            "dist": 600
+            "dist": 760
           },
           "next": null,
           "yes": {
@@ -540,7 +540,7 @@
           "type": "cond_enemy_dist",
           "params": {
             "op": "lte",
-            "dist": 280
+            "dist": 270
           },
           "next": null,
           "yes": {
@@ -653,7 +653,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 88
+            "angle": 86
           },
           "next": null,
           "yes": null,
@@ -688,7 +688,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -88
+            "angle": -86
           },
           "next": null,
           "yes": null,
@@ -709,7 +709,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 22
+            "angle": 24
           },
           "next": null,
           "yes": null,
@@ -772,7 +772,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 22
+            "angle": 32
           },
           "next": null,
           "yes": null,
@@ -793,7 +793,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -22
+            "angle": -24
           },
           "next": null,
           "yes": null,
@@ -805,7 +805,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -22
+            "angle": -32
           },
           "next": null,
           "yes": null,

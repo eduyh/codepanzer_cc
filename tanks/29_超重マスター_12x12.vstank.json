@@ -144,7 +144,7 @@
           "id": "c_8_1_2",
           "type": "cond_enemy_detected",
           "params": {
-            "maxAgeTicks": 12
+            "maxAgeTicks": 20
           },
           "next": null,
           "yes": {

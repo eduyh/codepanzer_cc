@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { transpileProgramToLines } from '../../components/GridEditor';
 import { CHIP_DEFINITIONS } from '../../data/chips';
-import { CPU_SPECS, cpuIdForGridSize } from '../../data/parts';
+import { CHASSIS_SPECS, CPU_SPECS, cpuIdForGridSize } from '../../data/parts';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
@@ -1713,6 +1713,152 @@ describe('Team Battle Mode & Stage 15 Multi-Enemy Finale', () => {
     }
     expect(stDecoy.decoys?.[0].hp).toBeLessThan(25);
     expect(stDecoy.decoys?.[0].hp).toBeGreaterThan(0);
+  });
+
+  it('resolves tank-to-tank collisions with chassis weight/momentum, flank loophole, anti-deadlock, and boundary clamps', () => {
+    const mkMover = (
+      id: string,
+      chassis: 'light' | 'standard' | 'heavy' | 'destroyer',
+      boost = false
+    ): TankBlueprint => ({
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id,
+      name: id,
+      assembly: {
+        chassis,
+        mainGun: 'rapid',
+        radar: 'wide',
+        cpu: 'mini_4x4',
+        subWeapon: boost ? 'boost' : 'none',
+      },
+      program: buildProgram(
+        4,
+        'relative',
+        boost
+          ? [
+              { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+              { x: 1, y: 0, type: 'act_sub_weapon', next: { x: 2, y: 0 } },
+              { x: 2, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+            ]
+          : [
+              { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+              { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+            ]
+      ),
+    });
+
+    // 1. Mass & momentum difference: Light boosted vs Destroyer head-on -> Light takes heavier rebound & angle change
+    const headOn = createBattleState({
+      player: mkMover('l_boost', 'light', true),
+      enemy: mkMover('d_head', 'destroyer'),
+      arenaSize: 'small',
+      playerSpawn: { x: 260, y: 330, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      enemySpawn: { x: 420, y: 330, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+    });
+    const minHeadDist = CHASSIS_SPECS.light.radius + CHASSIS_SPECS.destroyer.radius;
+    let bumped = false;
+    let lightDeflect = 0;
+    let dstHeadDeflect = 0;
+    for (let t = 0; t < 35; t++) {
+      stepBattleTick(headOn);
+      const a = headOn.tanks[0];
+      const b = headOn.tanks[1];
+      expect(Math.hypot(a.x - b.x, a.y - b.y)).toBeGreaterThanOrEqual(minHeadDist - 1e-4);
+      if (a.stats.damageTaken > 0 && !bumped) {
+        bumped = true;
+        lightDeflect = Math.abs(((a.bodyAngle - 90 + 540) % 360) - 180);
+        dstHeadDeflect = Math.abs(((b.bodyAngle - 270 + 540) % 360) - 180);
+        expect(a.stats.damageTaken).toBeGreaterThan(b.stats.damageTaken);
+      }
+    }
+    expect(bumped).toBe(true);
+    expect(lightDeflect).toBeGreaterThan(dstHeadDeflect);
+    expect(dstHeadDeflect).toBeLessThanOrEqual(10);
+
+    // 2. Destroyer counterplay loophole: fast boosted flank hit twists Destroyer hull noticeably more
+    const flank = createBattleState({
+      player: mkMover('l_flank', 'light', true),
+      enemy: mkMover('d_flank', 'destroyer'),
+      arenaSize: 'small',
+      playerSpawn: { x: 350, y: 220, bodyAngle: 180, turretAngle: 180, radarAngle: 180 },
+      enemySpawn: { x: 345, y: 330, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+    });
+    let dstFlankDeflect = 0;
+    for (let t = 0; t < 25; t++) {
+      stepBattleTick(flank);
+      if (flank.tanks[1].stats.damageTaken > 0 && dstFlankDeflect === 0) {
+        dstFlankDeflect = Math.abs(((flank.tanks[1].bodyAngle - 90 + 540) % 360) - 180);
+      }
+    }
+    expect(dstFlankDeflect).toBeGreaterThan(dstHeadDeflect);
+
+    // 3. Anti-deadlock: identical Destroyers charging dead-center break symmetry and separate cleanly
+    const mirror = createBattleState({
+      player: mkMover('d1', 'destroyer'),
+      enemy: mkMover('d2', 'destroyer'),
+      arenaSize: 'small',
+      playerSpawn: { x: 300, y: 330, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+      enemySpawn: { x: 400, y: 330, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+    });
+    for (let t = 0; t < 80; t++) {
+      stepBattleTick(mirror);
+    }
+    const finalDist = Math.hypot(
+      mirror.tanks[0].x - mirror.tanks[1].x,
+      mirror.tanks[0].y - mirror.tanks[1].y
+    );
+    expect(finalDist).toBeGreaterThan(CHASSIS_SPECS.destroyer.radius * 2 + 8);
+
+    // 3b. Live ENEMY_DESTROYER_MASTER mirror match breaks head-on horn locks quickly
+    const dstMaster = PRESET_ENEMIES.find((e) => e.name === '超重マスター');
+    expect(dstMaster).toBeDefined();
+    const dstMirror = createBattleState({
+      player: dstMaster!,
+      enemy: dstMaster!,
+      arenaSize: 'medium',
+    });
+    let consecClose = 0;
+    let maxConsecClose = 0;
+    const minDistThreshold = CHASSIS_SPECS.destroyer.radius * 2 + 4;
+    for (let t = 0; t < 500 && dstMirror.status === 'running'; t++) {
+      stepBattleTick(dstMirror);
+      for (const tk of dstMirror.tanks) {
+        expect(Number.isFinite(tk.x)).toBe(true);
+        expect(Number.isFinite(tk.y)).toBe(true);
+        expect(tk.stats.wallHits).toBe(0);
+      }
+      const dist = Math.hypot(
+        dstMirror.tanks[0].x - dstMirror.tanks[1].x,
+        dstMirror.tanks[0].y - dstMirror.tanks[1].y
+      );
+      if (dist <= minDistThreshold) {
+        consecClose++;
+        if (consecClose > maxConsecClose) maxConsecClose = consecClose;
+      } else {
+        consecClose = 0;
+      }
+    }
+    expect(maxConsecClose).toBeLessThanOrEqual(12);
+
+    // 4. Wall & obstacle safeguard: corner pin keeps both tanks inside arena bounds
+    const cornerPin = createBattleState({
+      player: mkMover('h_wall', 'heavy'),
+      enemy: mkMover('l_wall', 'light'),
+      arenaSize: 'small',
+      obstacles: [{ id: 'obs_pin', x: 80, y: 100, width: 60, height: 60 }],
+      playerSpawn: { x: 75, y: 36, bodyAngle: 270, turretAngle: 270, radarAngle: 270 },
+      enemySpawn: { x: 35, y: 36, bodyAngle: 90, turretAngle: 90, radarAngle: 90 },
+    });
+    for (let t = 0; t < 40; t++) {
+      stepBattleTick(cornerPin);
+      for (const tk of cornerPin.tanks) {
+        const rr = CHASSIS_SPECS[tk.blueprint.assembly.chassis].radius;
+        expect(tk.x).toBeGreaterThanOrEqual(rr - 1e-4);
+        expect(tk.x).toBeLessThanOrEqual(cornerPin.arena.width - rr + 1e-4);
+        expect(tk.y).toBeGreaterThanOrEqual(rr - 1e-4);
+        expect(tk.y).toBeLessThanOrEqual(cornerPin.arena.height - rr + 1e-4);
+      }
+    }
   });
 });
 

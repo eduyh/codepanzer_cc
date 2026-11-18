@@ -772,7 +772,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 54
+            "angle": 50
           },
           "next": null,
           "yes": null,
@@ -805,7 +805,7 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -54
+            "angle": -50
           },
           "next": null,
           "yes": null,

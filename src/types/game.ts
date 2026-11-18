@@ -246,6 +246,8 @@ export interface TankRuntime {
   lastAttackHitTick: number;
   lastHitAngle: number | null;
   wallHitCooldown: number;
+  lastTankCollisionTick?: number;
+  tankCollisionStreak?: number;
   lastHitZone?: 'front' | 'side' | 'rear';
   killedById?: string | null;
   counters: Record<string, number>;

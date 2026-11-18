@@ -1407,9 +1407,9 @@ export const ENEMY_GALE_MIRAGE: TankBlueprint = {
     period: 56,
     halfPeriod: 28,
     moveCloseDist: 240,
-    closeAngle: 94,
-    farAngle: 30,
-    shellAngle: 100,
+    closeAngle: 90,
+    farAngle: 28,
+    shellAngle: 88,
     radarScan: 6,
     radarRange: 840,
     fireCloseDist: 450,
@@ -1506,6 +1506,7 @@ function buildMaster12x12Program(cfg: {
   fireMidDist: number;
   spMode: 'shield' | 'mine';
   shieldDist?: number;
+  shieldHpPct?: number;
 }): ChipProgram {
   type Placements = Parameters<typeof buildProgram>[2];
   const spNodes: Placements =
@@ -1513,15 +1514,37 @@ function buildMaster12x12Program(cfg: {
       ? [
           { x: 0, y: 5, type: 'sub_def', params: { sub: 'B' }, next: { x: 1, y: 5 } },
           { x: 1, y: 5, type: 'cond_sub_ready', yes: { x: 2, y: 5 }, no: null },
-          {
-            x: 2,
-            y: 5,
-            type: 'cond_incoming_shell',
-            params: { maxDist: cfg.shieldDist ?? 230 },
-            yes: { x: 3, y: 5 },
-            no: null,
-          },
-          { x: 3, y: 5, type: 'act_sub_weapon', next: null },
+          ...(cfg.shieldHpPct !== undefined
+            ? [
+                {
+                  x: 2,
+                  y: 5,
+                  type: 'cond_hp_below' as const,
+                  params: { percent: cfg.shieldHpPct },
+                  yes: { x: 3, y: 5 },
+                  no: null,
+                },
+                {
+                  x: 3,
+                  y: 5,
+                  type: 'cond_incoming_shell' as const,
+                  params: { maxDist: cfg.shieldDist ?? 230 },
+                  yes: { x: 4, y: 5 },
+                  no: null,
+                },
+                { x: 4, y: 5, type: 'act_sub_weapon' as const, next: null },
+              ]
+            : [
+                {
+                  x: 2,
+                  y: 5,
+                  type: 'cond_incoming_shell' as const,
+                  params: { maxDist: cfg.shieldDist ?? 230 },
+                  yes: { x: 3, y: 5 },
+                  no: null,
+                },
+                { x: 3, y: 5, type: 'act_sub_weapon' as const, next: null },
+              ]),
         ]
       : [
           { x: 0, y: 5, type: 'sub_def', params: { sub: 'B' }, next: { x: 1, y: 5 } },
@@ -1734,7 +1757,7 @@ function buildDestroyerMaster12x12Program(cfg: {
       x: 1,
       y: 2,
       type: 'cond_enemy_detected',
-      params: { maxAgeTicks: 12 },
+      params: { maxAgeTicks: 20 },
       yes: { x: 2, y: 2 },
       no: { x: 1, y: 3 },
     },
@@ -1911,7 +1934,7 @@ export const ENEMY_STANDARD_MASTER: TankBlueprint = {
     closeDist: 270,
     closeAngle: 90,
     farAngle: 24,
-    farShellAngle: 54,
+    farShellAngle: 50,
     closeShellAngle: 94,
     radarScan: 6,
     radarRange: 840,
@@ -1922,7 +1945,7 @@ export const ENEMY_STANDARD_MASTER: TankBlueprint = {
   }),
 };
 
-/** 28: 重量マスター (12x12 重量シャシー) - 130/135t HP190重装甲×重量砲×弾接近バリアの重装決戦マスター */
+/** 28: 重量マスター (12x12 重量シャシー) - 110/135t HP190重装甲×軽量砲連射×弾接近バリアの重装決戦マスター */
 export const ENEMY_HEAVY_MASTER: TankBlueprint = {
   version: 1,
   id: 'enemy_heavy_master',
@@ -1931,7 +1954,7 @@ export const ENEMY_HEAVY_MASTER: TankBlueprint = {
   color: '#fb923c',
   assembly: {
     chassis: 'heavy',
-    mainGun: 'cannon',
+    mainGun: 'rapid',
     radar: 'balanced',
     cpu: 'large_12x12',
     subWeapon: 'shield',
@@ -1940,15 +1963,15 @@ export const ENEMY_HEAVY_MASTER: TankBlueprint = {
     period: 52,
     halfPeriod: 26,
     wallDist: 130,
-    closeDist: 280,
-    closeAngle: 88,
-    farAngle: 22,
-    farShellAngle: 22,
+    closeDist: 270,
+    closeAngle: 86,
+    farAngle: 24,
+    farShellAngle: 32,
     closeShellAngle: 92,
     radarScan: 6,
     radarRange: 840,
-    fireCloseDist: 380,
-    fireMidDist: 600,
+    fireCloseDist: 520,
+    fireMidDist: 760,
     spMode: 'shield',
     shieldDist: 230,
   }),
@@ -2006,7 +2029,8 @@ export const ENEMY_CHAMPION: TankBlueprint = {
     fireCloseDist: 580,
     fireMidDist: 800,
     spMode: 'shield',
-    shieldDist: 230,
+    shieldDist: 260,
+    shieldHpPct: 95,
   }),
 };
 

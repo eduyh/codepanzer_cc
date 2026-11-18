@@ -12,6 +12,7 @@ import {
   ArenaObstacle,
   ArenaSizeId,
   BattleState,
+  ChassisId,
   Mine,
   ObstacleMode,
   Projectile,
@@ -540,6 +541,243 @@ function resolveObstaclePush(
   return { hit, nx: totalNx, ny: totalNy };
 }
 
+interface ChassisCollisionProfile {
+  bounceFactor: number;
+  deflectDegScale: number;
+  maxDeflectDeg: number;
+  minDeflectDeg: number;
+}
+
+const CHASSIS_COLLISION_PROFILES: Record<ChassisId, ChassisCollisionProfile> = {
+  light: { bounceFactor: 1.1, deflectDegScale: 1.25, maxDeflectDeg: 32, minDeflectDeg: 6 },
+  standard: { bounceFactor: 0.95, deflectDegScale: 1.0, maxDeflectDeg: 26, minDeflectDeg: 5 },
+  heavy: { bounceFactor: 0.8, deflectDegScale: 0.85, maxDeflectDeg: 20, minDeflectDeg: 4 },
+  destroyer: { bounceFactor: 0.65, deflectDegScale: 0.7, maxDeflectDeg: 18, minDeflectDeg: 3 },
+};
+
+function clampTankToArenaAndObstacles(
+  tank: TankRuntime,
+  radius: number,
+  arena: ArenaConfig
+): void {
+  tank.x = clamp(tank.x, radius, arena.width - radius);
+  tank.y = clamp(tank.y, radius, arena.height - radius);
+  if (arena.obstacles.length > 0) {
+    resolveObstaclePush(tank, radius, arena.obstacles);
+    tank.x = clamp(tank.x, radius, arena.width - radius);
+    tank.y = clamp(tank.y, radius, arena.height - radius);
+  }
+}
+
+function applyTankImpactPhysics(
+  tank: TankRuntime,
+  outNx: number,
+  outNy: number,
+  massShare: number,
+  approachSpeed: number,
+  otherSpeedAbs: number,
+  otherBoosted: boolean,
+  streak: number,
+  rand: () => number,
+  tieSign: 1 | -1
+): void {
+  const chassisId = tank.blueprint.assembly.chassis;
+  const chassis = CHASSIS_SPECS[chassisId];
+  const profile = CHASSIS_COLLISION_PROFILES[chassisId];
+  const { mobilityMultiplier } = calculateAssemblyWeight(tank.blueprint.assembly);
+  const boostFactor = tank.boostTicks > 0 ? 1.7 : 1.0;
+  const maxSpd = chassis.maxSpeed * mobilityMultiplier * boostFactor;
+
+  const h = angleToVector(tank.bodyAngle);
+  const dot = h.dx * outNx + h.dy * outNy; // +1 = facing collision, < 0.35 = struck from side/rear
+  const cross = h.dx * outNy - h.dy * outNx; // > 0 = other tank on right -> turn left (-)
+
+  const alongVel = dot * tank.speed;
+  const awaySign = dot >= 0 ? -1 : 1;
+  const streakScale = streak > 0 ? 1 + streak * 0.35 : 1;
+  if (alongVel > -0.1) {
+    // Moving into or pressed against the other tank: rebound away along the tank axis
+    const baseBounce = streak > 0 ? 1.5 + approachSpeed * 0.5 : 0.95 + approachSpeed * 0.38;
+    const rebound = clamp(
+      baseBounce * (0.55 + 0.75 * massShare) * profile.bounceFactor * streakScale,
+      streak > 0 ? 0.85 : 0.55,
+      maxSpd * 1.15
+    );
+    tank.speed = awaySign * rebound;
+  } else {
+    // Moving away from contact normal: shove further away along -outN
+    tank.speed = clamp(
+      tank.speed + awaySign * approachSpeed * massShare * 0.45,
+      -maxSpd * 1.1,
+      maxSpd * 1.15
+    );
+  }
+
+  // Angular deflection: follow physical glance direction once >= ~4.5 deg off-center;
+  // for dead-center hits, use a stable time-bucketed seeded sign so consecutive bounces pass rather than ping-pong.
+  const turnSign = Math.abs(cross) >= 0.08 ? (cross > 0 ? -1 : 1) : tieSign;
+  const isFlankOrRearHit = dot < 0.35;
+  const isFasterAttacker = otherBoosted || otherSpeedAbs > Math.abs(tank.speed) + 0.6;
+  const flankLoopholeMult =
+    isFlankOrRearHit && isFasterAttacker ? (otherBoosted ? 2.25 : 1.65) : isFlankOrRearHit ? 1.25 : 1.0;
+  const headOnHeavyStabilizer =
+    !isFlankOrRearHit &&
+    streak === 0 &&
+    (chassisId === 'destroyer' || chassisId === 'heavy') &&
+    massShare < 0.45
+      ? 0.5
+      : 1.0;
+
+  const rawDeg =
+    (streak > 0 ? 6.5 + approachSpeed * 1.7 : 4.2 + approachSpeed * 1.35 + rand() * 2.8) *
+    (0.55 + massShare * 0.9) *
+    profile.deflectDegScale *
+    flankLoopholeMult *
+    headOnHeavyStabilizer *
+    (1 + streak * 0.25);
+  const minDeflect =
+    isFlankOrRearHit && isFasterAttacker
+      ? Math.max(profile.minDeflectDeg, 10)
+      : (streak > 0 ? Math.max(profile.minDeflectDeg, 9) : profile.minDeflectDeg) *
+        headOnHeavyStabilizer *
+        (1 + streak * 0.22);
+  const maxDeflect =
+    isFlankOrRearHit && isFasterAttacker
+      ? Math.max(profile.maxDeflectDeg, 24)
+      : profile.maxDeflectDeg * (1 + streak * 0.18);
+  const turnDeg = clamp(rawDeg, minDeflect, Math.min(42, maxDeflect));
+
+  tank.bodyAngle = normalizeAngle360(tank.bodyAngle + turnSign * turnDeg);
+  if (chassis.fixedTurret) {
+    tank.turretAngle = tank.bodyAngle;
+  }
+}
+
+function resolveTankCollisions(state: BattleState, tick: number): void {
+  const friendlyFireDisabled = Boolean(state.arena.teamBattle);
+  for (let i = 0; i < state.tanks.length; i++) {
+    const t1 = state.tanks[i];
+    if (t1.hp <= 0) continue;
+    const c1 = t1.blueprint.assembly.chassis;
+    const r1 = CHASSIS_SPECS[c1].radius;
+    const w1 = Math.max(20, calculateAssemblyWeight(t1.blueprint.assembly).totalWeight);
+
+    for (let j = i + 1; j < state.tanks.length; j++) {
+      const t2 = state.tanks[j];
+      if (t2.hp <= 0) continue;
+      const c2 = t2.blueprint.assembly.chassis;
+      const r2 = CHASSIS_SPECS[c2].radius;
+      const w2 = Math.max(20, calculateAssemblyWeight(t2.blueprint.assembly).totalWeight);
+
+      const minDist = r1 + r2;
+      const rawDx = t2.x - t1.x;
+      const rawDy = t2.y - t1.y;
+      const dist = Math.hypot(rawDx, rawDy);
+      if (dist >= minDist) continue;
+
+      const rand = mulberry32(
+        ((tick + 1) * 1664525) ^ Math.round(t1.x * 17 + t1.y * 23 + t2.x * 31 + t2.y * 43)
+      );
+
+      let nx: number;
+      let ny: number;
+      if (dist <= 1e-5) {
+        const fallbackVec = angleToVector(normalizeAngle360(t1.bodyAngle + (rand() < 0.5 ? 90 : -90)));
+        nx = fallbackVec.dx;
+        ny = fallbackVec.dy;
+      } else {
+        nx = rawDx / dist;
+        ny = rawDy / dist;
+      }
+
+      const relVx = t1.vx - t2.vx;
+      const relVy = t1.vy - t2.vy;
+      const approachSpeed = Math.max(0, relVx * nx + relVy * ny);
+
+      // Detect rapid repeated collisions so opposing AIs (even identical heavy/destroyers) break out of lockstep
+      const s1Streak =
+        t1.lastTankCollisionTick !== undefined && tick - t1.lastTankCollisionTick <= 36
+          ? Math.min(4, (t1.tankCollisionStreak ?? 0) + 1)
+          : 0;
+      const s2Streak =
+        t2.lastTankCollisionTick !== undefined && tick - t2.lastTankCollisionTick <= 36
+          ? Math.min(4, (t2.tankCollisionStreak ?? 0) + 1)
+          : 0;
+      t1.lastTankCollisionTick = tick;
+      t2.lastTankCollisionTick = tick;
+      t1.tankCollisionStreak = s1Streak;
+      t2.tankCollisionStreak = s2Streak;
+      const maxStreak = Math.max(s1Streak, s2Streak);
+      const streakScale = 1 + maxStreak * 0.45;
+
+      const weightSum = w1 + w2;
+      const share1 = w2 / weightSum;
+      const share2 = w1 / weightSum;
+
+      const s1 = Math.abs(t1.speed);
+      const s2 = Math.abs(t2.speed);
+      const b1 = t1.boostTicks > 0;
+      const b2 = t2.boostTicks > 0;
+      const windowSeed = ((Math.floor(tick / 45) + 1) * 2654435761) ^ (i * 97 + j * 193);
+      const tieSign: 1 | -1 = mulberry32(windowSeed)() < 0.5 ? -1 : 1;
+
+      applyTankImpactPhysics(t1, nx, ny, share1, approachSpeed, s2, b2, s1Streak, rand, tieSign);
+      applyTankImpactPhysics(t2, -nx, -ny, share2, approachSpeed, s1, b1, s2Streak, rand, tieSign);
+
+      // Push apart along normal + tangential slip (realistic first impact, strong deadlock break on streak >= 1)
+      const overlap = minDist - dist;
+      const extraSep =
+        maxStreak > 0
+          ? clamp((9.5 + approachSpeed * 2.0) * streakScale, 9.5, 44.0)
+          : clamp(1.8 + approachSpeed * 0.65, 1.8, 12.0);
+      const totalPush = overlap + extraSep;
+      const tx = -ny;
+      const ty = nx;
+      const h1 = angleToVector(t1.bodyAngle);
+      const latSign = h1.dx * tx + h1.dy * ty >= 0 ? 1 : -1;
+      const lateralSlip =
+        maxStreak > 0
+          ? clamp((7.5 + approachSpeed * 1.25) * streakScale, 7.5, 32.0)
+          : clamp(0.8 + approachSpeed * 0.25, 0.8, 5.0);
+
+      t1.x = t1.x - nx * totalPush * share1 + tx * latSign * lateralSlip * share1;
+      t1.y = t1.y - ny * totalPush * share1 + ty * latSign * lateralSlip * share1;
+      t2.x = t2.x + nx * totalPush * share2 - tx * latSign * lateralSlip * share2;
+      t2.y = t2.y + ny * totalPush * share2 - ty * latSign * lateralSlip * share2;
+
+      // Wall & obstacle safeguard: keep inside arena & outside obstacles, then transfer leftover separation if pinned
+      clampTankToArenaAndObstacles(t1, r1, state.arena);
+      clampTankToArenaAndObstacles(t2, r2, state.arena);
+      const postDx = t2.x - t1.x;
+      const postDy = t2.y - t1.y;
+      const postDist = Math.hypot(postDx, postDy);
+      if (postDist < minDist && postDist > 1e-5) {
+        const pnx = postDx / postDist;
+        const pny = postDy / postDist;
+        const remain = minDist - postDist + 2.0;
+        t1.x -= pnx * remain * 0.5;
+        t1.y -= pny * remain * 0.5;
+        t2.x += pnx * remain * 0.5;
+        t2.y += pny * remain * 0.5;
+        clampTankToArenaAndObstacles(t1, r1, state.arena);
+        clampTankToArenaAndObstacles(t2, r2, state.arena);
+      }
+
+      if (!(friendlyFireDisabled && t1.team === t2.team)) {
+        const baseImpact = approachSpeed > 0.4 ? 0.35 + approachSpeed * 0.48 : 0.2;
+        const d1 = clamp(baseImpact * clamp(w2 / w1, 0.5, 1.9) * (b2 ? 1.25 : 1.0), 0.2, 7.0);
+        const d2 = clamp(baseImpact * clamp(w1 / w2, 0.5, 1.9) * (b1 ? 1.25 : 1.0), 0.2, 7.0);
+        if (t1.hp > 1) {
+          applyDamage(t1, Math.min(t1.hp - 1, d1), undefined, tick);
+        }
+        if (t2.hp > 1) {
+          applyDamage(t2, Math.min(t2.hp - 1, d2), undefined, tick);
+        }
+      }
+    }
+  }
+}
+
 export type ArmorHitZone = 'front' | 'side' | 'rear';
 
 export function getDirectionalArmorMultiplier(
@@ -861,34 +1099,8 @@ export function stepBattleTick(state: BattleState): BattleState {
     }
   }
 
-  // 4. Tank-to-Tank collision (all alive pairs)
-  for (let i = 0; i < state.tanks.length; i++) {
-    const t1 = state.tanks[i];
-    if (t1.hp <= 0) continue;
-    const r1 = CHASSIS_SPECS[t1.blueprint.assembly.chassis].radius;
-    for (let j = i + 1; j < state.tanks.length; j++) {
-      const t2 = state.tanks[j];
-      if (t2.hp <= 0) continue;
-      const r2 = CHASSIS_SPECS[t2.blueprint.assembly.chassis].radius;
-      const dist = distanceBetween(t1.x, t1.y, t2.x, t2.y);
-      const minDist = r1 + r2;
-      if (dist < minDist && dist > 1e-5) {
-        const overlap = (minDist - dist) / 2;
-        const nx = (t2.x - t1.x) / dist;
-        const ny = (t2.y - t1.y) / dist;
-        t1.x -= nx * overlap;
-        t1.y -= ny * overlap;
-        t2.x += nx * overlap;
-        t2.y += ny * overlap;
-        if (!(state.arena.teamBattle && t1.team === t2.team)) {
-          applyDamage(t1, 0.6, undefined, tick);
-          applyDamage(t2, 0.6, undefined, tick);
-        }
-        t1.speed *= 0.4;
-        t2.speed *= 0.4;
-      }
-    }
-  }
+  // 4. Tank-to-Tank physical collision: mass-weighted knockback, bounce, anti-deadlock & wall/obstacle clamp
+  resolveTankCollisions(state, tick);
 
   // 5. Update Projectiles & Hit Detection
   const survivingProjectiles: Projectile[] = [];
