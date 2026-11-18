@@ -557,6 +557,13 @@ button {
   color: var(--sky);
 }
 
+.editor-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
 .cpu-meter {
   display: flex;
   align-items: center;
@@ -702,6 +709,11 @@ button {
 .grid-cell.selected {
   border-color: #ffffff;
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.grid-cell.moving-source {
+  border: 2px dashed #f59e0b !important;
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.55), inset 0 0 10px rgba(245, 158, 11, 0.22);
 }
 
 .grid-cell.connected-target-next {
@@ -1234,12 +1246,22 @@ button {
 .code-lines {
   flex: 1;
   overflow-y: auto;
+  overflow-x: auto;
   background: var(--bg-base);
   border: 1px solid var(--border);
   border-radius: 7px;
   padding: 6px 4px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 13px;
+}
+
+.code-lines.wrap-lines {
+  overflow-x: hidden;
+}
+
+.code-lines.wrap-lines .code-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .code-line {
@@ -2850,6 +2872,475 @@ button {
   .share-layout,
   .parts-columns {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Weight bar & inspector header helpers */
+.weight-status-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(51, 65, 85, 0.7);
+  font-size: 12px;
+  max-width: 560px;
+}
+
+.weight-status-bar.overweight {
+  background: rgba(244, 63, 94, 0.12);
+  border-color: rgba(244, 63, 94, 0.45);
+}
+
+.weight-status-label {
+  color: #94a3b8;
+  white-space: nowrap;
+}
+
+.weight-bar-track {
+  flex: 1;
+  min-width: 72px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(51, 65, 85, 0.7);
+  overflow: hidden;
+}
+
+.weight-bar-fill {
+  height: 100%;
+  transition: width 0.15s ease;
+}
+
+.weight-status-value {
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.weight-status-bar.overweight .weight-status-value {
+  color: #fda4af;
+}
+
+.weight-status-warn {
+  color: #fda4af;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.inspector-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.mobile-accordion-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.mobile-accordion-btn.is-warn {
+  border-color: rgba(244, 63, 94, 0.5);
+  background: rgba(244, 63, 94, 0.12);
+  color: #fda4af;
+}
+
+.mobile-guide-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Sticky Mobile Action & Jump Bar */
+.mobile-sticky-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 10px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+
+.mobile-sticky-playback,
+.mobile-sticky-jumps {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.mobile-play-btn {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.mobile-sticky-jumps .mini-btn {
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+/* Dedicated Mobile Layout ("スマホ" switch: test ground only, top-code / bottom-battle) */
+/* Dedicated Mobile Layout ("スマホ" switch: test ground only, top-code / bottom-battle) */
+html:has(.app-shell.mobile-layout),
+html:has(.app-shell.mobile-layout) body,
+html:has(.app-shell.mobile-layout) #root {
+  height: auto;
+  min-height: 100%;
+}
+
+.app-shell.mobile-layout {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+  width: 100%;
+  max-width: 480px;
+  margin: 0 auto;
+  border-inline: 1px solid var(--border);
+}
+
+.app-shell.mobile-layout .top-nav {
+  padding: 8px 10px;
+  gap: 6px 8px;
+}
+
+.app-shell.mobile-layout .brand-logo {
+  width: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+
+.app-shell.mobile-layout .brand h1 {
+  font-size: 14px;
+}
+
+.app-shell.mobile-layout .brand-sub {
+  display: none;
+}
+
+.app-shell.mobile-layout .nav-actions {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.app-shell.mobile-layout .btn-primary {
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+.app-shell.mobile-layout .workspace {
+  display: flex;
+  flex-direction: column;
+  overflow: visible;
+  min-height: auto;
+}
+
+.app-shell.mobile-layout .pane-left,
+.app-shell.mobile-layout .pane-right {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  min-height: auto;
+}
+
+.app-shell.mobile-layout .grid-board-wrapper,
+.app-shell.mobile-layout .editor-sidebar,
+.app-shell.mobile-layout .inspector-card,
+.app-shell.mobile-layout .palette-card,
+.app-shell.mobile-layout .code-preview-box,
+.app-shell.mobile-layout .code-lines,
+.app-shell.mobile-layout .hud-tank {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-shell.mobile-layout .pane-right {
+  padding: 10px;
+  border-top: 2px solid var(--border);
+}
+
+.app-shell.mobile-layout .grid-editor-panel {
+  padding: 8px 10px;
+  gap: 8px;
+}
+
+.app-shell.mobile-layout .editor-topbar {
+  gap: 4px;
+  justify-content: flex-start;
+}
+
+.app-shell.mobile-layout .grid-size-switch,
+.app-shell.mobile-layout .coord-mode-switch {
+  padding: 2px 4px;
+  gap: 2px;
+}
+
+.app-shell.mobile-layout .coord-label {
+  font-size: 10px;
+  margin-right: 2px;
+}
+
+.app-shell.mobile-layout .seg-btn {
+  padding: 3px 5px;
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .lang-switch {
+  padding: 4px 6px;
+  gap: 4px;
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .editor-topbar-right {
+  gap: 4px;
+  margin-left: auto;
+}
+
+.app-shell.mobile-layout .cpu-meter {
+  padding: 4px 6px;
+  gap: 4px;
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .editor-topbar-right .mini-btn {
+  padding: 4px 6px;
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .editor-body {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.app-shell.mobile-layout .editor-config-grid {
+  grid-template-columns: 1fr;
+}
+
+.app-shell.mobile-layout .chip-grid {
+  max-width: 100%;
+  padding: 6px;
+  gap: 3px;
+}
+
+.app-shell.mobile-layout .chip-grid.grid-size-6 .cell-title {
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .chip-grid.grid-size-6 .cell-param {
+  font-size: 9.5px;
+  padding: 0 3px;
+}
+
+.app-shell.mobile-layout .chip-grid.grid-size-8 .cell-title {
+  font-size: 9px;
+}
+
+.app-shell.mobile-layout .chip-grid.grid-size-8 .cell-param {
+  font-size: 8px;
+}
+
+.app-shell.mobile-layout .arrow-legend {
+  gap: 6px 10px;
+  font-size: 11px;
+}
+
+.app-shell.mobile-layout .legend-hint {
+  margin-left: 0;
+  width: 100%;
+}
+
+.app-shell.mobile-layout .branch-controls-dual {
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+@media (max-width: 370px) {
+  .app-shell.mobile-layout .branch-controls-dual {
+    grid-template-columns: 1fr;
+  }
+}
+
+.app-shell.mobile-layout .dir-pad {
+  grid-template-columns: repeat(3, 34px);
+  gap: 3px;
+}
+
+.app-shell.mobile-layout .dir-pad-spacer,
+.app-shell.mobile-layout .dir-pad-center,
+.app-shell.mobile-layout .dir-btn {
+  width: 34px;
+  height: 31px;
+}
+
+.app-shell.mobile-layout .code-lines {
+  max-height: 340px;
+  font-size: 12px;
+}
+
+.app-shell.mobile-layout .code-textarea,
+.app-shell.mobile-layout .param-row select,
+.app-shell.mobile-layout .num-input-wrap input,
+.app-shell.mobile-layout .editor-tank-name-input,
+.app-shell.mobile-layout .editor-radar-select,
+.app-shell.mobile-layout .battle-ctrl-item select,
+.app-shell.mobile-layout .seed-input {
+  font-size: 16px;
+}
+
+.app-shell.mobile-layout .code-textarea {
+  min-height: 200px;
+}
+
+.app-shell.mobile-layout .battle-top-controls {
+  padding: 8px;
+  gap: 6px 8px;
+}
+
+.app-shell.mobile-layout .battle-enemy-primary {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.app-shell.mobile-layout .battle-enemy-primary select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.app-shell.mobile-layout .battle-hud {
+  grid-template-columns: 1fr;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.app-shell.mobile-layout .hud-clock {
+  order: -1;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-shell.mobile-layout .hud-name-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.app-shell.mobile-layout .hud-enemy .hud-name-row,
+.app-shell.mobile-layout .hud-enemy .hud-substats {
+  justify-content: flex-start;
+}
+
+.app-shell.mobile-layout .battle-hud-multi {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.app-shell.mobile-layout .hud-clock-compact {
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+  padding-right: 0;
+  padding-bottom: 6px;
+}
+
+.app-shell.mobile-layout .hud-substats {
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+.app-shell.mobile-layout .viewport-frame {
+  flex: none;
+  height: 310px;
+  min-height: 280px;
+}
+
+.app-shell.mobile-layout .viewport-overlay-top {
+  top: 6px;
+  left: 6px;
+  right: 6px;
+  gap: 5px;
+}
+
+.app-shell.mobile-layout .cam-btn {
+  padding: 3px 6px;
+  font-size: 10.5px;
+}
+
+.app-shell.mobile-layout .playback-bar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 10px;
+}
+
+.app-shell.mobile-layout .playback-left,
+.app-shell.mobile-layout .speed-controls {
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.app-shell.mobile-layout .result-card {
+  min-width: 0;
+  width: min(320px, 92%);
+  padding: 16px;
+}
+
+@media (max-width: 768px) {
+  .app-shell.mobile-layout {
+    max-width: 100%;
+    border-inline: none;
+  }
+  .app-shell .editor-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .editor-config-grid,
+  .saved-grid {
+    grid-template-columns: 1fr;
+  }
+  .modal-backdrop {
+    padding: 8px;
+  }
+  .modal-panel.modal-wide {
+    width: 100%;
+    max-height: 94vh;
+  }
+  .modal-content {
+    padding: 12px;
+  }
+  .copy-row,
+  .saved-slot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .brand-sub {
+    display: none;
   }
 }
 

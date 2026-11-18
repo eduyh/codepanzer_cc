@@ -1,13 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ChevronDown,
+  ChevronUp,
   Code2,
-  Compass,
   Download,
   GraduationCap,
   Grid3X3,
   Languages,
   MousePointer,
-  Navigation,
+  Move,
   Trash2,
   Unlink,
   Upload,
@@ -77,6 +78,8 @@ interface GridEditorProps {
   trace?: ExecutionTrace;
   isPlaying: boolean;
   allowedChips?: ChipType[];
+  mobileMode?: boolean;
+  requestedSidebarTab?: { mode: 'palette' | 'code'; nonce: number } | null;
   onChangeProgram: (
     next: ChipProgram,
     nextTankName?: string,
@@ -766,6 +769,8 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   trace,
   isPlaying,
   allowedChips,
+  mobileMode = false,
+  requestedSidebarTab = null,
   onChangeProgram,
   onChangeTankName,
   onChangeChassis,
@@ -777,13 +782,23 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedCoord, setSelectedCoord] = useState<GridCoord | null>({ x: 0, y: 0 });
   const [placingChip, setPlacingChip] = useState<ChipType | null>(null);
+  const [movingFromCoord, setMovingFromCoord] = useState<GridCoord | null>(null);
   const [activePaletteCategory, setActivePaletteCategory] = useState<ChipCategory | 'all'>('all');
   const [showAllTutorialChips, setShowAllTutorialChips] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<'palette' | 'code'>('palette');
+  const [mobilePartsExpanded, setMobilePartsExpanded] = useState(false);
+  const [mobileGuideExpanded, setMobileGuideExpanded] = useState(false);
+  const [codeWrap, setCodeWrap] = useState(false);
 
   useEffect(() => {
     setShowAllTutorialChips(false);
   }, [allowedChips]);
+
+  useEffect(() => {
+    if (requestedSidebarTab) {
+      setSidebarMode(requestedSidebarTab.mode);
+    }
+  }, [requestedSidebarTab]);
   const [displayLang, setDisplayLang] = useState<DisplayLang>('ja');
   const [codeJaComments, setCodeJaComments] = useState<boolean>(true);
   const [hoveredChipType, setHoveredChipType] = useState<ChipType | null>(null);
@@ -1209,20 +1224,67 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     onChangeProgram({ ...program, cells: nextCells });
     setSelectedCoord({ x, y });
     setPlacingChip(null);
+    setMovingFromCoord(null);
+  };
+
+  const moveOrSwapCell = (from: GridCoord, tx: number, ty: number) => {
+    if (from.x === tx && from.y === ty) return;
+    const nextCells = cloneCells(program.cells);
+    const moving = nextCells[from.y]?.[from.x];
+    if (!moving) return;
+    const displaced = nextCells[ty][tx];
+    nextCells[ty][tx] = moving;
+    nextCells[from.y][from.x] = displaced;
+    // Clear outgoing links on moved/displaced chips and incoming links to either coordinate
+    moving.next = null;
+    moving.yes = null;
+    moving.no = null;
+    if (displaced) {
+      displaced.next = null;
+      displaced.yes = null;
+      displaced.no = null;
+    }
+    for (let ry = 0; ry < size; ry++) {
+      for (let rx = 0; rx < size; rx++) {
+        const c = nextCells[ry][rx];
+        if (!c) continue;
+        const filterLink = (link: GridCoord | null | undefined) => {
+          if (!link) return null;
+          if (link.x === from.x && link.y === from.y) return null;
+          if (link.x === tx && link.y === ty) return null;
+          return Math.abs(link.x - rx) + Math.abs(link.y - ry) === 1 ? link : null;
+        };
+        c.next = filterLink(c.next);
+        c.yes = filterLink(c.yes);
+        c.no = filterLink(c.no);
+      }
+    }
+    onChangeProgram({ ...program, cells: nextCells });
+    setSelectedCoord({ x: tx, y: ty });
   };
 
   const handleCellClick = (x: number, y: number) => {
-    // 1. If a palette chip tool is armed
+    // 1. If a cell move/swap operation is armed
+    if (movingFromCoord) {
+      moveOrSwapCell(movingFromCoord, x, y);
+      setMovingFromCoord(null);
+      return;
+    }
+
+    // 2. If a palette chip tool is armed
     if (placingChip) {
       placeChipAt(x, y, placingChip);
       return;
     }
 
-    // 2. Otherwise select this cell
+    // 3. Otherwise select this cell
     setSelectedCoord({ x, y });
   };
 
   const handleClearCell = (coord: GridCoord) => {
+    if (movingFromCoord?.x === coord.x && movingFromCoord?.y === coord.y) {
+      setMovingFromCoord(null);
+    }
     const nextCells = cloneCells(program.cells);
     nextCells[coord.y][coord.x] = null;
     // Remove dangling references pointing to deleted cell
@@ -1244,6 +1306,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     onChangeProgram({ ...program, cells: nextCells });
     setSelectedCoord({ x: 0, y: 0 });
     setPlacingChip(null);
+    setMovingFromCoord(null);
   };
 
   const handleUpdateParam = (key: string, value: string | number) => {
@@ -1356,40 +1419,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     if (moveData) {
       try {
         const from = JSON.parse(moveData) as GridCoord;
-        if (from.x === tx && from.y === ty) return;
-        const nextCells = cloneCells(program.cells);
-        const moving = nextCells[from.y]?.[from.x];
-        if (!moving) return;
-        const displaced = nextCells[ty][tx];
-        nextCells[ty][tx] = moving;
-        nextCells[from.y][from.x] = displaced;
-        // Clear outgoing links on moved/displaced chips, clear incoming links to either coordinate,
-        // and ensure no non-orthogonal links remain anywhere on the board.
-        moving.next = null;
-        moving.yes = null;
-        moving.no = null;
-        if (displaced) {
-          displaced.next = null;
-          displaced.yes = null;
-          displaced.no = null;
-        }
-        for (let ry = 0; ry < size; ry++) {
-          for (let rx = 0; rx < size; rx++) {
-            const c = nextCells[ry][rx];
-            if (!c) continue;
-            const filterLink = (link: GridCoord | null | undefined) => {
-              if (!link) return null;
-              if (link.x === from.x && link.y === from.y) return null;
-              if (link.x === tx && link.y === ty) return null;
-              return Math.abs(link.x - rx) + Math.abs(link.y - ry) === 1 ? link : null;
-            };
-            c.next = filterLink(c.next);
-            c.yes = filterLink(c.yes);
-            c.no = filterLink(c.no);
-          }
-        }
-        onChangeProgram({ ...program, cells: nextCells });
-        setSelectedCoord({ x: tx, y: ty });
+        moveOrSwapCell(from, tx, ty);
       } catch {
         // ignore invalid drag payload
       }
@@ -1591,13 +1621,17 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     </div>
   );
 
+  const visibleGridSizes = mobileMode
+    ? ALLOWED_GRID_SIZES.filter((gs) => gs <= 6 || gs === size)
+    : ALLOWED_GRID_SIZES;
+
   return (
     <div className="grid-editor-panel">
       {/* Header Controls: Grid Size (4/6/8/12) + Coordinate Mode + JA/EN + CPU Steps */}
       <div className="editor-topbar">
         <div className="grid-size-switch" title="グリッドサイズ切替 (4×4 / 6×6 / 8×8 / 12×12)">
           <span className="coord-label">枠数:</span>
-          {ALLOWED_GRID_SIZES.map((gs) => (
+          {visibleGridSizes.map((gs) => (
             <button
               key={gs}
               type="button"
@@ -1610,10 +1644,6 @@ export const GridEditor: React.FC<GridEditorProps> = ({
         </div>
 
         <div className="coord-mode-switch" title="座標系モードの切り替え">
-          <span className="coord-label">
-            <Compass size={14} />
-            座標:
-          </span>
           <button
             type="button"
             className={`seg-btn ${program.coordinateMode === 'relative' ? 'active' : ''}`}
@@ -1643,12 +1673,23 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           </span>
         </button>
 
-        <div className="cpu-meter" title="使用ブロック数 / 上限 と 1Tickの実行ステップ">
-          <Zap size={14} className={trace?.truncated ? 'text-amber' : 'text-cyan'} />
-          <span>
-            {usedBlockCount}/{size * size}blk · {trace?.stepsUsed ?? 0}/{cpuSpec.maxStepsPerTick}st
-          </span>
-          {trace?.truncated && <span className="badge-warn">上限</span>}
+        <div className="editor-topbar-right">
+          <div className="cpu-meter" title="使用ブロック数 / 上限 と 1Tickの実行ステップ">
+            <Zap size={14} className={trace?.truncated ? 'text-amber' : 'text-cyan'} />
+            <span>
+              {usedBlockCount}/{size * size}blk · {trace?.stepsUsed ?? 0}/{cpuSpec.maxStepsPerTick}st
+            </span>
+            {trace?.truncated && <span className="badge-warn">上限</span>}
+          </div>
+          <button
+            type="button"
+            className="mini-btn danger-ghost"
+            onClick={handleClearAll}
+            disabled={isPlaying}
+            title="グリッドを初期化"
+          >
+            全消去
+          </button>
         </div>
       </div>
 
@@ -1677,40 +1718,34 @@ export const GridEditor: React.FC<GridEditorProps> = ({
         </div>
       )}
 
-      {tooltipPosition === 'top' && renderTooltipCard()}
+      {!mobileMode && tooltipPosition === 'top' && renderTooltipCard()}
 
-      {/* Mode Banner / Placement Helper */}
-      <div className="editor-subbar">
-        {placingChip ? (
-          <div className="status-banner banner-placing">
-            <MousePointer size={14} />
-            <span>
-              配置モード: <strong>{CHIP_DEFINITIONS[placingChip].name}</strong> (盤面をクリック)
-            </span>
-            <button type="button" className="mini-btn" onClick={() => setPlacingChip(null)}>
-              解除
-            </button>
-          </div>
-        ) : (
-          <div className="status-banner banner-info">
-            <Navigation size={14} />
-            <span>
-              {program.coordinateMode === 'relative'
-                ? '相対座標: 自機/砲塔正面が 0°（右 + / 左 -）· 接続は上下左右4方向'
-                : '絶対座標: 北 0° / 東 90° / 南 180° / 西 270° · 接続は上下左右4方向'}
-            </span>
-            <button
-              type="button"
-              className="mini-btn danger-ghost"
-              onClick={handleClearAll}
-              disabled={isPlaying}
-              title="グリッドを初期化"
-            >
-              全消去
-            </button>
-          </div>
-        )}
-      </div>
+      {/* Mode Banner / Placement Helper (only shown when placing or moving a chip) */}
+      {(movingFromCoord || placingChip) && (
+        <div className="editor-subbar">
+          {movingFromCoord ? (
+            <div className="status-banner banner-placing">
+              <Move size={14} />
+              <span>
+                移動モード: <strong>({movingFromCoord.x},{movingFromCoord.y})</strong> の移動先マスをタップ
+              </span>
+              <button type="button" className="mini-btn" onClick={() => setMovingFromCoord(null)}>
+                解除
+              </button>
+            </div>
+          ) : placingChip ? (
+            <div className="status-banner banner-placing">
+              <MousePointer size={14} />
+              <span>
+                配置モード: <strong>{CHIP_DEFINITIONS[placingChip].name}</strong> (盤面をタップ)
+              </span>
+              <button type="button" className="mini-btn" onClick={() => setPlacingChip(null)}>
+                解除
+              </button>
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {/* Main Split: Grid Matrix + Palette / Inspector */}
       <div className="editor-body">
@@ -1765,117 +1800,6 @@ export const GridEditor: React.FC<GridEditorProps> = ({
             />
           </div>
 
-          <div className="editor-config-grid">
-            {(
-              [
-                {
-                  key: 'chassis',
-                  label: 'シャシー',
-                  code: 'chassis =',
-                  title: '搭載シャシーの選択（Pythonソース内の chassis スペックにも反映されます）',
-                  value: safeChassisId,
-                  options: ALLOWED_CHASSIS_IDS.map((cid) => {
-                    const sp = CHASSIS_SPECS[cid];
-                    return {
-                      value: cid,
-                      label: `${sp.name} (HP${sp.maxHp} / 速${sp.maxSpeed} / 旋回${sp.turnRate}° / 重${sp.baseWeight}t / 積載${sp.weightLimit}t)`,
-                    };
-                  }),
-                  onChange: (val: string) => {
-                    const resolved = isAllowedChassisId(val) ? val : STANDARD_SETUP.chassis;
-                    onChangeChassis?.(resolved);
-                  },
-                },
-                {
-                  key: 'radar',
-                  label: 'レーダー',
-                  code: 'radar =',
-                  title: '搭載レーダーの選択（Pythonソース内の radar スペックにも反映されます）',
-                  value: safeRadarId,
-                  options: ALLOWED_RADAR_IDS.map((rid) => {
-                    const sp = RADAR_SPECS[rid];
-                    return {
-                      value: rid,
-                      label: `${sp.name} (角${sp.fovDeg}° / 射程${sp.range}px / 旋回${sp.turnRate}° / ${sp.weight}t)`,
-                    };
-                  }),
-                  onChange: (val: string) => {
-                    const resolved = isAllowedRadarId(val) ? val : STANDARD_SETUP.radar;
-                    onChangeRadar?.(resolved);
-                  },
-                },
-                {
-                  key: 'mainGun',
-                  label: '主砲',
-                  code: 'main_gun =',
-                  title: '搭載主砲の選択（Pythonソース内の main_gun スペックにも反映されます）',
-                  value: safeMainGunId,
-                  options: ALLOWED_MAIN_GUN_IDS.map((gid) => {
-                    const sp = MAIN_GUN_SPECS[gid];
-                    return {
-                      value: gid,
-                      label: `${sp.name} (威力x${sp.damageMultiplier} / 冷却${sp.coolingRate} / 旋回${sp.turretTurnRate}° / ${sp.weight}t)`,
-                    };
-                  }),
-                  onChange: (val: string) => {
-                    const resolved = isAllowedMainGunId(val) ? val : STANDARD_SETUP.mainGun;
-                    onChangeMainGun?.(resolved);
-                  },
-                },
-                {
-                  key: 'subWeapon',
-                  label: 'Special',
-                  code: 'special =',
-                  title: '搭載Special兵装の選択（Pythonソース内の special スペックにも反映されます）',
-                  value: safeSubWeaponId,
-                  options: [
-                    { value: 'none', label: `装備なし (${SUB_WEAPON_SPECS.none.weight}t)` },
-                    { value: 'smoke', label: `煙幕 (3回 / CD180t / ${SUB_WEAPON_SPECS.smoke.weight}t)` },
-                    { value: 'boost', label: `緊急ブースト (3回 / CD160t / ${SUB_WEAPON_SPECS.boost.weight}t)` },
-                    { value: 'decoy', label: `デコイ (2回 / CD220t / ${SUB_WEAPON_SPECS.decoy.weight}t)` },
-                    { value: 'mine', label: `地雷 (5発 / CD90t / ${SUB_WEAPON_SPECS.mine.weight}t)` },
-                    { value: 'shield', label: `バリア (3回 / CD240t / ${SUB_WEAPON_SPECS.shield.weight}t)` },
-                    { value: 'missile', label: `誘導ミサイル (4発 / CD150t / ${SUB_WEAPON_SPECS.missile.weight}t)` },
-                  ],
-                  onChange: (val: string) => {
-                    const resolved = isAllowedSubWeaponId(val) ? val : STANDARD_SETUP.subWeapon;
-                    onChangeSubWeapon?.(resolved);
-                  },
-                },
-              ] as Array<{
-                key: string;
-                label: string;
-                code: string;
-                title: string;
-                value: string;
-                options: Array<{ value: string; label: string }>;
-                onChange: (val: string) => void;
-              }>
-            ).map((cfg) => (
-              <label
-                key={cfg.key}
-                className="editor-tank-name-box editor-radar-box"
-                title={cfg.title}
-              >
-                <span className="tank-name-prefix">{cfg.label}</span>
-                <select
-                  className="editor-radar-select"
-                  value={cfg.value}
-                  onChange={(e) => {
-                    setGridSizeNotice(null);
-                    cfg.onChange(e.target.value);
-                  }}
-                >
-                  {cfg.options.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ))}
-          </div>
-
           {(() => {
             const cpuId = cpuIdForGridSize(size);
             const cpuSpec = CPU_SPECS[cpuId];
@@ -1889,53 +1813,164 @@ export const GridEditor: React.FC<GridEditorProps> = ({
             const pct = Math.min(100, Math.round((w.totalWeight / Math.max(1, w.weightLimit)) * 100));
             const penaltyPct = Math.round((1 - w.mobilityMultiplier) * 100);
             return (
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '10px',
-                  padding: '6px 10px',
-                  marginBottom: '8px',
-                  borderRadius: '6px',
-                  background: w.overweight ? 'rgba(244, 63, 94, 0.12)' : 'rgba(15, 23, 42, 0.55)',
-                  border: `1px solid ${w.overweight ? 'rgba(244, 63, 94, 0.45)' : 'rgba(51, 65, 85, 0.7)'}`,
-                  fontSize: '12px',
-                }}
-              >
-                <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
-                  積載重量 (CPU {cpuSpec.weight}t含む)
-                </span>
-                <div
-                  style={{
-                    flex: 1,
-                    height: '6px',
-                    borderRadius: '999px',
-                    background: 'rgba(51, 65, 85, 0.7)',
-                    overflow: 'hidden',
-                  }}
-                >
-                  <div
-                    style={{
-                      width: `${pct}%`,
-                      height: '100%',
-                      background: w.overweight ? '#f43f5e' : '#06b6d4',
-                      transition: 'width 0.15s ease',
-                    }}
-                  />
-                </div>
-                <strong style={{ color: w.overweight ? '#fda4af' : '#e2e8f0', whiteSpace: 'nowrap' }}>
-                  {w.totalWeight} / {w.weightLimit} t
-                </strong>
-                {w.overweight && (
-                  <span style={{ color: '#fda4af', fontWeight: 600, whiteSpace: 'nowrap' }}>
-                    超過 +{w.overweightAmount}t（移動・旋回 -{penaltyPct}%）
-                  </span>
+              <>
+                {mobileMode && (
+                  <button
+                    type="button"
+                    className={`mobile-accordion-btn ${w.overweight ? 'is-warn' : ''}`}
+                    onClick={() => setMobilePartsExpanded((v) => !v)}
+                  >
+                    <span>
+                      機体パーツ・積載重量 ({w.totalWeight}/{w.weightLimit}t
+                      {w.overweight ? ` 超過+${w.overweightAmount}t` : ''})
+                    </span>
+                    {mobilePartsExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                  </button>
                 )}
-              </div>
+
+                {(!mobileMode || mobilePartsExpanded) && (
+                  <>
+                    <div className="editor-config-grid">
+                      {(
+                        [
+                          {
+                            key: 'chassis',
+                            label: 'シャシー',
+                            code: 'chassis =',
+                            title: '搭載シャシーの選択（Pythonソース内の chassis スペックにも反映されます）',
+                            value: safeChassisId,
+                            options: ALLOWED_CHASSIS_IDS.map((cid) => {
+                              const sp = CHASSIS_SPECS[cid];
+                              return {
+                                value: cid,
+                                label: `${sp.name} (HP${sp.maxHp} / 速${sp.maxSpeed} / 旋回${sp.turnRate}° / 重${sp.baseWeight}t / 積載${sp.weightLimit}t)`,
+                              };
+                            }),
+                            onChange: (val: string) => {
+                              const resolved = isAllowedChassisId(val) ? val : STANDARD_SETUP.chassis;
+                              onChangeChassis?.(resolved);
+                            },
+                          },
+                          {
+                            key: 'radar',
+                            label: 'レーダー',
+                            code: 'radar =',
+                            title: '搭載レーダーの選択（Pythonソース内の radar スペックにも反映されます）',
+                            value: safeRadarId,
+                            options: ALLOWED_RADAR_IDS.map((rid) => {
+                              const sp = RADAR_SPECS[rid];
+                              return {
+                                value: rid,
+                                label: `${sp.name} (角${sp.fovDeg}° / 射程${sp.range}px / 旋回${sp.turnRate}° / ${sp.weight}t)`,
+                              };
+                            }),
+                            onChange: (val: string) => {
+                              const resolved = isAllowedRadarId(val) ? val : STANDARD_SETUP.radar;
+                              onChangeRadar?.(resolved);
+                            },
+                          },
+                          {
+                            key: 'mainGun',
+                            label: '主砲',
+                            code: 'main_gun =',
+                            title: '搭載主砲の選択（Pythonソース内の main_gun スペックにも反映されます）',
+                            value: safeMainGunId,
+                            options: ALLOWED_MAIN_GUN_IDS.map((gid) => {
+                              const sp = MAIN_GUN_SPECS[gid];
+                              return {
+                                value: gid,
+                                label: `${sp.name} (威力x${sp.damageMultiplier} / 冷却${sp.coolingRate} / 旋回${sp.turretTurnRate}° / ${sp.weight}t)`,
+                              };
+                            }),
+                            onChange: (val: string) => {
+                              const resolved = isAllowedMainGunId(val) ? val : STANDARD_SETUP.mainGun;
+                              onChangeMainGun?.(resolved);
+                            },
+                          },
+                          {
+                            key: 'subWeapon',
+                            label: 'Special',
+                            code: 'special =',
+                            title: '搭載Special兵装の選択（Pythonソース内の special スペックにも反映されます）',
+                            value: safeSubWeaponId,
+                            options: [
+                              { value: 'none', label: `装備なし (${SUB_WEAPON_SPECS.none.weight}t)` },
+                              { value: 'smoke', label: `煙幕 (3回 / CD180t / ${SUB_WEAPON_SPECS.smoke.weight}t)` },
+                              { value: 'boost', label: `緊急ブースト (3回 / CD160t / ${SUB_WEAPON_SPECS.boost.weight}t)` },
+                              { value: 'decoy', label: `デコイ (2回 / CD220t / ${SUB_WEAPON_SPECS.decoy.weight}t)` },
+                              { value: 'mine', label: `地雷 (5発 / CD90t / ${SUB_WEAPON_SPECS.mine.weight}t)` },
+                              { value: 'shield', label: `バリア (3回 / CD240t / ${SUB_WEAPON_SPECS.shield.weight}t)` },
+                              { value: 'missile', label: `誘導ミサイル (4発 / CD150t / ${SUB_WEAPON_SPECS.missile.weight}t)` },
+                            ],
+                            onChange: (val: string) => {
+                              const resolved = isAllowedSubWeaponId(val) ? val : STANDARD_SETUP.subWeapon;
+                              onChangeSubWeapon?.(resolved);
+                            },
+                          },
+                        ] as Array<{
+                          key: string;
+                          label: string;
+                          code: string;
+                          title: string;
+                          value: string;
+                          options: Array<{ value: string; label: string }>;
+                          onChange: (val: string) => void;
+                        }>
+                      ).map((cfg) => (
+                        <label
+                          key={cfg.key}
+                          className="editor-tank-name-box editor-radar-box"
+                          title={cfg.title}
+                        >
+                          <span className="tank-name-prefix">{cfg.label}</span>
+                          <select
+                            className="editor-radar-select"
+                            value={cfg.value}
+                            onChange={(e) => {
+                              setGridSizeNotice(null);
+                              cfg.onChange(e.target.value);
+                            }}
+                          >
+                            {cfg.options.map((opt) => (
+                              <option key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className={`weight-status-bar ${w.overweight ? 'overweight' : ''}`}>
+                      <span className="weight-status-label">
+                        積載重量 (CPU {cpuSpec.weight}t含む)
+                      </span>
+                      <div className="weight-bar-track">
+                        <div
+                          className="weight-bar-fill"
+                          style={{
+                            width: `${pct}%`,
+                            background: w.overweight ? '#f43f5e' : '#06b6d4',
+                          }}
+                        />
+                      </div>
+                      <strong className="weight-status-value">
+                        {w.totalWeight} / {w.weightLimit} t
+                      </strong>
+                      {w.overweight && (
+                        <span className="weight-status-warn">
+                          超過 +{w.overweightAmount}t（移動・旋回 -{penaltyPct}%）
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </>
             );
           })()}
 
           <div
+            id="mobile-board-section"
             className={`chip-grid grid-size-${size}`}
             style={{
               gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
@@ -1963,6 +1998,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                       cell ? 'has-chip' : 'empty-cell',
                       def ? getCategoryClass(def.category) : '',
                       isSelected ? 'selected' : '',
+                      movingFromCoord?.x === x && movingFromCoord?.y === y ? 'moving-source' : '',
                       isActiveTrace ? 'trace-active' : '',
                       isLastTrace ? 'trace-last' : '',
                       isDimmedByTrace ? 'trace-dimmed' : '',
@@ -2169,13 +2205,13 @@ export const GridEditor: React.FC<GridEditorProps> = ({
             <span className="legend-hint">上下左右4方向の隣接グリッド接続</span>
           </div>
 
-          {tooltipPosition === 'bottom' && renderTooltipCard()}
+          {!mobileMode && tooltipPosition === 'bottom' && renderTooltipCard()}
         </div>
 
         {/* Right Side: Chip Palette & Selected Cell Inspector */}
         <div className="editor-sidebar">
           {/* Selected Cell Inspector */}
-          <div className="inspector-card">
+          <div id="mobile-inspector-section" className="inspector-card">
             <div className="inspector-header">
               <h4>
                 {selectedCoord ? `グリッド (${selectedCoord.x}, ${selectedCoord.y})` : 'グリッド未選択'}
@@ -2184,14 +2220,40 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                   : ' : 空きグリッド'}
               </h4>
               {selectedCoord && selectedCell && (
-                <button
-                  type="button"
-                  className="icon-btn-danger"
-                  onClick={() => handleClearCell(selectedCoord)}
-                  title="このチップを削除"
-                >
-                  <Trash2 size={14} />
-                </button>
+                <div className="inspector-header-actions">
+                  <button
+                    type="button"
+                    className={`mini-btn ${
+                      movingFromCoord?.x === selectedCoord.x && movingFromCoord?.y === selectedCoord.y
+                        ? 'active'
+                        : ''
+                    }`}
+                    onClick={() => {
+                      setPlacingChip(null);
+                      const isSame =
+                        movingFromCoord?.x === selectedCoord.x &&
+                        movingFromCoord?.y === selectedCoord.y;
+                      const nextMove = isSame ? null : selectedCoord;
+                      setMovingFromCoord(nextMove);
+                      if (nextMove && mobileMode) {
+                        document
+                          .getElementById('mobile-board-section')
+                          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }
+                    }}
+                    title="このチップを別のグリッドへ移動・入替"
+                  >
+                    <Move size={13} /> 移動
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn-danger"
+                    onClick={() => handleClearCell(selectedCoord)}
+                    title="このチップを削除"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               )}
             </div>
 
@@ -2381,13 +2443,15 @@ export const GridEditor: React.FC<GridEditorProps> = ({
               </div>
             ) : (
               <div className="inspector-empty">
-                下のパレットからチップをクリックまたはドラッグして、このグリッドに配置できます。
+                {mobileMode
+                  ? '下のパレットからチップをタップして、このグリッドに配置できます。'
+                  : '下のパレットからチップをクリックまたはドラッグして、このグリッドに配置できます。'}
               </div>
             )}
           </div>
 
           {/* Chip Palette / Code Preview Switcher */}
-          <div className="palette-card">
+          <div id="mobile-code-section" className="palette-card">
             <div className="sidebar-mode-tabs">
               <button
                 type="button"
@@ -2459,10 +2523,22 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                         onMouseEnter={() => setHoveredChipType(def.type)}
                         onMouseLeave={() => setHoveredChipType(null)}
                         onClick={() => {
+                          setMovingFromCoord(null);
                           if (selectedCoord && !program.cells[selectedCoord.y]?.[selectedCoord.x]) {
                             placeChipAt(selectedCoord.x, selectedCoord.y, def.type);
+                            if (mobileMode) {
+                              document
+                                .getElementById('mobile-board-section')
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
                           } else {
-                            setPlacingChip(placingChip === def.type ? null : def.type);
+                            const nextArmed = placingChip === def.type ? null : def.type;
+                            setPlacingChip(nextArmed);
+                            if (nextArmed && mobileMode) {
+                              document
+                                .getElementById('mobile-board-section')
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
                           }
                         }}
                         className={`palette-chip ${getCategoryClass(def.category)} ${
@@ -2516,6 +2592,14 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                         onClick={() => setCodeJaComments(true)}
                       >
                         和訳コメント
+                      </button>
+                      <button
+                        type="button"
+                        className={`mini-btn ${codeWrap ? 'active' : ''}`}
+                        onClick={() => setCodeWrap((v) => !v)}
+                        title="長い行の折り返し表示を切り替え"
+                      >
+                        折返
                       </button>
                     </div>
                   )}
@@ -2588,7 +2672,10 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                     </div>
                   </div>
                 ) : (
-                  <div className="code-lines" onMouseLeave={() => setHoveredCodeLine(null)}>
+                  <div
+                    className={`code-lines ${codeWrap ? 'wrap-lines' : ''}`}
+                    onMouseLeave={() => setHoveredCodeLine(null)}
+                  >
                     {codeLines.map((line, idx) => {
                       const isActive = line.coord
                         ? activeVisitedSet.has(`${line.coord.x},${line.coord.y}`)
@@ -2627,6 +2714,23 @@ export const GridEditor: React.FC<GridEditorProps> = ({
               </div>
             )}
           </div>
+
+          {mobileMode && (
+            <div className="mobile-guide-wrap">
+              <button
+                type="button"
+                className="mobile-accordion-btn"
+                onClick={() => setMobileGuideExpanded((v) => !v)}
+              >
+                <span>
+                  <GraduationCap size={14} style={{ verticalAlign: 'text-bottom', marginRight: 5 }} />
+                  Python 学習ガイド（選択チップ解説）
+                </span>
+                {mobileGuideExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              </button>
+              {mobileGuideExpanded && renderTooltipCard()}
+            </div>
+          )}
         </div>
       </div>
     </div>

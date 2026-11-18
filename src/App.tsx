@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Camera,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Cpu,
   Download,
   Eye,
@@ -66,6 +68,14 @@ import {
 const BASE_TPS = 20;
 const FONT_SCALE_STORAGE_KEY = 'vstank_ui_font_scale';
 type UiFontScale = 'normal' | 'large' | 'xlarge';
+type LayoutPreset = 'mobile' | 'code' | 'balanced' | 'battle';
+
+function getInitialLayoutPreset(): LayoutPreset {
+  if (typeof window !== 'undefined' && window.innerWidth <= 768) {
+    return 'mobile';
+  }
+  return 'balanced';
+}
 
 function loadUiFontScale(): UiFontScale {
   try {
@@ -147,9 +157,11 @@ function createBlankTutorialBlueprint(stageBp: TankBlueprint): TankBlueprint {
 
 export function App() {
   const urlEnemy = useMemo(() => extractEnemyFromUrl(), []);
+  const [layoutPreset, setLayoutPreset] = useState<LayoutPreset>(() => getInitialLayoutPreset());
+  const isMobileLayout = layoutPreset === 'mobile';
 
-  const [gameMode, setGameMode] = useState<'tutorial' | 'free'>(
-    urlEnemy ? 'free' : 'tutorial'
+  const [gameMode, setGameMode] = useState<'tutorial' | 'free'>(() =>
+    urlEnemy || getInitialLayoutPreset() === 'mobile' ? 'free' : 'tutorial'
   );
   const [tutorialIndex, setTutorialIndex] = useState(0);
   const [clearedTutorials, setClearedTutorials] = useState<string[]>(() =>
@@ -244,6 +256,11 @@ export function App() {
   };
 
   const [showShareModal, setShowShareModal] = useState(false);
+  const [mobileBattleDetailsOpen, setMobileBattleDetailsOpen] = useState(false);
+  const [requestedSidebarTab, setRequestedSidebarTab] = useState<{
+    mode: 'palette' | 'code';
+    nonce: number;
+  } | null>(null);
 
   // Sync battle reset when switching stages/enemies/obstacles
   const resetBattleWith = useCallback(
@@ -310,6 +327,36 @@ export function App() {
     setGameMode('free');
     setIsPlaying(false);
     setBattleState(buildFreeBattle());
+  };
+
+  const handleSelectLayoutPreset = (preset: LayoutPreset) => {
+    setLayoutPreset(preset);
+    if (preset === 'mobile') {
+      if (gameMode !== 'free') {
+        setGameMode('free');
+        setIsPlaying(false);
+        setBattleState(buildFreeBattle());
+      }
+      return;
+    }
+    if (preset === 'code') setSplitRatio(64);
+    else if (preset === 'balanced') setSplitRatio(55);
+    else if (preset === 'battle') setSplitRatio(38);
+  };
+
+  const scrollToMobileSection = (
+    sectionId: string,
+    sidebarTab?: 'palette' | 'code'
+  ) => {
+    if (sidebarTab) {
+      setRequestedSidebarTab((prev) => ({
+        mode: sidebarTab,
+        nonce: (prev?.nonce ?? 0) + 1,
+      }));
+    }
+    window.requestAnimationFrame(() => {
+      document.getElementById(sectionId)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
   };
 
   const handleSelectFreeEnemy = (enemy: TankBlueprint, slotIndex = 0) => {
@@ -526,7 +573,9 @@ export function App() {
       const rect = workspaceRef.current.getBoundingClientRect();
       if (rect.width <= 0) return;
       const pct = ((ev.clientX - rect.left) / rect.width) * 100;
-      setSplitRatio(Math.max(30, Math.min(72, Math.round(pct))));
+      const nextPct = Math.max(30, Math.min(72, Math.round(pct)));
+      setSplitRatio(nextPct);
+      setLayoutPreset(nextPct >= 60 ? 'code' : nextPct <= 44 ? 'battle' : 'balanced');
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -583,6 +632,16 @@ export function App() {
     }
   }, [battleState.status, battleState.winnerId, battleState.winType, gameMode, activeStage.id]);
 
+  const handleTogglePlay = () => {
+    if (battleState.status === 'finished') {
+      const fresh = buildInitialBattle(currentPlayerBp, currentEnemyList);
+      setBattleState(fresh);
+      setIsPlaying(true);
+    } else {
+      setIsPlaying((p) => !p);
+    }
+  };
+
   const handleStepOnce = () => {
     setIsPlaying(false);
     setBattleState((prev) => {
@@ -595,7 +654,7 @@ export function App() {
   const enemyTank = battleState.tanks.find((t) => t.team === 'enemy');
 
   return (
-    <div className={`app-shell ui-scale-${uiFontScale}`}>
+    <div className={`app-shell ui-scale-${uiFontScale} ${isMobileLayout ? 'mobile-layout' : ''}`}>
       {/* Top Navigation */}
       <header className="top-nav">
         <div className="brand">
@@ -606,65 +665,65 @@ export function App() {
           </div>
         </div>
 
-        <div className="mode-switcher">
-          <button
-            type="button"
-            className={`nav-tab ${gameMode === 'tutorial' ? 'active' : ''}`}
-            onClick={() => handleSelectTutorial(tutorialIndex)}
-          >
-            <BookOpen size={15} /> チュートリアル
-          </button>
-          <button
-            type="button"
-            className={`nav-tab ${gameMode === 'free' ? 'active' : ''}`}
-            onClick={handleSwitchToFree}
-          >
-            <Swords size={15} /> テストグラウンド
-          </button>
-        </div>
+        {!isMobileLayout && (
+          <div className="mode-switcher">
+            <button
+              type="button"
+              className={`nav-tab ${gameMode === 'tutorial' ? 'active' : ''}`}
+              onClick={() => handleSelectTutorial(tutorialIndex)}
+            >
+              <BookOpen size={15} /> チュートリアル
+            </button>
+            <button
+              type="button"
+              className={`nav-tab ${gameMode === 'free' ? 'active' : ''}`}
+              onClick={handleSwitchToFree}
+            >
+              <Swords size={15} /> テストグラウンド
+            </button>
+          </div>
+        )}
 
         <div className="nav-actions">
-          <div className="layout-presets" title="全体の文字サイズを切り替え">
-            <span className="nav-scale-label">文字</span>
+          {!isMobileLayout && (
+            <div className="layout-presets" title="全体の文字サイズを切り替え">
+              <span className="nav-scale-label">文字</span>
+              {(
+                [
+                  { id: 'normal', label: '標準' },
+                  { id: 'large', label: '大' },
+                  { id: 'xlarge', label: '特大' },
+                ] as Array<{ id: UiFontScale; label: string }>
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`mini-btn ${uiFontScale === opt.id ? 'active' : ''}`}
+                  onClick={() => handleChangeUiFontScale(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="layout-presets" title="画面レイアウト切替">
             {(
               [
-                { id: 'normal', label: '標準' },
-                { id: 'large', label: '大' },
-                { id: 'xlarge', label: '特大' },
-              ] as Array<{ id: UiFontScale; label: string }>
+                { id: 'mobile', label: 'スマホ' },
+                { id: 'code', label: 'コード' },
+                { id: 'balanced', label: '標準' },
+                { id: 'battle', label: 'バトル' },
+              ] as Array<{ id: LayoutPreset; label: string }>
             ).map((opt) => (
               <button
                 key={opt.id}
                 type="button"
-                className={`mini-btn ${uiFontScale === opt.id ? 'active' : ''}`}
-                onClick={() => handleChangeUiFontScale(opt.id)}
+                className={`mini-btn ${layoutPreset === opt.id ? 'active' : ''}`}
+                onClick={() => handleSelectLayoutPreset(opt.id)}
               >
                 {opt.label}
               </button>
             ))}
-          </div>
-          <div className="layout-presets" title="左右ペインの表示比率を切り替え">
-            <button
-              type="button"
-              className={`mini-btn ${splitRatio >= 60 ? 'active' : ''}`}
-              onClick={() => setSplitRatio(64)}
-            >
-              コード
-            </button>
-            <button
-              type="button"
-              className={`mini-btn ${splitRatio > 44 && splitRatio < 60 ? 'active' : ''}`}
-              onClick={() => setSplitRatio(55)}
-            >
-              標準
-            </button>
-            <button
-              type="button"
-              className={`mini-btn ${splitRatio <= 44 ? 'active' : ''}`}
-              onClick={() => setSplitRatio(38)}
-            >
-              バトル
-            </button>
           </div>
           <button
             type="button"
@@ -676,17 +735,87 @@ export function App() {
         </div>
       </header>
 
+      {isMobileLayout && (
+        <div className="mobile-sticky-bar">
+          <div className="mobile-sticky-playback">
+            <button type="button" className="btn-play mobile-play-btn" onClick={handleTogglePlay}>
+              {isPlaying ? <Pause size={14} /> : <Play size={14} />}
+              {isPlaying ? '停止' : battleState.status === 'finished' ? '再戦' : '開始'}
+            </button>
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={handleStepOnce}
+              disabled={battleState.status === 'finished'}
+              title="1 Tick (1/20秒) 進む"
+            >
+              1Tick
+            </button>
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={() => resetBattleWith(currentPlayerBp, currentEnemyList)}
+              title="リセット"
+            >
+              <RotateCcw size={12} />
+            </button>
+          </div>
+
+          <div className="mobile-sticky-jumps">
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={() => scrollToMobileSection('mobile-board-section')}
+            >
+              盤面
+            </button>
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={() => scrollToMobileSection('mobile-inspector-section')}
+            >
+              編集
+            </button>
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={() => scrollToMobileSection('mobile-code-section', 'palette')}
+            >
+              パレット
+            </button>
+            <button
+              type="button"
+              className="mini-btn"
+              onClick={() => scrollToMobileSection('mobile-code-section', 'code')}
+            >
+              Python
+            </button>
+            <button
+              type="button"
+              className="mini-btn active"
+              onClick={() => scrollToMobileSection('mobile-battle-section')}
+            >
+              バトル
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Split Workspace */}
       <main
         ref={workspaceRef}
         className="workspace"
-        style={{
-          gridTemplateColumns: `minmax(360px, ${splitRatio}%) 6px minmax(340px, 1fr)`,
-        }}
+        style={
+          isMobileLayout
+            ? undefined
+            : {
+                gridTemplateColumns: `minmax(360px, ${splitRatio}%) 6px minmax(340px, 1fr)`,
+              }
+        }
       >
         {/* Left Pane: Mission Info (if tutorial) + 2D Chip Grid Editor */}
         <section className="pane-left">
-          {gameMode === 'tutorial' && (
+          {!isMobileLayout && gameMode === 'tutorial' && (
             <div className="tutorial-banner">
               <div className="tut-head">
                 <div>
@@ -736,7 +865,9 @@ export function App() {
             tankName={currentPlayerBp.name}
             trace={playerTank?.trace}
             isPlaying={isPlaying}
-            allowedChips={gameMode === 'tutorial' ? activeStage.allowedChips : undefined}
+            allowedChips={!isMobileLayout && gameMode === 'tutorial' ? activeStage.allowedChips : undefined}
+            mobileMode={isMobileLayout}
+            requestedSidebarTab={requestedSidebarTab}
             onChangeProgram={handleChangeProgram}
             onChangeTankName={handleChangePlayerName}
             onChangeChassis={handleChangePlayerChassis}
@@ -747,15 +878,17 @@ export function App() {
           />
         </section>
 
-        <div
-          className="pane-resizer"
-          onPointerDown={handleStartResizeSplit}
-          title="左右にドラッグして画面比率を調整"
-        />
+        {!isMobileLayout && (
+          <div
+            className="pane-resizer"
+            onPointerDown={handleStartResizeSplit}
+            title="左右にドラッグして画面比率を調整"
+          />
+        )}
 
         {/* Right Pane: 3D Battle Viewport & Telemetry */}
-        <section className="pane-right">
-          {gameMode === 'tutorial' && (
+        <section id="mobile-battle-section" className="pane-right">
+          {!isMobileLayout && gameMode === 'tutorial' && (
             <div className="battle-top-controls tutorial-top-controls">
               <button
                 type="button"
@@ -815,9 +948,9 @@ export function App() {
             </div>
           )}
 
-          {gameMode === 'free' && (
+          {(isMobileLayout || gameMode === 'free') && (
             <div className="battle-top-controls">
-              <label className="battle-ctrl-item">
+              <label className="battle-ctrl-item battle-enemy-primary">
                 <span>対戦相手1:</span>
                 <select
                   value={
@@ -850,164 +983,179 @@ export function App() {
                 <Download size={12} /> 自機に読込
               </button>
 
-              <label
-                className="battle-ctrl-item"
-                title="対戦相手を追加（自機を含め最大8台まで・自動色覚対応カラー割当）"
-              >
-                <span>参加 {1 + freeEnemies.length}/{MAX_BATTLE_TANKS}台:</span>
-                <select
-                  value=""
-                  disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
-                  onChange={(e) => {
-                    const found = PRESET_ENEMIES.find((p) => p.id === e.target.value);
-                    if (found) handleAddFreeEnemy(found);
-                  }}
-                >
-                  <option value="">
-                    {freeEnemies.length >= MAX_BATTLE_TANKS - 1
-                      ? '上限 (8台)'
-                      : '+ 相手を追加...'}
-                  </option>
-                  {PRESET_ENEMIES.map((e) => (
-                    <option key={e.id} value={e.id}>
-                      + {e.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <button
-                type="button"
-                className="mini-btn"
-                disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
-                onClick={() => enemyFileInputRef.current?.click()}
-                title="複数ファイル(.vstank.json / .py)から対戦相手を追加（最大8台まで）"
-              >
-                <Upload size={12} /> 相手読込
-              </button>
-              <input
-                ref={enemyFileInputRef}
-                type="file"
-                multiple
-                accept=".json,.vstank.json,.py,.txt"
-                hidden
-                onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
-                    handleLoadMultiEnemyFiles(e.target.files);
-                  }
-                  e.target.value = '';
-                }}
-              />
-
-              <label className="battle-ctrl-item">
-                <span>広さ:</span>
-                <select
-                  value={freeArenaSize}
-                  onChange={(e) => handleChangeFreeArenaSize(e.target.value as ArenaSizeId)}
-                >
-                  {(Object.keys(ARENA_SIZE_SPECS) as ArenaSizeId[]).map((sizeKey) => (
-                    <option key={sizeKey} value={sizeKey}>
-                      {ARENA_SIZE_SPECS[sizeKey].label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="battle-ctrl-item">
-                <span>遮蔽物:</span>
-                <select
-                  value={obstacleMode}
-                  onChange={(e) =>
-                    handleChangeObstacleSettings(e.target.value as ObstacleMode, mapSeed)
-                  }
-                >
-                  <option value="none">遮蔽物なし</option>
-                  <option value="few">少なめ</option>
-                  <option value="many">多め</option>
-                  <option value="maze">迷路</option>
-                </select>
-              </label>
-
-              <div className="battle-ctrl-item">
-                <span>Seed:</span>
-                <input
-                  type="number"
-                  className="seed-input"
-                  value={mapSeed}
-                  title="マップ生成シード (-1 で標準配置)"
-                  onChange={(e) => {
-                    const parsed = Number.parseInt(e.target.value, 10);
-                    handleChangeObstacleSettings(
-                      obstacleMode,
-                      Number.isFinite(parsed) ? parsed : -1
-                    );
-                  }}
-                />
+              {isMobileLayout && (
                 <button
                   type="button"
-                  className="mini-btn"
-                  title="ランダムシードを生成"
-                  onClick={() =>
-                    handleChangeObstacleSettings(
-                      obstacleMode,
-                      Math.floor(Math.random() * 99999) + 1
-                    )
-                  }
+                  className={`mini-btn ${mobileBattleDetailsOpen ? 'active' : ''}`}
+                  onClick={() => setMobileBattleDetailsOpen((v) => !v)}
                 >
-                  🎲
+                  詳細({1 + freeEnemies.length}台·{ARENA_SIZE_SPECS[freeArenaSize].label})
+                  {mobileBattleDetailsOpen ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                 </button>
-                {mapSeed !== -1 && (
+              )}
+
+              {(!isMobileLayout || mobileBattleDetailsOpen) && (
+                <>
+                  <label
+                    className="battle-ctrl-item"
+                    title="対戦相手を追加（自機を含め最大8台まで・自動色覚対応カラー割当）"
+                  >
+                    <span>参加 {1 + freeEnemies.length}/{MAX_BATTLE_TANKS}台:</span>
+                    <select
+                      value=""
+                      disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
+                      onChange={(e) => {
+                        const found = PRESET_ENEMIES.find((p) => p.id === e.target.value);
+                        if (found) handleAddFreeEnemy(found);
+                      }}
+                    >
+                      <option value="">
+                        {freeEnemies.length >= MAX_BATTLE_TANKS - 1
+                          ? '上限 (8台)'
+                          : '+ 相手を追加...'}
+                      </option>
+                      {PRESET_ENEMIES.map((e) => (
+                        <option key={e.id} value={e.id}>
+                          + {e.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
                   <button
                     type="button"
                     className="mini-btn"
-                    title="標準シード (-1) に戻す"
-                    onClick={() => handleChangeObstacleSettings(obstacleMode, -1)}
+                    disabled={freeEnemies.length >= MAX_BATTLE_TANKS - 1}
+                    onClick={() => enemyFileInputRef.current?.click()}
+                    title="複数ファイル(.vstank.json / .py)から対戦相手を追加（最大8台まで）"
                   >
-                    -1
+                    <Upload size={12} /> 相手読込
                   </button>
-                )}
-              </div>
+                  <input
+                    ref={enemyFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".json,.vstank.json,.py,.txt"
+                    hidden
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        handleLoadMultiEnemyFiles(e.target.files);
+                      }
+                      e.target.value = '';
+                    }}
+                  />
 
-              {freeEnemies.length > 1 && (
-                <label className="battle-ctrl-item" title="複数機参加時の対戦ルールを選択">
-                  <span>ルール:</span>
-                  <select
-                    value={freeTeamBattle ? 'team' : 'ffa'}
-                    onChange={(e) => handleChangeFreeTeamBattle(e.target.value === 'team')}
-                  >
-                    <option value="ffa">バトルロイヤル (乱戦)</option>
-                    <option value="team">1 vs 敵チーム ({freeEnemies.length}台協力)</option>
-                  </select>
-                </label>
-              )}
+                  <label className="battle-ctrl-item">
+                    <span>広さ:</span>
+                    <select
+                      value={freeArenaSize}
+                      onChange={(e) => handleChangeFreeArenaSize(e.target.value as ArenaSizeId)}
+                    >
+                      {(Object.keys(ARENA_SIZE_SPECS) as ArenaSizeId[]).map((sizeKey) => (
+                        <option key={sizeKey} value={sizeKey}>
+                          {ARENA_SIZE_SPECS[sizeKey].label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
 
-              {freeEnemies.length > 1 && (
-                <div className="opponent-chip-bar">
-                  <span className="opponent-chip">
-                    <span
-                      className="color-dot"
-                      style={{ backgroundColor: getAutoTankColor(0) }}
+                  <label className="battle-ctrl-item">
+                    <span>遮蔽物:</span>
+                    <select
+                      value={obstacleMode}
+                      onChange={(e) =>
+                        handleChangeObstacleSettings(e.target.value as ObstacleMode, mapSeed)
+                      }
+                    >
+                      <option value="none">遮蔽物なし</option>
+                      <option value="few">少なめ</option>
+                      <option value="many">多め</option>
+                      <option value="maze">迷路</option>
+                    </select>
+                  </label>
+
+                  <div className="battle-ctrl-item">
+                    <span>Seed:</span>
+                    <input
+                      type="number"
+                      className="seed-input"
+                      value={mapSeed}
+                      title="マップ生成シード (-1 で標準配置)"
+                      onChange={(e) => {
+                        const parsed = Number.parseInt(e.target.value, 10);
+                        handleChangeObstacleSettings(
+                          obstacleMode,
+                          Number.isFinite(parsed) ? parsed : -1
+                        );
+                      }}
                     />
-                    <strong>{currentPlayerBp.name}</strong>
-                  </span>
-                  {freeEnemies.map((ep, idx) => (
-                    <span key={`${ep.id}_${idx}`} className="opponent-chip">
-                      <span
-                        className="color-dot"
-                        style={{ backgroundColor: getAutoTankColor(idx + 1) }}
-                      />
-                      <span>{ep.name}</span>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      title="ランダムシードを生成"
+                      onClick={() =>
+                        handleChangeObstacleSettings(
+                          obstacleMode,
+                          Math.floor(Math.random() * 99999) + 1
+                        )
+                      }
+                    >
+                      🎲
+                    </button>
+                    {mapSeed !== -1 && (
                       <button
                         type="button"
-                        className="chip-remove-btn"
-                        title="この相手を外す"
-                        onClick={() => handleRemoveFreeEnemy(idx)}
+                        className="mini-btn"
+                        title="標準シード (-1) に戻す"
+                        onClick={() => handleChangeObstacleSettings(obstacleMode, -1)}
                       >
-                        <X size={11} />
+                        -1
                       </button>
-                    </span>
-                  ))}
-                </div>
+                    )}
+                  </div>
+
+                  {freeEnemies.length > 1 && (
+                    <label className="battle-ctrl-item" title="複数機参加時の対戦ルールを選択">
+                      <span>ルール:</span>
+                      <select
+                        value={freeTeamBattle ? 'team' : 'ffa'}
+                        onChange={(e) => handleChangeFreeTeamBattle(e.target.value === 'team')}
+                      >
+                        <option value="ffa">バトルロイヤル (乱戦)</option>
+                        <option value="team">1 vs 敵チーム ({freeEnemies.length}台協力)</option>
+                      </select>
+                    </label>
+                  )}
+
+                  {freeEnemies.length > 1 && (
+                    <div className="opponent-chip-bar">
+                      <span className="opponent-chip">
+                        <span
+                          className="color-dot"
+                          style={{ backgroundColor: getAutoTankColor(0) }}
+                        />
+                        <strong>{currentPlayerBp.name}</strong>
+                      </span>
+                      {freeEnemies.map((ep, idx) => (
+                        <span key={`${ep.id}_${idx}`} className="opponent-chip">
+                          <span
+                            className="color-dot"
+                            style={{ backgroundColor: getAutoTankColor(idx + 1) }}
+                          />
+                          <span>{ep.name}</span>
+                          <button
+                            type="button"
+                            className="chip-remove-btn"
+                            title="この相手を外す"
+                            onClick={() => handleRemoveFreeEnemy(idx)}
+                          >
+                            <X size={11} />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1212,7 +1360,9 @@ export function App() {
 
             {cameraMode === 'orbit' && (
               <div className="orbit-hint">
-                マウスドラッグで視点回転 / ホイールでズーム
+                {isMobileLayout
+                  ? '指ドラッグで視点回転 / 2本指ピンチで拡大縮小'
+                  : 'マウスドラッグで視点回転 / ホイールでズーム'}
               </div>
             )}
 
@@ -1303,15 +1453,7 @@ export function App() {
               <button
                 type="button"
                 className="btn-play"
-                onClick={() => {
-                  if (battleState.status === 'finished') {
-                    const fresh = buildInitialBattle(currentPlayerBp, currentEnemyList);
-                    setBattleState(fresh);
-                    setIsPlaying(true);
-                  } else {
-                    setIsPlaying((p) => !p);
-                  }
-                }}
+                onClick={handleTogglePlay}
               >
                 {isPlaying ? <Pause size={16} /> : <Play size={16} />}
                 {isPlaying ? '一時停止' : battleState.status === 'finished' ? '再戦スタート' : 'バトル開始'}

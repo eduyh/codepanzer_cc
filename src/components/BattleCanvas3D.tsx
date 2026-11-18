@@ -335,6 +335,13 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
   zoomRef.current = zoomLevel;
   onChangeZoomRef.current = onChangeZoom;
 
+  useEffect(() => {
+    const domEl = containerRef.current?.querySelector('canvas');
+    if (domEl instanceof HTMLElement) {
+      domEl.style.touchAction = cameraMode === 'orbit' ? 'none' : 'pan-y';
+    }
+  }, [cameraMode]);
+
   // Orbit camera state
   const orbitRef = useRef({ theta: 0, phi: 0.78, distance: 920 });
 
@@ -504,27 +511,46 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     const mineGeo = new THREE.CylinderGeometry(9, 10, 4, 12);
     const expGeo = new THREE.SphereGeometry(1, 14, 12);
 
-    // Mouse interaction for Orbit camera
-    let dragging = false;
-    let lastX = 0;
-    let lastY = 0;
+    // Mouse & touch interaction for Orbit camera (1-finger rotate, 2-finger pinch zoom)
+    const activePointers = new Map<number, { x: number; y: number }>();
+    let prevPinchDist: number | null = null;
+
+    const getPinchDistance = (): number | null => {
+      if (activePointers.size !== 2) return null;
+      const pts = Array.from(activePointers.values());
+      return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    };
 
     const onPointerDown = (e: PointerEvent) => {
-      dragging = true;
-      lastX = e.clientX;
-      lastY = e.clientY;
+      if (cameraModeRef.current !== 'orbit') return;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      prevPinchDist = getPinchDistance();
     };
     const onPointerMove = (e: PointerEvent) => {
-      if (!dragging || cameraModeRef.current !== 'orbit') return;
-      const dx = e.clientX - lastX;
-      const dy = e.clientY - lastY;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      orbitRef.current.theta -= dx * 0.007;
-      orbitRef.current.phi = Math.max(0.18, Math.min(1.48, orbitRef.current.phi - dy * 0.007));
+      if (cameraModeRef.current !== 'orbit' || !activePointers.has(e.pointerId)) return;
+      const prev = activePointers.get(e.pointerId)!;
+      const dx = e.clientX - prev.x;
+      const dy = e.clientY - prev.y;
+      activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      if (activePointers.size === 1) {
+        orbitRef.current.theta -= dx * 0.007;
+        orbitRef.current.phi = Math.max(0.18, Math.min(1.48, orbitRef.current.phi - dy * 0.007));
+      } else if (activePointers.size === 2) {
+        const nextDist = getPinchDistance();
+        if (nextDist !== null && prevPinchDist !== null) {
+          const delta = prevPinchDist - nextDist;
+          orbitRef.current.distance = Math.max(
+            260,
+            Math.min(2600, orbitRef.current.distance + delta * 3.2)
+          );
+        }
+        prevPinchDist = nextDist;
+      }
     };
-    const onPointerUp = () => {
-      dragging = false;
+    const onPointerUp = (e: PointerEvent) => {
+      activePointers.delete(e.pointerId);
+      prevPinchDist = getPinchDistance();
     };
     const onWheel = (e: WheelEvent) => {
       if (cameraModeRef.current === 'orbit') {
@@ -547,9 +573,11 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     };
 
     const domEl = renderer.domElement;
+    domEl.style.touchAction = cameraModeRef.current === 'orbit' ? 'none' : 'pan-y';
     domEl.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('pointermove', onPointerMove);
     window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerUp);
     domEl.addEventListener('wheel', onWheel, { passive: false });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -923,6 +951,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       domEl.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerUp);
       domEl.removeEventListener('wheel', onWheel);
       renderer.dispose();
     };
@@ -938,7 +967,11 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
   }
 
   return (
-    <div ref={containerRef} className="battle-canvas-3d">
+    <div
+      ref={containerRef}
+      className="battle-canvas-3d"
+      style={{ touchAction: cameraMode === 'orbit' ? 'none' : 'pan-y' }}
+    >
       {/* Three.js mounts here */}
     </div>
   );
