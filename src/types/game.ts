@@ -165,13 +165,36 @@ export interface ChipProgram {
 }
 
 export interface TankBlueprint {
-  version: 1;
+  version: number;
+  gameVersion?: string;
   id: string;
   name: string;
   author?: string;
+  authorUuid?: string;
   color: string;
   assembly: TankAssembly;
   program: ChipProgram;
+}
+
+export interface UserProfile {
+  userName: string;
+  userId: string;
+}
+
+export type UiFontScale = 'normal' | 'large' | 'xlarge';
+
+export interface UserEnvironmentDump {
+  version: number;
+  gameVersion?: string;
+  exportedAt: string;
+  userProfile: UserProfile;
+  currentBlueprint?: TankBlueprint;
+  savedBlueprints: TankBlueprint[];
+  learningClears: string[];
+  tutorialClears: string[];
+  uiSettings?: {
+    fontScale?: UiFontScale;
+  };
 }
 
 export interface ExecutionEdge {

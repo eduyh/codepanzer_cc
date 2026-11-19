@@ -185,6 +185,233 @@ button {
   gap: 8px;
 }
 
+.user-menu-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.hamburger-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-main);
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.hamburger-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--sky);
+  color: var(--sky);
+}
+
+.hamburger-btn.active {
+  background: rgba(56, 189, 248, 0.14);
+  border-color: var(--sky);
+  color: var(--sky);
+}
+
+.user-menu-popover {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 80;
+  width: 360px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 72px);
+  overflow-y: auto;
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.48);
+  color: var(--text-main);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.user-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.user-menu-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-menu-version-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: var(--sky);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.user-menu-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-menu-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+
+.user-menu-field label,
+.user-menu-field > span {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.user-menu-input-row,
+.user-menu-uuid-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.user-menu-input-row input,
+.user-menu-uuid-row input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-base);
+  color: var(--text-main);
+  font-size: 12.5px;
+}
+
+.user-menu-input-row input:focus {
+  outline: none;
+  border-color: var(--sky);
+}
+
+.user-menu-uuid-row input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.user-menu-input-row button,
+.user-menu-uuid-row button {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.user-menu-input-row button:hover,
+.user-menu-uuid-row button:hover {
+  background: var(--bg-hover);
+  border-color: var(--sky);
+}
+
+.user-menu-input-row button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.user-menu-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 0;
+}
+
+.user-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.user-menu-subhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.user-menu-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.user-menu-stat-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.user-menu-full-btn {
+  width: 100%;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.user-menu-notice {
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.user-menu-notice.ok {
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: var(--emerald);
+}
+
+.user-menu-notice.error {
+  background: rgba(239, 68, 68, 0.14);
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  color: #fca5a5;
+}
+
 /* Shared Buttons */
 .btn-primary,
 .btn-secondary,
@@ -389,19 +616,88 @@ button {
   white-space: nowrap;
 }
 
+.tut-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.tut-section {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.tut-goal-row {
+  padding-top: 5px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.25);
+}
+
+.tut-hints-row {
+  padding-top: 5px;
+  border-top: 1px dashed rgba(245, 158, 11, 0.28);
+}
+
+.tut-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  padding: 2px 0;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  margin-top: 2px;
+}
+
+.tut-label-task {
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #7dd3fc;
+}
+
+.tut-label-goal {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #6ee7b7;
+}
+
+.tut-label-hint {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #fcd34d;
+}
+
 .tut-desc {
-  margin: 4px 0;
+  margin: 0;
   color: #e2e8f0;
-  line-height: 1.55;
+  line-height: 1.6;
   font-size: 13.5px;
+  white-space: pre-line;
+}
+
+.tut-goal {
+  margin: 0;
+  color: #d1fae5;
+  line-height: 1.55;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .tut-hints {
-  margin: 6px 0 0;
-  padding-left: 18px;
+  margin: 0;
+  padding-left: 16px;
   color: #cbd5e1;
-  font-size: 13px;
+  font-size: 12.5px;
   line-height: 1.55;
+}
+
+.tut-hints li + li {
+  margin-top: 3px;
 }
 
 /* Grid Editor */
@@ -951,8 +1247,9 @@ button {
 
 .inspector-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 8px;
   margin-bottom: 6px;
 }
 
@@ -960,6 +1257,28 @@ button {
   margin: 0;
   font-size: 14.5px;
   color: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chip-desc-toggle {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.inspector-coord {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.inspector-chip-name {
+  font-size: 14.5px;
+  font-weight: 700;
+  color: #ffffff;
+  line-height: 1.3;
 }
 
 .inspector-empty {
@@ -970,9 +1289,14 @@ button {
 
 .chip-desc {
   margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.22);
   color: #cbd5e1;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-line;
 }
 
 .param-list {
@@ -1039,6 +1363,18 @@ button {
   width: 16px;
   height: 16px;
   cursor: pointer;
+  flex-shrink: 0;
+}
+
+.print-debug-label {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.print-debug-sub {
+  font-size: 0.88em;
+  opacity: 0.9;
 }
 
 .num-input-wrap input {
@@ -1060,20 +1396,12 @@ button {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
   font-size: 12.5px;
   font-weight: 700;
   color: #cbd5e1;
   margin-bottom: 6px;
-}
-
-.wiring-rule-tag {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--cyan);
-  background: rgba(6, 182, 212, 0.14);
-  border: 1px solid rgba(6, 182, 212, 0.4);
-  padding: 2px 8px;
-  border-radius: 999px;
 }
 
 .branch-controls-dual {
@@ -1365,6 +1693,10 @@ button {
   width: 100%;
 }
 
+.edu-tooltip-card.collapsed {
+  padding: 6px 12px;
+}
+
 .edu-tooltip-toolbar {
   display: flex;
   align-items: center;
@@ -1373,13 +1705,20 @@ button {
   flex-wrap: wrap;
   border-bottom: 1px solid rgba(51, 65, 85, 0.6);
   padding-bottom: 5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.edu-tooltip-card.collapsed .edu-tooltip-toolbar {
+  border-bottom: none;
+  padding-bottom: 0;
 }
 
 .edu-toolbar-title {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
+  font-size: 12.5px;
   font-weight: 700;
   color: var(--sky);
 }
@@ -1389,41 +1728,6 @@ button {
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
-}
-
-.edu-tooltip-card.edu-size-lg {
-  padding: 12px 14px;
-}
-
-.edu-tooltip-card.edu-size-lg .edu-syntax-code {
-  font-size: 13px;
-  padding: 7px 10px;
-}
-
-.edu-tooltip-card.edu-size-lg .edu-tip-text {
-  font-size: 12.5px;
-  line-height: 1.55;
-}
-
-.edu-tooltip-card.edu-size-xl {
-  padding: 14px 16px;
-  min-height: 155px;
-}
-
-.edu-tooltip-card.edu-size-xl .edu-syntax-code {
-  font-size: 14.5px;
-  padding: 9px 12px;
-}
-
-.edu-tooltip-card.edu-size-xl .edu-tip-text {
-  font-size: 13.5px;
-  line-height: 1.6;
-}
-
-.edu-tooltip-card.edu-size-xl .edu-badge-concept,
-.edu-tooltip-card.edu-size-xl .edu-badge-sig {
-  font-size: 12px;
-  padding: 2px 8px;
 }
 
 .edu-tooltip-head {
@@ -1440,14 +1744,14 @@ button {
   background: rgba(56, 189, 248, 0.16);
   border: 1px solid rgba(56, 189, 248, 0.45);
   color: var(--sky);
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 700;
   padding: 2px 7px;
   border-radius: 4px;
 }
 
 .edu-badge-sig {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--emerald);
   background: rgba(16, 185, 129, 0.12);
   border: 1px solid rgba(16, 185, 129, 0.35);
@@ -1460,9 +1764,9 @@ button {
   background: var(--bg-base);
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 6px 8px;
+  padding: 7px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 12px;
+  font-size: 13px;
   color: #fde68a;
   overflow-x: auto;
   white-space: pre-wrap;
@@ -1471,18 +1775,19 @@ button {
 
 .edu-tip-text {
   margin: 0;
-  font-size: 11.5px;
+  font-size: 12.5px;
   color: #e2e8f0;
-  line-height: 1.5;
+  line-height: 1.55;
+  white-space: pre-line;
 }
 
 .edu-tip-empty {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-muted);
-  padding: 6px 0;
+  padding: 4px 0;
 }
 
 .code-edit-area {
@@ -2600,8 +2905,13 @@ button {
   grid-template-columns: minmax(310px, 1.16fr) minmax(250px, 0.84fr);
 }
 
-.app-shell.ui-scale-large .inspector-header h4 {
+.app-shell.ui-scale-large .inspector-header h4,
+.app-shell.ui-scale-large .inspector-chip-name {
   font-size: 16px;
+}
+
+.app-shell.ui-scale-large .inspector-coord {
+  font-size: 13px;
 }
 
 .app-shell.ui-scale-large .chip-desc {
@@ -2636,10 +2946,6 @@ button {
 
 .app-shell.ui-scale-large .wiring-title {
   font-size: 13.5px;
-}
-
-.app-shell.ui-scale-large .wiring-rule-tag {
-  font-size: 12.5px;
 }
 
 .app-shell.ui-scale-large .branch-head {
@@ -2714,8 +3020,40 @@ button {
   font-size: 14.5px;
 }
 
+.app-shell.ui-scale-large .edu-toolbar-title {
+  font-size: 14px;
+}
+
+.app-shell.ui-scale-large .edu-badge-concept,
+.app-shell.ui-scale-large .edu-badge-sig {
+  font-size: 12.5px;
+}
+
+.app-shell.ui-scale-large .edu-syntax-code {
+  font-size: 14.5px;
+}
+
+.app-shell.ui-scale-large .edu-tip-text,
+.app-shell.ui-scale-large .edu-tip-empty {
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.app-shell.ui-scale-large .tut-section {
+  grid-template-columns: 54px minmax(0, 1fr);
+}
+
+.app-shell.ui-scale-large .tut-label {
+  width: 54px;
+  font-size: 12px;
+}
+
 .app-shell.ui-scale-large .tut-desc {
   font-size: 15px;
+}
+
+.app-shell.ui-scale-large .tut-goal {
+  font-size: 14.5px;
 }
 
 .app-shell.ui-scale-large .tut-hints {
@@ -2744,8 +3082,13 @@ button {
   grid-template-columns: minmax(300px, 1.12fr) minmax(265px, 0.88fr);
 }
 
-.app-shell.ui-scale-xlarge .inspector-header h4 {
+.app-shell.ui-scale-xlarge .inspector-header h4,
+.app-shell.ui-scale-xlarge .inspector-chip-name {
   font-size: 17.5px;
+}
+
+.app-shell.ui-scale-xlarge .inspector-coord {
+  font-size: 14px;
 }
 
 .app-shell.ui-scale-xlarge .chip-desc {
@@ -2781,10 +3124,6 @@ button {
 
 .app-shell.ui-scale-xlarge .wiring-title {
   font-size: 15px;
-}
-
-.app-shell.ui-scale-xlarge .wiring-rule-tag {
-  font-size: 13.5px;
 }
 
 .app-shell.ui-scale-xlarge .branch-head {
@@ -2859,8 +3198,40 @@ button {
   font-size: 16px;
 }
 
+.app-shell.ui-scale-xlarge .edu-toolbar-title {
+  font-size: 15.5px;
+}
+
+.app-shell.ui-scale-xlarge .edu-badge-concept,
+.app-shell.ui-scale-xlarge .edu-badge-sig {
+  font-size: 13.5px;
+}
+
+.app-shell.ui-scale-xlarge .edu-syntax-code {
+  font-size: 16px;
+}
+
+.app-shell.ui-scale-xlarge .edu-tip-text,
+.app-shell.ui-scale-xlarge .edu-tip-empty {
+  font-size: 15.5px;
+  line-height: 1.6;
+}
+
+.app-shell.ui-scale-xlarge .tut-section {
+  grid-template-columns: 58px minmax(0, 1fr);
+}
+
+.app-shell.ui-scale-xlarge .tut-label {
+  width: 58px;
+  font-size: 13px;
+}
+
 .app-shell.ui-scale-xlarge .tut-desc {
   font-size: 16.5px;
+}
+
+.app-shell.ui-scale-xlarge .tut-goal {
+  font-size: 16px;
 }
 
 .app-shell.ui-scale-xlarge .tut-hints {
@@ -3069,9 +3440,12 @@ html:has(.app-shell.mobile-layout) #root {
   width: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.app-shell.mobile-layout .nav-actions > .btn-primary {
+  margin-left: auto;
 }
 
 .app-shell.mobile-layout .btn-primary {

@@ -24,6 +24,70 @@ import {
 export const ALLOWED_CHASSIS_IDS: ChassisId[] = ['light', 'standard', 'heavy', 'destroyer'];
 export const ALLOWED_RADAR_IDS: RadarId[] = ['wide', 'balanced', 'long'];
 export const ALLOWED_MAIN_GUN_IDS: MainGunId[] = ['rapid', 'standard', 'cannon'];
+export const CURRENT_GAME_VERSION = '1.5.16';
+export const CURRENT_BLUEPRINT_VERSION = 1;
+export const CURRENT_ENV_DUMP_VERSION = 1;
+export const MAX_GAME_VERSION_LENGTH = 24;
+export const MAX_TANK_NAME_LENGTH = 16;
+export const MAX_AUTHOR_NAME_LENGTH = 8;
+export const MAX_AUTHOR_UUID_LENGTH = 36;
+
+export function truncateToMaxChars(raw: unknown, maxLen: number): string {
+  const cleaned = String(raw ?? '').replace(/[\r\n\t\x00-\x1f\x7f]/g, '');
+  return Array.from(cleaned).slice(0, maxLen).join('');
+}
+
+function sanitizeBoundedText(raw: unknown, maxLen: number, fallback: string): string {
+  const trimmed = truncateToMaxChars(raw, maxLen).trim();
+  return trimmed || fallback;
+}
+
+export function sanitizeTankName(raw: unknown, fallback = 'カスタム戦車'): string {
+  return sanitizeBoundedText(raw, MAX_TANK_NAME_LENGTH, fallback);
+}
+
+export function sanitizeAuthorName(raw: unknown, fallback = 'Player'): string {
+  return sanitizeBoundedText(raw, MAX_AUTHOR_NAME_LENGTH, fallback);
+}
+
+export function sanitizeAuthorUuid(raw: unknown, fallback = ''): string {
+  return sanitizeBoundedText(raw, MAX_AUTHOR_UUID_LENGTH, fallback);
+}
+
+export function sanitizeGameVersion(raw: unknown, fallback = CURRENT_GAME_VERSION): string {
+  const trimmed = truncateToMaxChars(raw, MAX_GAME_VERSION_LENGTH)
+    .trim()
+    .replace(/^[vV]/, '');
+  if (!trimmed) return fallback;
+  return /^\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?$/.test(trimmed) ? trimmed : fallback;
+}
+
+export function compareSemver(a: string, b: string): number {
+  const parseParts = (v: string): [number, number, number] | null => {
+    const m = v
+      .trim()
+      .replace(/^[vV]/, '')
+      .match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+    if (!m) return null;
+    return [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)];
+  };
+  const pa = parseParts(a);
+  const pb = parseParts(b);
+  if (!pa || !pb) return 0;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
+}
+
+export function isNewerGameVersion(
+  targetVersion?: string,
+  currentVersion = CURRENT_GAME_VERSION
+): boolean {
+  if (!targetVersion) return false;
+  return compareSemver(targetVersion, currentVersion) > 0;
+}
 export const ALLOWED_SUB_WEAPON_IDS: SubWeaponId[] = [
   'none',
   'missile',
@@ -749,6 +813,9 @@ export type ParsePythonResult =
       ok: true;
       program: ChipProgram;
       tankName?: string;
+      authorName?: string;
+      authorUuid?: string;
+      gameVersion?: string;
       chassisId?: ChassisId;
       radarId?: RadarId;
       mainGunId?: MainGunId;
@@ -768,7 +835,7 @@ export type ParsePythonResult =
 export function looksLikePythonSource(text: string): boolean {
   const t = text.trim();
   if (!t || t.startsWith('VST1-') || t.startsWith('{')) return false;
-  return /^(import\s+(time|random)|tank_name\s*=|chassis\s*=|radar\s*=|main_gun\s*=|special\s*=|sub_weapon\s*=|color\s*=|def\s+(on_tick|sub_[a-dA-D])|if\s+|while\s+|for\s+|print\(|time\.sleep\(|random\.randint|enemy_dist|under_lock\(|move\(|fire_main\(|fire_sp\(|fire_sub\(|fire\(|turn_|aim_enemy|sub_[a-dA-D]\(|use_sp|use_sub|main_cooldown|sp_cooldown|sub_cooldown|[ab]\s*[+\-]?=)/m.test(
+  return /^(import\s+(time|random)|tank_name\s*=|author_name\s*=|author_uuid\s*=|game_version\s*=|chassis\s*=|radar\s*=|main_gun\s*=|special\s*=|sub_weapon\s*=|color\s*=|def\s+(on_tick|sub_[a-dA-D])|if\s+|while\s+|for\s+|print\(|time\.sleep\(|random\.randint|enemy_dist|under_lock\(|move\(|fire_main\(|fire_sp\(|fire_sub\(|fire\(|turn_|aim_enemy|sub_[a-dA-D]\(|use_sp|use_sub|main_cooldown|sp_cooldown|sub_cooldown|[ab]\s*[+\-]?=)/m.test(
     t
   );
 }
@@ -832,6 +899,9 @@ export function parsePythonSourceToProgram(
 
   let cursor = 0;
   let parsedTankName: string | undefined;
+  let parsedAuthorName: string | undefined;
+  let parsedAuthorUuid: string | undefined;
+  let parsedGameVersion: string | undefined;
   let parsedChassisId: ChassisId | undefined;
   let parsedRadarId: RadarId | undefined;
   let parsedMainGunId: MainGunId | undefined;
@@ -846,9 +916,45 @@ export function parsePythonSourceToProgram(
     }
     const nameMatch = t.match(/^tank_name\s*=\s*(?:"([^"]*)"|'([^']*)')$/);
     if (nameMatch) {
-      const extracted = (nameMatch[1] ?? nameMatch[2] ?? '').trim();
-      if (extracted) {
-        parsedTankName = extracted.slice(0, 32);
+      const rawName = nameMatch[1] ?? nameMatch[2] ?? '';
+      const cleanName = sanitizeTankName(rawName, '');
+      if (cleanName) {
+        parsedTankName = cleanName;
+      }
+      cursor += 1;
+      continue;
+    }
+    const authorMatch = t.match(/^author_name\s*=\s*(?:"([^"]*)"|'([^']*)')$/);
+    if (authorMatch) {
+      const rawAuthor = authorMatch[1] ?? authorMatch[2] ?? '';
+      const cleanAuthor = sanitizeAuthorName(rawAuthor, '');
+      if (cleanAuthor) {
+        parsedAuthorName = cleanAuthor;
+      }
+      cursor += 1;
+      continue;
+    }
+    const uuidMatch = t.match(/^author_uuid\s*=\s*(?:"([^"]*)"|'([^']*)')$/);
+    if (uuidMatch) {
+      const rawUuid = uuidMatch[1] ?? uuidMatch[2] ?? '';
+      const cleanUuid = sanitizeAuthorUuid(rawUuid, '');
+      if (cleanUuid) {
+        parsedAuthorUuid = cleanUuid;
+      }
+      cursor += 1;
+      continue;
+    }
+    const gameVerMatch = t.match(/^game_version\s*=\s*(?:"([^"]*)"|'([^']*)')$/);
+    if (gameVerMatch) {
+      const rawVer = gameVerMatch[1] ?? gameVerMatch[2] ?? '';
+      const cleanVer = sanitizeGameVersion(rawVer, '');
+      if (cleanVer) {
+        parsedGameVersion = cleanVer;
+        if (isNewerGameVersion(cleanVer)) {
+          warnings.push(
+            `このコードは現在のバージョン (v${CURRENT_GAME_VERSION}) より新しいバージョン (v${cleanVer}) で作成されています。`
+          );
+        }
       }
       cursor += 1;
       continue;
@@ -1535,6 +1641,9 @@ export function parsePythonSourceToProgram(
       cells,
     },
     tankName: parsedTankName,
+    authorName: parsedAuthorName,
+    authorUuid: parsedAuthorUuid,
+    gameVersion: parsedGameVersion,
     chassisId: parsedChassisId,
     radarId: parsedRadarId,
     mainGunId: parsedMainGunId,

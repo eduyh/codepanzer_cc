@@ -53,13 +53,19 @@ import {
   ALLOWED_RADAR_IDS,
   ALLOWED_SUB_WEAPON_IDS,
   countGridBlocks,
+  CURRENT_BLUEPRINT_VERSION,
+  CURRENT_GAME_VERSION,
   isAllowedChassisId,
   isAllowedMainGunId,
   isAllowedRadarId,
   isAllowedSubWeaponId,
   looksLikePythonSource,
+  MAX_TANK_NAME_LENGTH,
   parsePythonSourceToProgram,
   parsePythonSourceWithAutoSize,
+  sanitizeAuthorName,
+  sanitizeAuthorUuid,
+  sanitizeTankName,
   STANDARD_SETUP,
   validateFirePowerInCells,
   validateGridBlockFit,
@@ -78,6 +84,8 @@ interface GridEditorProps {
   mainGunId?: MainGunId;
   subWeaponId?: SubWeaponId;
   tankName: string;
+  authorName?: string;
+  authorUuid?: string;
   trace?: ExecutionTrace;
   isPlaying: boolean;
   allowedChips?: ChipType[];
@@ -90,7 +98,9 @@ interface GridEditorProps {
     nextRadarId?: RadarId,
     nextChassisId?: ChassisId,
     nextMainGunId?: MainGunId,
-    nextSubWeaponId?: SubWeaponId
+    nextSubWeaponId?: SubWeaponId,
+    nextAuthorName?: string,
+    nextAuthorUuid?: string
   ) => void;
   onChangeTankName?: (name: string) => void;
   onChangeChassis?: (chassis: ChassisId) => void;
@@ -445,10 +455,14 @@ export function transpileProgramToLines(
   chassisId: ChassisId = 'standard',
   mainGunId: MainGunId = 'standard',
   subWeaponId: SubWeaponId = 'missile',
-  _color?: string
+  _color?: string,
+  authorName?: string,
+  authorUuid?: string
 ): CodeLine[] {
   const start = findStartCell(program.cells);
-  const safeName = tankName.replace(/"/g, '\\"');
+  const safeName = sanitizeTankName(tankName, 'カスタム戦車').replace(/"/g, '\\"');
+  const safeAuthor = sanitizeAuthorName(authorName, 'Player').replace(/"/g, '\\"');
+  const safeUuid = sanitizeAuthorUuid(authorUuid, '').replace(/"/g, '\\"');
   const usesRandom = program.cells.some((row) => row.some((c) => c?.type === 'random_op'));
   const cSpec = CHASSIS_SPECS[chassisId] ?? CHASSIS_SPECS.standard;
   const rSpec = RADAR_SPECS[radarId] ?? RADAR_SPECS.balanced;
@@ -460,60 +474,81 @@ export function transpileProgramToLines(
     signatureInfo: 'モジュール: time (待機・時間制御)',
     pythonSyntax: 'import time',
     learningTip:
-      'Pythonに最初から用意されている「標準ライブラリ」の time モジュールを読み込みます。これにより time.sleep() が使えるようになります。',
+      'import は Python に最初から用意されている機能（標準ライブラリ）を使えるようにするキーワードです。\ntime モジュールを読み込むことで、処理を止める time.sleep() 関数が使えるようになります。',
   };
   const importRandomHelp: SyntaxHelpInfo = {
     conceptTag: '標準モジュール読み込み (import)',
     signatureInfo: 'モジュール: random (乱数生成)',
     pythonSyntax: 'import random',
     learningTip:
-      'ランダムな整数や選択肢を作る標準モジュール random を読み込みます。random.randint(a, b) でa以上b以下の整数を生成できます。',
+      '乱数を扱うための標準ライブラリ random を読み込みます（盤面で乱数代入を使うと自動で追加されます）。\nrandom.randint(a, b) のように「モジュール名.関数名()」の形で呼び出します。',
   };
   const tankNameHelp: SyntaxHelpInfo = {
-    conceptTag: '変数代入 (文字列リテラル str)',
-    signatureInfo: '代入: tank_name: str → 自機名称の設定',
+    conceptTag: '変数代入 (文字列型 str)',
+    signatureInfo: `代入: tank_name = "..." → 最大${MAX_TANK_NAME_LENGTH}文字`,
     pythonSyntax: `tank_name = "${safeName}"`,
     learningTip:
-      'ダブルクォーテーション "..." で囲むと「文字列（テキストデータ）」になります。変数 tank_name に自戦車の名前を代入しています。',
+      `ダブルクォーテーション "..." で文字を囲むと「文字列（str型）」データになります。\n左辺の変数 tank_name に自戦車の名前（最大 ${MAX_TANK_NAME_LENGTH}文字）を入れて設定しています。`,
+  };
+  const authorNameHelp: SyntaxHelpInfo = {
+    conceptTag: '変数代入 (作成者ネーム)',
+    signatureInfo: '代入: author_name = "..." → 最大8文字',
+    pythonSyntax: `author_name = "${safeAuthor}"`,
+    learningTip:
+      '作成者のユーザーネームを表す文字列変数です。右上のメニューから設定した名前が自動で埋め込まれます。\nコード編集や外部読込時に 8文字を超える場合は超過分が切り捨てられます。',
+  };
+  const authorUuidHelp: SyntaxHelpInfo = {
+    conceptTag: '変数代入 (作成者UUID)',
+    signatureInfo: '代入: author_uuid = "..." → 36文字の固有識別子',
+    pythonSyntax: `author_uuid = "${safeUuid}"`,
+    learningTip:
+      '作成者を識別するための固有ID（UUID v4：36文字）です。\nユーザー環境ごとに自動発行され、誰が作成したプログラムかを区別するために利用されます。',
+  };
+  const gameVersionHelp: SyntaxHelpInfo = {
+    conceptTag: '変数代入 (ゲームバージョン)',
+    signatureInfo: `代入: game_version = "${CURRENT_GAME_VERSION}" → セマンティックバージョン`,
+    pythonSyntax: `game_version = "${CURRENT_GAME_VERSION}"`,
+    learningTip:
+      'このプログラムを作成した CodePanzer のバージョン（メジャー.マイナー.パッチ形式）を記録する文字列変数です。\n将来の仕様変更や新機能追加時に、古いコードとの互換性チェックや自動補正に利用されます。',
   };
   const chassisCodeText = `chassis = {"type": "${cSpec.id}", "hp": ${cSpec.maxHp}, "speed": ${cSpec.maxSpeed}, "turn": ${cSpec.turnRate}}`;
   const chassisHelp: SyntaxHelpInfo = {
-    conceptTag: '辞書リテラルとハードウェア設定 (dict)',
-    signatureInfo: `規定シャシー: ${cSpec.id} (HP${cSpec.maxHp} / 速度${cSpec.maxSpeed} / 旋回${cSpec.turnRate}°)`,
+    conceptTag: '辞書リテラルと機体設定 (dict)',
+    signatureInfo: `シャシー: ${cSpec.name} (HP${cSpec.maxHp} / 速度${cSpec.maxSpeed} / 旋回${cSpec.turnRate}°)`,
     pythonSyntax: chassisCodeText,
     learningTip:
-      '搭載シャシーの種類・最大HP・最高速度・旋回性能を表す辞書データです。異常値や規定外名の場合は自動でプリセット／標準構成へ補正されます。',
+      '波括弧 {"キー": 値} は「辞書（dict型）」と呼ばれ、名前と値をペアでまとめて扱うデータ構造です。\nこのコードでは搭載シャシーの種類や性能を表しており、"type" の値を書き換えて適用するとシャシーパーツも切り替わります。',
   };
   const radarCodeText = `radar = {"type": "${rSpec.id}", "fov": ${rSpec.fovDeg}, "range": ${rSpec.range}, "turn": ${rSpec.turnRate}}`;
   const radarHelp: SyntaxHelpInfo = {
-    conceptTag: '辞書リテラルとハードウェア設定 (dict)',
-    signatureInfo: `規定レーダー: ${rSpec.id} (視野${rSpec.fovDeg}° / 射程${rSpec.range}px / 旋回${rSpec.turnRate}°)`,
+    conceptTag: '辞書リテラルと機体設定 (dict)',
+    signatureInfo: `レーダー: ${rSpec.name} (視野${rSpec.fovDeg}° / 射程${rSpec.range}px / 旋回${rSpec.turnRate}°)`,
     pythonSyntax: radarCodeText,
     learningTip:
-      '{} は Python の辞書(dict)です。搭載レーダーの種類と視野角・射程・旋回速度を保持します。異常値や規定外名の場合は自動でプリセット／標準構成へ補正されます。',
+      '波括弧 {"キー": 値} は Python の辞書（dict型）で、カンマ区切りで複数の設定項目を持てます。\n搭載レーダーの種別（"type"）や視野角・射程・旋回速度を表しており、コード編集で "type" を変更して適用することもできます。',
   };
   const mainGunCodeText = `main_gun = {"type": "${gSpec.id}", "damage": ${gSpec.damageMultiplier}, "cooling": ${gSpec.coolingRate}, "turn": ${gSpec.turretTurnRate}}`;
   const mainGunHelp: SyntaxHelpInfo = {
-    conceptTag: '辞書リテラルとハードウェア設定 (dict)',
-    signatureInfo: `規定主砲: ${gSpec.id} (威力x${gSpec.damageMultiplier} / 冷却${gSpec.coolingRate} / 旋回${gSpec.turretTurnRate}°)`,
+    conceptTag: '辞書リテラルと機体設定 (dict)',
+    signatureInfo: `主砲: ${gSpec.name} (威力x${gSpec.damageMultiplier} / 冷却${gSpec.coolingRate} / 旋回${gSpec.turretTurnRate}°)`,
     pythonSyntax: mainGunCodeText,
     learningTip:
-      '搭載主砲の種類・ダメージ倍率・冷却速度・砲塔旋回速度を表す辞書データです。異常値や規定外名の場合は自動でプリセット／標準構成へ補正されます。',
+      '辞書型（dict）を使って主砲の種別と性能パラメータを 1つの変数 main_gun にまとめています。\n文字列（"standard" 等）は "" で囲み、数値（1.0 等）はそのまま書く点にも注目してみてください。',
   };
   const subWeaponCodeText = `special = {"type": "${sSpec.id}", "ammo": ${sSpec.maxAmmo}, "cooldown": ${sSpec.cooldownTicks}}`;
   const subWeaponHelp: SyntaxHelpInfo = {
-    conceptTag: '辞書リテラルとハードウェア設定 (dict)',
-    signatureInfo: `規定Special兵装: ${sSpec.id} (回数${sSpec.maxAmmo} / クールダウン${sSpec.cooldownTicks}t)`,
+    conceptTag: '辞書リテラルと機体設定 (dict)',
+    signatureInfo: `Special: ${sSpec.name} (回数${sSpec.maxAmmo} / 冷却${sSpec.cooldownTicks} Tick)`,
     pythonSyntax: subWeaponCodeText,
     learningTip:
-      '搭載Special (SP) 兵装の種類・最大回数・クールダウンTick数を表す辞書データです。異常値や規定外名の場合は自動でプリセット／標準構成へ補正されます。',
+      '辞書型（dict）で Special 兵装の種別・使用回数・クールダウン Tick 数を表しています。\nコード編集画面で "type" の文字列を "missile" や "shield" などに書き換えて適用すると装備も変更されます。',
   };
   const elseHelp: SyntaxHelpInfo = {
     conceptTag: '条件分岐の反対側 (else節)',
     signatureInfo: '直前の if 条件が False のときだけ実行',
     pythonSyntax: 'else:',
     learningTip:
-      'if の条件が成り立たなかった（False）側の処理をインデントして書きます。2Dグリッドの赤い矢印がこの else: に対応します。',
+      'else: は直前の if の条件式が False（成り立たない）のときに実行するブロックです。\n末尾にコロン (:) を付け、その中の処理はさらにインデント（字下げ）して書きます。2Dグリッドの F 側の矢印に対応します。',
   };
 
   if (!start) {
@@ -521,6 +556,9 @@ export function transpileProgramToLines(
       { text: 'import time', syntaxHelp: importTimeHelp },
       ...(usesRandom ? [{ text: 'import random', syntaxHelp: importRandomHelp }] : []),
       { text: `tank_name = "${safeName}"`, syntaxHelp: tankNameHelp },
+      { text: `author_name = "${safeAuthor}"`, syntaxHelp: authorNameHelp },
+      { text: `author_uuid = "${safeUuid}"`, syntaxHelp: authorUuidHelp },
+      { text: `game_version = "${CURRENT_GAME_VERSION}"`, syntaxHelp: gameVersionHelp },
       { text: chassisCodeText, syntaxHelp: chassisHelp },
       {
         text: withJaComments
@@ -541,6 +579,24 @@ export function transpileProgramToLines(
         ? `tank_name = "${safeName}"  # 自戦車の名前`
         : `tank_name = "${safeName}"`,
       syntaxHelp: tankNameHelp,
+    },
+    {
+      text: withJaComments
+        ? `author_name = "${safeAuthor}"  # 作成者ネーム`
+        : `author_name = "${safeAuthor}"`,
+      syntaxHelp: authorNameHelp,
+    },
+    {
+      text: withJaComments
+        ? `author_uuid = "${safeUuid}"  # 作成者UUID`
+        : `author_uuid = "${safeUuid}"`,
+      syntaxHelp: authorUuidHelp,
+    },
+    {
+      text: withJaComments
+        ? `game_version = "${CURRENT_GAME_VERSION}"  # ゲームバージョン`
+        : `game_version = "${CURRENT_GAME_VERSION}"`,
+      syntaxHelp: gameVersionHelp,
     },
     {
       text: withJaComments
@@ -643,11 +699,11 @@ export function transpileProgramToLines(
         coord,
         indent,
         syntaxHelp: {
-          conceptTag: 'ループ先頭への復帰 (continue / 循環)',
-          signatureInfo: '矢印が上位ブロックに戻っている循環配線',
+          conceptTag: 'ループ先頭への復帰 (continue)',
+          signatureInfo: '矢印が上位ブロックへ戻る循環配線',
           pythonSyntax: 'continue',
           learningTip:
-            '2Dグリッド上で矢印が前のブロックへ戻っている循環を表します。Pythonのループ内で continue を使うと先頭に戻って次の反復へ移ります。',
+            '2Dグリッド上で矢印が前のブロックへ戻っている循環を表します。\nPython のループ内で continue を実行すると、以降の行を飛ばしてループの先頭へ戻り次の反復に入ります。',
         },
       });
       return;
@@ -671,11 +727,11 @@ export function transpileProgramToLines(
         coord,
         indent,
         syntaxHelp: {
-          conceptTag: 'デバッグ出力 (print / f-string)',
-          signatureInfo: '引数: str → 戦車の頭上に吹き出し表示 (0ブロック)',
+          conceptTag: 'デバッグ出力 (print / f文字列)',
+          signatureInfo: '引数: str → 頭上吹き出し表示 (0ブロック)',
           pythonSyntax: printText,
           learningTip:
-            'print() は実行中の値や通った処理を確認するデバッグ出力です。f"..." (f文字列) を使うと {変数名} にその瞬間の数値が埋め込まれ、戦車の上の吹き出しで動きを観察できます（ブロック数は消費しません）。',
+            'print() は変数の中身や処理の通過を確認するための出力関数です。\nf"..."（f文字列）を使うと、波括弧 {変数名} の箇所にその瞬間の値が埋め込まれ、戦車頭上の吹き出しに表示されます（ブロック数は消費しません）。',
         },
       });
     }
@@ -829,6 +885,8 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   mainGunId = 'standard',
   subWeaponId = 'missile',
   tankName,
+  authorName,
+  authorUuid,
   trace,
   isPlaying,
   allowedChips,
@@ -849,6 +907,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   const [movingFromCoord, setMovingFromCoord] = useState<GridCoord | null>(null);
   const [activePaletteCategory, setActivePaletteCategory] = useState<ChipCategory | 'all'>('all');
   const [showAllTutorialChips, setShowAllTutorialChips] = useState(false);
+  const [showChipDesc, setShowChipDesc] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<'palette' | 'code'>('palette');
   const [mobilePartsExpanded, setMobilePartsExpanded] = useState(false);
   const [mobileGuideExpanded, setMobileGuideExpanded] = useState(false);
@@ -869,8 +928,12 @@ export const GridEditor: React.FC<GridEditorProps> = ({
   const [hoveredCell, setHoveredCell] = useState<GridCell | null>(null);
   const [hoveredCoord, setHoveredCoord] = useState<GridCoord | null>(null);
   const [hoveredCodeLine, setHoveredCodeLine] = useState<CodeLine | null>(null);
-  const [tooltipSize, setTooltipSize] = useState<'md' | 'lg' | 'xl'>('lg');
+  const [guideExpanded, setGuideExpanded] = useState<boolean>(Boolean(allowLearningChips));
   const [tooltipPosition, setTooltipPosition] = useState<'bottom' | 'top'>('bottom');
+
+  useEffect(() => {
+    setGuideExpanded(Boolean(allowLearningChips));
+  }, [allowLearningChips]);
   const [gridSizeNotice, setGridSizeNotice] = useState<{
     type: 'error' | 'info';
     text: string;
@@ -929,7 +992,10 @@ export const GridEditor: React.FC<GridEditorProps> = ({
         safeRadarId,
         safeChassisId,
         safeMainGunId,
-        safeSubWeaponId
+        safeSubWeaponId,
+        undefined,
+        authorName,
+        authorUuid
       ),
     [
       program,
@@ -939,6 +1005,8 @@ export const GridEditor: React.FC<GridEditorProps> = ({
       safeChassisId,
       safeMainGunId,
       safeSubWeaponId,
+      authorName,
+      authorUuid,
     ]
   );
   const usedBlockCount = useMemo(() => countGridBlocks(program.cells), [program.cells]);
@@ -1127,17 +1195,24 @@ export const GridEditor: React.FC<GridEditorProps> = ({
       liveParseResult.radarId,
       liveParseResult.chassisId,
       liveParseResult.mainGunId,
-      liveParseResult.subWeaponId
+      liveParseResult.subWeaponId,
+      liveParseResult.authorName,
+      liveParseResult.authorUuid
     );
     setCodeEditMode(false);
     setSelectedCoord({ x: 0, y: 0 });
   };
 
   const handleSaveTankFile = () => {
+    const cleanAuthor = sanitizeAuthorName(authorName, '');
+    const cleanUuid = sanitizeAuthorUuid(authorUuid, '');
     const bpSnapshot: TankBlueprint = {
-      version: 1,
+      version: CURRENT_BLUEPRINT_VERSION,
+      gameVersion: CURRENT_GAME_VERSION,
       id: `saved_${Date.now()}`,
-      name: tankName.trim() || 'カスタム戦車',
+      name: sanitizeTankName(tankName, 'カスタム戦車'),
+      ...(cleanAuthor ? { author: cleanAuthor } : {}),
+      ...(cleanUuid ? { authorUuid: cleanUuid } : {}),
       color: STANDARD_SETUP.color,
       assembly: {
         chassis: safeChassisId,
@@ -1186,7 +1261,9 @@ export const GridEditor: React.FC<GridEditorProps> = ({
             parsed.radarId,
             parsed.chassisId,
             parsed.mainGunId,
-            parsed.subWeaponId
+            parsed.subWeaponId,
+            parsed.authorName,
+            parsed.authorUuid
           );
           setGridSizeNotice({
             type: 'info',
@@ -1670,57 +1747,74 @@ export const GridEditor: React.FC<GridEditorProps> = ({
             tooltipDef.learningTip,
             activeFireTierInfo,
             tooltipIndent > 0
-              ? `[インデント Lv.${tooltipIndent} (${tooltipIndent * 2}スペース): Pythonでは行頭の空白で関数・if・ループの中身を表します]`
+              ? `インデント Lv.${tooltipIndent} (${tooltipIndent * 2}スペース)：Python では行頭の空白で関数・if・ループの中身を表します。`
               : null,
           ]
             .filter(Boolean)
-            .join(' '),
+            .join('\n'),
         }
       : null;
 
-  const renderTooltipCard = () => (
-    <div className={`edu-tooltip-card edu-size-${tooltipSize}`}>
-      <div className="edu-tooltip-toolbar">
-        <span className="edu-toolbar-title">
-          <GraduationCap size={14} /> Python 学習ガイド
-        </span>
-        <div className="edu-toolbar-controls">
-          {(['md', 'lg', 'xl'] as const).map((sz) => (
-            <button
-              key={sz}
-              type="button"
-              className={`mini-btn ${tooltipSize === sz ? 'active' : ''}`}
-              onClick={() => setTooltipSize(sz)}
-            >
-              {sz === 'md' ? '標準' : sz === 'lg' ? '拡大' : '特大'}
-            </button>
+  const renderTooltipCard = () => {
+    const isExpanded = mobileMode ? true : guideExpanded;
+    return (
+      <div className={`edu-tooltip-card ${isExpanded ? '' : 'collapsed'}`}>
+        <div
+          className="edu-tooltip-toolbar"
+          onClick={!mobileMode ? () => setGuideExpanded((v) => !v) : undefined}
+        >
+          <span className="edu-toolbar-title">
+            <GraduationCap size={14} /> 学習ガイド
+          </span>
+          {!mobileMode && (
+            <div className="edu-toolbar-controls" onClick={(e) => e.stopPropagation()}>
+              {isExpanded && (
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() => setTooltipPosition((p) => (p === 'bottom' ? 'top' : 'bottom'))}
+                  title="学習ガイドの表示位置を切り替え"
+                >
+                  {tooltipPosition === 'bottom' ? '▲ 上部へ移動' : '▼ 盤面下へ移動'}
+                </button>
+              )}
+              <button
+                type="button"
+                className={`mini-btn ${isExpanded ? 'active' : ''}`}
+                onClick={() => setGuideExpanded((v) => !v)}
+                title={isExpanded ? '学習ガイドを閉じる' : '学習ガイドを開く'}
+              >
+                {isExpanded ? (
+                  <>
+                    閉じる <ChevronUp size={12} />
+                  </>
+                ) : (
+                  <>
+                    開く <ChevronDown size={12} />
+                  </>
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+        {isExpanded &&
+          (tooltipDisplayData ? (
+            <>
+              <div className="edu-tooltip-head">
+                <span className="edu-badge-concept">{tooltipDisplayData.conceptTag}</span>
+                <span className="edu-badge-sig">{tooltipDisplayData.signatureInfo}</span>
+              </div>
+              <pre className="edu-syntax-code">{tooltipDisplayData.pythonSyntax}</pre>
+              <p className="edu-tip-text">{tooltipDisplayData.learningTip}</p>
+            </>
+          ) : (
+            <div className="edu-tip-empty">
+              盤面・パレットのチップ、またはコードの各行にカーソルを合わせると、対応する Python 構文と文法解説が表示されます。
+            </div>
           ))}
-          <button
-            type="button"
-            className="mini-btn"
-            onClick={() => setTooltipPosition((p) => (p === 'bottom' ? 'top' : 'bottom'))}
-            title="ツールチップの表示位置を切り替え"
-          >
-            {tooltipPosition === 'bottom' ? '▲ 上部へ移動' : '▼ 盤面下へ移動'}
-          </button>
-        </div>
       </div>
-      {tooltipDisplayData ? (
-        <>
-          <div className="edu-tooltip-head">
-            <span className="edu-badge-concept">{tooltipDisplayData.conceptTag}</span>
-            <span className="edu-badge-sig">{tooltipDisplayData.signatureInfo}</span>
-          </div>
-          <pre className="edu-syntax-code">{tooltipDisplayData.pythonSyntax}</pre>
-          <p className="edu-tip-text">{tooltipDisplayData.learningTip}</p>
-        </>
-      ) : (
-        <div className="edu-tip-empty">
-          盤面・パレットのチップ、またはコード変換の各行にカーソルを合わせると、対応するPython構文と解説が大きく表示されます。
-        </div>
-      )}
-    </div>
-  );
+    );
+  };
 
   const visibleGridSizes = mobileMode
     ? ALLOWED_GRID_SIZES.filter((gs) => gs <= 8 || gs === size)
@@ -1868,8 +1962,8 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                 type="text"
                 className="editor-tank-name-input"
                 value={tankName}
-                maxLength={32}
-                placeholder="自戦車の名前を入力"
+                maxLength={MAX_TANK_NAME_LENGTH}
+                placeholder={`自戦車の名前 (最大${MAX_TANK_NAME_LENGTH}文字)`}
                 onChange={(e) => onChangeTankName?.(e.target.value)}
               />
             </label>
@@ -2323,52 +2417,32 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           <div id="mobile-inspector-section" className="inspector-card">
             <div className="inspector-header">
               <h4>
-                {selectedCoord ? `グリッド (${selectedCoord.x}, ${selectedCoord.y})` : 'グリッド未選択'}
-                {selectedDef
-                  ? ` : ${displayLang === 'en' ? selectedDef.nameEn : selectedDef.name}`
-                  : ' : 空きグリッド'}
+                <span className="inspector-coord">
+                  {selectedCoord ? `グリッド (${selectedCoord.x}, ${selectedCoord.y}) :` : 'グリッド未選択 :'}
+                </span>
+                <span className="inspector-chip-name">
+                  {selectedDef
+                    ? displayLang === 'en'
+                      ? selectedDef.nameEn
+                      : selectedDef.name
+                    : '空きグリッド'}
+                </span>
               </h4>
-              {selectedCoord && selectedCell && (
-                <div className="inspector-header-actions">
-                  <button
-                    type="button"
-                    className={`mini-btn ${
-                      movingFromCoord?.x === selectedCoord.x && movingFromCoord?.y === selectedCoord.y
-                        ? 'active'
-                        : ''
-                    }`}
-                    onClick={() => {
-                      setPlacingChip(null);
-                      const isSame =
-                        movingFromCoord?.x === selectedCoord.x &&
-                        movingFromCoord?.y === selectedCoord.y;
-                      const nextMove = isSame ? null : selectedCoord;
-                      setMovingFromCoord(nextMove);
-                      if (nextMove && mobileMode) {
-                        document
-                          .getElementById('mobile-board-section')
-                          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      }
-                    }}
-                    title="このチップを別のグリッドへ移動・入替"
-                  >
-                    <Move size={13} /> 移動
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn-danger"
-                    onClick={() => handleClearCell(selectedCoord)}
-                    title="このチップを削除"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+              {selectedCell && selectedDef && (
+                <button
+                  type="button"
+                  className={`mini-btn chip-desc-toggle ${showChipDesc ? 'active' : ''}`}
+                  onClick={() => setShowChipDesc((v) => !v)}
+                  title={showChipDesc ? 'チップの解説を畳む' : 'チップの詳しい解説を開く'}
+                >
+                  解説 {showChipDesc ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                </button>
               )}
             </div>
 
             {selectedCell && selectedDef ? (
               <div className="inspector-body">
-                <p className="chip-desc">{selectedDef.description}</p>
+                {showChipDesc && <p className="chip-desc">{selectedDef.description}</p>}
 
                 {/* Parameters */}
                 {selectedDef.paramSchema.length > 0 && (
@@ -2462,14 +2536,54 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                       checked={Number(selectedCell.params._print ?? 0) === 1}
                       onChange={(e) => handleTogglePrint(e.target.checked)}
                     />
-                    <span>print() デバッグ出力（頭上に吹き出し表示）</span>
+                    <span className="print-debug-label">
+                      <span>print() デバッグ出力</span>
+                      <span className="print-debug-sub">（頭上吹き出し表示）</span>
+                    </span>
                   </label>
                 )}
 
-                {/* Wiring Controls (4-Direction Orthogonal Only) */}
+                {/* Wiring Controls */}
                 <div className="wiring-section">
                   <div className="wiring-title">
-                    矢印（出力先）の設定 <span className="wiring-rule-tag">4方向隣接のみ</span>
+                    <span>出力先の設定</span>
+                    {selectedCoord && (
+                      <div className="inspector-header-actions">
+                        <button
+                          type="button"
+                          className={`mini-btn ${
+                            movingFromCoord?.x === selectedCoord.x &&
+                            movingFromCoord?.y === selectedCoord.y
+                              ? 'active'
+                              : ''
+                          }`}
+                          onClick={() => {
+                            setPlacingChip(null);
+                            const isSame =
+                              movingFromCoord?.x === selectedCoord.x &&
+                              movingFromCoord?.y === selectedCoord.y;
+                            const nextMove = isSame ? null : selectedCoord;
+                            setMovingFromCoord(nextMove);
+                            if (nextMove && mobileMode) {
+                              document
+                                .getElementById('mobile-board-section')
+                                ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            }
+                          }}
+                          title="このチップを別のグリッドへ移動・入替"
+                        >
+                          <Move size={12} /> 移動
+                        </button>
+                        <button
+                          type="button"
+                          className="mini-btn danger-ghost"
+                          onClick={() => handleClearCell(selectedCoord)}
+                          title="このチップを削除"
+                        >
+                          <Trash2 size={12} /> 削除
+                        </button>
+                      </div>
+                    )}
                   </div>
                   {(() => {
                     const renderCrossPad = (
@@ -2528,11 +2642,11 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                           const branchLabel =
                             branch === 'yes'
                               ? isLoop
-                                ? 'T: 反復処理 (青)'
-                                : 'T: True / then (青)'
+                                ? 'T:反復処理'
+                                : 'T:True / then'
                               : isLoop
-                                ? 'F: ループ終了 (赤)'
-                                : 'F: False / else (赤)';
+                                ? 'F:ループ終了'
+                                : 'F:False / else';
                           return (
                             <div key={branch} className={`branch-box branch-${branch}`}>
                               <div className="branch-head">
@@ -2624,14 +2738,14 @@ export const GridEditor: React.FC<GridEditorProps> = ({
                 className={`sidebar-mode-btn ${sidebarMode === 'palette' ? 'active' : ''}`}
                 onClick={() => setSidebarMode('palette')}
               >
-                <Grid3X3 size={13} /> チップパレット
+                <Grid3X3 size={13} /> チップ
               </button>
               <button
                 type="button"
                 className={`sidebar-mode-btn ${sidebarMode === 'code' ? 'active' : ''}`}
                 onClick={() => setSidebarMode('code')}
               >
-                <Code2 size={13} /> コード変換 (Code)
+                <Code2 size={13} /> コード
               </button>
             </div>
 
@@ -2890,7 +3004,7 @@ export const GridEditor: React.FC<GridEditorProps> = ({
               >
                 <span>
                   <GraduationCap size={14} style={{ verticalAlign: 'text-bottom', marginRight: 5 }} />
-                  Python 学習ガイド（選択チップ解説）
+                  学習ガイド（選択チップ解説）
                 </span>
                 {mobileGuideExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
               </button>

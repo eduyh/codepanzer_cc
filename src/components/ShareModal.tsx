@@ -16,6 +16,9 @@ import {
   looksLikePythonSource,
   MAX_BATTLE_TANKS,
   parsePythonSourceWithAutoSize,
+  sanitizeAuthorName,
+  sanitizeAuthorUuid,
+  sanitizeTankName,
 } from '../utils/codeParser';
 import {
   decodeShareCode,
@@ -86,9 +89,19 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           setImportError(parsed.error);
           return;
         }
+        const nextAuthor =
+          parsed.authorName ??
+          (targetBase.author ? sanitizeAuthorName(targetBase.author, '') || undefined : undefined);
+        const nextUuid =
+          parsed.authorUuid ??
+          (targetBase.authorUuid
+            ? sanitizeAuthorUuid(targetBase.authorUuid, '') || undefined
+            : undefined);
         const updatedBp: TankBlueprint = {
           ...targetBase,
-          name: parsed.tankName ?? targetBase.name,
+          name: parsed.tankName ?? sanitizeTankName(targetBase.name),
+          ...(nextAuthor ? { author: nextAuthor } : {}),
+          ...(nextUuid ? { authorUuid: nextUuid } : {}),
           assembly: {
             ...targetBase.assembly,
             cpu: cpuIdForGridSize(parsed.program.gridSize),
@@ -131,10 +144,18 @@ export const ShareModal: React.FC<ShareModalProps> = ({
       if (!parsed.ok) {
         throw new Error(parsed.error);
       }
+      const nextAuthor =
+        parsed.authorName ??
+        (baseBp.author ? sanitizeAuthorName(baseBp.author, '') || undefined : undefined);
+      const nextUuid =
+        parsed.authorUuid ??
+        (baseBp.authorUuid ? sanitizeAuthorUuid(baseBp.authorUuid, '') || undefined : undefined);
       return {
         ...baseBp,
         id: `file_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        name: parsed.tankName ?? baseBp.name,
+        name: parsed.tankName ?? sanitizeTankName(baseBp.name),
+        ...(nextAuthor ? { author: nextAuthor } : {}),
+        ...(nextUuid ? { authorUuid: nextUuid } : {}),
         assembly: {
           ...baseBp.assembly,
           cpu: cpuIdForGridSize(parsed.program.gridSize),
@@ -185,6 +206,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
       id: playerBlueprint.id.startsWith('saved_')
         ? playerBlueprint.id
         : `saved_${Date.now()}`,
+      name: sanitizeTankName(playerBlueprint.name),
     };
     const updated = saveBlueprintToStorage(bpToSave);
     setSavedList(updated);

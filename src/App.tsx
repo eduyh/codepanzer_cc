@@ -2,16 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   Camera,
+  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ChevronUp,
+  Copy,
   Cpu,
   Download,
   Eye,
   EyeOff,
   GraduationCap,
   HelpCircle,
+  Menu,
   Pause,
   Play,
   RotateCcw,
@@ -59,27 +62,43 @@ import {
   LearningMission,
   SubWeaponId,
   TankBlueprint,
+  UiFontScale,
+  UserEnvironmentDump,
+  UserProfile,
 } from './types/game';
 import {
+  CURRENT_GAME_VERSION,
   getAutoTankColor,
   looksLikePythonSource,
+  MAX_AUTHOR_NAME_LENGTH,
   MAX_BATTLE_TANKS,
+  MAX_TANK_NAME_LENGTH,
   parsePythonSourceWithAutoSize,
+  sanitizeAuthorName,
+  sanitizeAuthorUuid,
+  sanitizeTankName,
+  truncateToMaxChars,
 } from './utils/codeParser';
 import {
+  applyUserEnvironmentDump,
+  buildUserEnvironmentDump,
   decodeShareCode,
+  encodeUserEnvironmentDump,
+  exportUserEnvironmentFile,
   extractEnemyFromUrl,
   loadLearningClears,
+  loadSavedBlueprints,
   loadTutorialClears,
+  loadUserProfile,
   markLearningCleared,
   markTutorialCleared,
+  saveUserName,
+  STORAGE_KEY_UI_FONT_SCALE,
   validateAndNormalizeBlueprint,
 } from './utils/share';
 
 const BASE_TPS = 20;
 const MAX_MOBILE_BATTLE_TANKS = 4;
-const FONT_SCALE_STORAGE_KEY = 'vstank_ui_font_scale';
-type UiFontScale = 'normal' | 'large' | 'xlarge';
 type LayoutPreset = 'mobile' | 'code' | 'balanced' | 'battle';
 
 function getInitialLayoutPreset(): LayoutPreset {
@@ -91,7 +110,7 @@ function getInitialLayoutPreset(): LayoutPreset {
 
 function loadUiFontScale(): UiFontScale {
   try {
-    const raw = window.localStorage.getItem(FONT_SCALE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(STORAGE_KEY_UI_FONT_SCALE);
     if (raw === 'normal' || raw === 'large' || raw === 'xlarge') return raw;
   } catch {
     // ignore storage errors
@@ -220,9 +239,22 @@ export function App() {
     loadTutorialClears()
   );
 
-  const [freePlayerBp, setFreePlayerBp] = useState<TankBlueprint>(() =>
-    cloneBlueprint(DEFAULT_PLAYER_BLUEPRINT)
-  );
+  const [userProfile, setUserProfile] = useState<UserProfile>(() => loadUserProfile());
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [userNameDraft, setUserNameDraft] = useState<string>(() => userProfile.userName);
+  const [uuidCopied, setUuidCopied] = useState(false);
+  const [envCodeCopied, setEnvCodeCopied] = useState(false);
+  const [envRestoreText, setEnvRestoreText] = useState('');
+  const [envNotice, setEnvNotice] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [savedTanksCount, setSavedTanksCount] = useState<number>(() => loadSavedBlueprints().length);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const envFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [freePlayerBp, setFreePlayerBp] = useState<TankBlueprint>(() => ({
+    ...cloneBlueprint(DEFAULT_PLAYER_BLUEPRINT),
+    author: userProfile.userName,
+    authorUuid: userProfile.userId,
+  }));
   const [freeEnemies, setFreeEnemies] = useState<TankBlueprint[]>(() => [
     urlEnemy ? cloneBlueprint(urlEnemy) : cloneBlueprint(ENEMY_DUMMY),
   ]);
@@ -248,6 +280,14 @@ export function App() {
       : gameMode === 'tutorial'
         ? tutorialPlayerBp
         : freePlayerBp;
+  const playerBpForIo = useMemo<TankBlueprint>(
+    () => ({
+      ...currentPlayerBp,
+      author: currentPlayerBp.author ?? userProfile.userName,
+      authorUuid: currentPlayerBp.authorUuid ?? userProfile.userId,
+    }),
+    [currentPlayerBp, userProfile]
+  );
   const currentEnemyList = useMemo(
     () =>
       gameMode === 'learning'
@@ -371,9 +411,138 @@ export function App() {
   const handleChangeUiFontScale = (scale: UiFontScale) => {
     setUiFontScale(scale);
     try {
-      window.localStorage.setItem(FONT_SCALE_STORAGE_KEY, scale);
+      window.localStorage.setItem(STORAGE_KEY_UI_FONT_SCALE, scale);
     } catch {
       // ignore storage errors
+    }
+  };
+
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setUserMenuOpen(false);
+    };
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [userMenuOpen]);
+
+  const handleSaveUserProfile = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    const updated = saveUserName(userNameDraft);
+    setUserProfile(updated);
+    setUserNameDraft(updated.userName);
+    setFreePlayerBp((prev) => ({
+      ...prev,
+      author: updated.userName,
+      authorUuid: updated.userId,
+    }));
+  };
+
+  const handleCopyUuid = async () => {
+    try {
+      await navigator.clipboard.writeText(userProfile.userId);
+      setUuidCopied(true);
+      window.setTimeout(() => setUuidCopied(false), 1800);
+    } catch {
+      // Clipboard blocked; input already auto-selects on focus
+    }
+  };
+
+  const currentEnvDump = useMemo<UserEnvironmentDump>(
+    () =>
+      buildUserEnvironmentDump({
+        currentBlueprint: {
+          ...freePlayerBp,
+          author: freePlayerBp.author ?? userProfile.userName,
+          authorUuid: freePlayerBp.authorUuid ?? userProfile.userId,
+        },
+        fontScale: uiFontScale,
+      }),
+    [freePlayerBp, userProfile, uiFontScale, clearedLearnings, clearedTutorials, savedTanksCount]
+  );
+
+  const currentEnvCode = useMemo(
+    () => (userMenuOpen ? encodeUserEnvironmentDump(currentEnvDump) : ''),
+    [userMenuOpen, currentEnvDump]
+  );
+
+  const handleCopyEnvCode = async () => {
+    try {
+      await navigator.clipboard.writeText(currentEnvCode);
+      setEnvCodeCopied(true);
+      window.setTimeout(() => setEnvCodeCopied(false), 1800);
+    } catch {
+      setEnvNotice({
+        type: 'error',
+        text: 'コピーに失敗しました。コード欄を選択して手動でコピーしてください。',
+      });
+    }
+  };
+
+  const handleExportEnvFile = () => {
+    exportUserEnvironmentFile(currentEnvDump);
+    setEnvNotice({ type: 'ok', text: '環境ダンプファイル (.json) を保存しました。' });
+  };
+
+  const applyRestoredEnvironment = (rawInput: string | UserEnvironmentDump) => {
+    const restored = applyUserEnvironmentDump(rawInput);
+    setUserProfile(restored.userProfile);
+    setUserNameDraft(restored.userProfile.userName);
+    setClearedLearnings(restored.learningClears);
+    setClearedTutorials(restored.tutorialClears);
+    setSavedTanksCount(restored.savedBlueprints.length);
+    if (restored.uiSettings?.fontScale) {
+      setUiFontScale(restored.uiSettings.fontScale);
+    }
+    if (restored.currentBlueprint) {
+      const nextBp = cloneBlueprint(restored.currentBlueprint);
+      setFreePlayerBp(nextBp);
+      if (gameMode === 'free') {
+        setIsPlaying(false);
+        setBattleState(buildInitialBattle(nextBp, freeEnemies));
+      }
+    }
+    setEnvRestoreText('');
+    setEnvNotice({
+      type: 'ok',
+      text: `環境を復元しました（${restored.userProfile.userName} / 課題学習 ${restored.learningClears.length}件 / 開発訓練 ${restored.tutorialClears.length}件 / 保存機体 ${restored.savedBlueprints.length}機）`,
+    });
+  };
+
+  const handleRestoreEnvFromText = () => {
+    try {
+      setEnvNotice(null);
+      applyRestoredEnvironment(envRestoreText);
+    } catch (err) {
+      setEnvNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : '環境の復元に失敗しました',
+      });
+    }
+  };
+
+  const handleRestoreEnvFromFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setEnvNotice(null);
+      const text = await file.text();
+      applyRestoredEnvironment(text);
+    } catch (err) {
+      setEnvNotice({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'ダンプファイルの復元に失敗しました',
+      });
     }
   };
 
@@ -572,7 +741,9 @@ export function App() {
             loaded = {
               ...baseEnemy,
               id: `enemy_file_${Date.now()}_${nextList.length}`,
-              name: parsed.tankName ?? file.name.replace(/\.[^.]+$/, '').slice(0, 32),
+              name: parsed.tankName ?? sanitizeTankName(file.name.replace(/\.[^.]+$/, '')),
+              ...(parsed.authorName ? { author: parsed.authorName } : {}),
+              ...(parsed.authorUuid ? { authorUuid: parsed.authorUuid } : {}),
               assembly: {
                 ...baseEnemy.assembly,
                 cpu: cpuIdForGridSize(parsed.program.gridSize),
@@ -673,12 +844,23 @@ export function App() {
     nextRadarId?: RadarId,
     nextChassisId?: ChassisId,
     nextMainGunId?: MainGunId,
-    nextSubWeaponId?: SubWeaponId
+    nextSubWeaponId?: SubWeaponId,
+    nextAuthorName?: string,
+    nextAuthorUuid?: string
   ) => {
     const nextCpu = cpuIdForGridSize(nextProgram.gridSize);
     const updated: TankBlueprint = {
       ...currentPlayerBp,
-      name: nextTankName !== undefined ? nextTankName.slice(0, 32) : currentPlayerBp.name,
+      name:
+        nextTankName !== undefined
+          ? sanitizeTankName(nextTankName, currentPlayerBp.name)
+          : currentPlayerBp.name,
+      ...(nextAuthorName !== undefined
+        ? { author: sanitizeAuthorName(nextAuthorName, userProfile.userName) }
+        : {}),
+      ...(nextAuthorUuid !== undefined
+        ? { authorUuid: sanitizeAuthorUuid(nextAuthorUuid, userProfile.userId) }
+        : {}),
       assembly: {
         ...currentPlayerBp.assembly,
         cpu: nextCpu,
@@ -695,7 +877,7 @@ export function App() {
   const handleChangePlayerName = (nextName: string) => {
     const updated: TankBlueprint = {
       ...currentPlayerBp,
-      name: nextName.slice(0, 32),
+      name: truncateToMaxChars(nextName, MAX_TANK_NAME_LENGTH),
     };
     updatePlayerBlueprint(updated, false);
   };
@@ -990,6 +1172,176 @@ export function App() {
           >
             <Share2 size={15} /> 共有・読込
           </button>
+
+          <div ref={userMenuRef} className="user-menu-wrap">
+            <button
+              type="button"
+              className={`hamburger-btn ${userMenuOpen ? 'active' : ''}`}
+              onClick={() => {
+                setUserNameDraft(userProfile.userName);
+                setSavedTanksCount(loadSavedBlueprints().length);
+                setEnvNotice(null);
+                setUserMenuOpen((v) => !v);
+              }}
+              aria-label="ユーザーメニュー"
+              aria-expanded={userMenuOpen}
+              title={`ユーザー設定 (${userProfile.userName})`}
+            >
+              <Menu size={17} />
+            </button>
+
+            {userMenuOpen && (
+              <div className="user-menu-popover">
+                <div className="user-menu-head">
+                  <div className="user-menu-title-row">
+                    <strong>ユーザー設定</strong>
+                    <span className="user-menu-version-badge" title="現在のゲームバージョン">
+                      v{CURRENT_GAME_VERSION}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setUserMenuOpen(false)}
+                    title="閉じる"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+
+                <form className="user-menu-form" onSubmit={handleSaveUserProfile}>
+                  <label className="user-menu-field">
+                    <span>ユーザーネーム（最大{MAX_AUTHOR_NAME_LENGTH}文字）</span>
+                    <div className="user-menu-input-row">
+                      <input
+                        type="text"
+                        value={userNameDraft}
+                        maxLength={MAX_AUTHOR_NAME_LENGTH}
+                        placeholder="Player"
+                        onChange={(e) =>
+                          setUserNameDraft(truncateToMaxChars(e.target.value, MAX_AUTHOR_NAME_LENGTH))
+                        }
+                      />
+                      <button type="submit" className="btn-primary">
+                        登録
+                      </button>
+                    </div>
+                  </label>
+                </form>
+
+                <div className="user-menu-field">
+                  <span>ユーザーUUID（自動発行・読取専用）</span>
+                  <div className="user-menu-uuid-row">
+                    <input
+                      type="text"
+                      readOnly
+                      value={userProfile.userId}
+                      onFocus={(e) => e.currentTarget.select()}
+                    />
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={handleCopyUuid}
+                      title="UUIDをコピー"
+                    >
+                      {uuidCopied ? <Check size={13} /> : <Copy size={13} />}
+                      {uuidCopied ? 'コピー済' : 'コピー'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="user-menu-divider" />
+
+                <div className="user-menu-section">
+                  <div className="user-menu-subhead">
+                    <strong>環境バックアップ＆リストア</strong>
+                  </div>
+
+                  <div className="user-menu-stats" aria-label="現在のクリア状況と保存機体数">
+                    <span className="user-menu-stat-pill">
+                      課題学習 {clearedLearnings.length}/{LEARNING_MISSIONS.length}
+                    </span>
+                    <span className="user-menu-stat-pill">
+                      開発訓練 {clearedTutorials.length}/{TUTORIAL_STAGES.length}
+                    </span>
+                    <span className="user-menu-stat-pill">
+                      保存機体 {savedTanksCount}機
+                    </span>
+                  </div>
+
+                  <div className="user-menu-field">
+                    <span>環境ダンプコード（VSE1- / 全環境データ）</span>
+                    <div className="user-menu-uuid-row">
+                      <input
+                        type="text"
+                        readOnly
+                        value={currentEnvCode}
+                        onFocus={(e) => e.currentTarget.select()}
+                      />
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={handleCopyEnvCode}
+                        title="環境ダンプコードをコピー"
+                      >
+                        {envCodeCopied ? <Check size={13} /> : <Copy size={13} />}
+                        {envCodeCopied ? 'コピー済' : 'コピー'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="btn-secondary user-menu-full-btn"
+                    onClick={handleExportEnvFile}
+                  >
+                    <Download size={14} /> 環境ダンプをファイル保存 (.json)
+                  </button>
+
+                  <div className="user-menu-field">
+                    <span>環境の取り込み（リストア・上書き復元）</span>
+                    <div className="user-menu-input-row">
+                      <input
+                        type="text"
+                        value={envRestoreText}
+                        onChange={(e) => setEnvRestoreText(e.target.value)}
+                        placeholder="VSE1-... コードまたはJSONを貼付"
+                      />
+                      <button
+                        type="button"
+                        className="btn-primary"
+                        onClick={handleRestoreEnvFromText}
+                        disabled={!envRestoreText.trim()}
+                      >
+                        復元
+                      </button>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={envFileInputRef}
+                    type="file"
+                    accept=".json,.txt,application/json,text/plain"
+                    style={{ display: 'none' }}
+                    onChange={handleRestoreEnvFromFile}
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary user-menu-full-btn"
+                    onClick={() => envFileInputRef.current?.click()}
+                  >
+                    <Upload size={14} /> ダンプファイルから復元 (.json)
+                  </button>
+
+                  {envNotice && (
+                    <div className={`user-menu-notice ${envNotice.type}`} role="status">
+                      {envNotice.text}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -1115,17 +1467,26 @@ export function App() {
                     </button>
                   </div>
                 </div>
-                <p className="tut-desc">{descText}</p>
-                {showHints && (
-                  <ul className="tut-hints">
-                    <li>
-                      <strong>目標:</strong> {goalText}
-                    </li>
-                    {hintList.map((h, i) => (
-                      <li key={i}>{h}</li>
-                    ))}
-                  </ul>
-                )}
+                <div className="tut-body">
+                  <div className="tut-section">
+                    <span className="tut-label tut-label-task">タスク</span>
+                    <p className="tut-desc">{descText}</p>
+                  </div>
+                  <div className="tut-section tut-goal-row">
+                    <span className="tut-label tut-label-goal">ゴール</span>
+                    <p className="tut-goal">{goalText}</p>
+                  </div>
+                  {showHints && (
+                    <div className="tut-section tut-hints-row">
+                      <span className="tut-label tut-label-hint">ヒント</span>
+                      <ul className="tut-hints">
+                        {hintList.map((h, i) => (
+                          <li key={i}>{h}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })()}
@@ -1138,6 +1499,8 @@ export function App() {
             mainGunId={currentPlayerBp.assembly.mainGun}
             subWeaponId={currentPlayerBp.assembly.subWeapon}
             tankName={currentPlayerBp.name}
+            authorName={playerBpForIo.author}
+            authorUuid={playerBpForIo.authorUuid}
             trace={playerTank?.trace}
             isPlaying={isPlaying}
             allowLearningChips={!isMobileLayout && gameMode === 'learning'}
@@ -2041,7 +2404,7 @@ export function App() {
 
       {showShareModal && (
         <ShareModal
-          playerBlueprint={currentPlayerBp}
+          playerBlueprint={playerBpForIo}
           enemyBlueprint={currentEnemyBp}
           onImportAsPlayer={(bp) => updatePlayerBlueprint(cloneBlueprint(bp), true)}
           onImportAsEnemy={(bp) => {
@@ -2051,7 +2414,10 @@ export function App() {
           onAddAsEnemy={handleAddFreeEnemy}
           canAddEnemy={freeEnemies.length < maxEnemySlots}
           maxBattleTanks={maxBattleTanks}
-          onClose={() => setShowShareModal(false)}
+          onClose={() => {
+            setSavedTanksCount(loadSavedBlueprints().length);
+            setShowShareModal(false);
+          }}
         />
       )}
     </div>

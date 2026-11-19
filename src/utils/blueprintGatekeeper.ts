@@ -21,6 +21,12 @@ import {
   SubWeaponId,
   TankBlueprint,
 } from '../types/game';
+import {
+  CURRENT_BLUEPRINT_VERSION,
+  CURRENT_GAME_VERSION,
+  isNewerGameVersion,
+  sanitizeGameVersion,
+} from './codeParser';
 
 export interface GatekeeperResult {
   blueprint: TankBlueprint;
@@ -68,6 +74,32 @@ function migrateDeprecatedCell(cell: GridCell, x: number, y: number, fixes: stri
 export function validateAndRepairBlueprint(input: TankBlueprint): GatekeeperResult {
   const bp: TankBlueprint = JSON.parse(JSON.stringify(input)) as TankBlueprint;
   const fixes: string[] = [];
+
+  // 0. Schema & game version check / migration
+  const rawSchemaVersion = Number(bp.version ?? CURRENT_BLUEPRINT_VERSION);
+  if (!Number.isFinite(rawSchemaVersion) || rawSchemaVersion < 1) {
+    fixes.push(`schema version "${String(bp.version)}" -> v${CURRENT_BLUEPRINT_VERSION}`);
+  } else if (rawSchemaVersion > CURRENT_BLUEPRINT_VERSION) {
+    fixes.push(
+      `データ形式バージョン (v${rawSchemaVersion}) が現在のバージョン (v${CURRENT_BLUEPRINT_VERSION}) より新しいため互換モードで読み込みました`
+    );
+  }
+  bp.version = CURRENT_BLUEPRINT_VERSION;
+
+  if (bp.gameVersion !== undefined) {
+    const cleanGv = sanitizeGameVersion(bp.gameVersion, '');
+    if (!cleanGv) {
+      fixes.push(`gameVersion "${String(bp.gameVersion)}" -> "${CURRENT_GAME_VERSION}"`);
+      bp.gameVersion = CURRENT_GAME_VERSION;
+    } else {
+      if (isNewerGameVersion(cleanGv, CURRENT_GAME_VERSION)) {
+        fixes.push(
+          `現在のバージョン (v${CURRENT_GAME_VERSION}) より新しいバージョン (v${cleanGv}) で作成された機体データです`
+        );
+      }
+      bp.gameVersion = cleanGv;
+    }
+  }
 
   // 1. Assembly validation & repair
   const assembly = bp.assembly ?? {

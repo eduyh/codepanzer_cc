@@ -12,15 +12,38 @@ import {
   TUTORIAL_STAGES,
 } from '../../data/presets';
 import { ALLOWED_GRID_SIZES, ArenaSizeId, TankBlueprint } from '../../types/game';
+import { validateAndRepairBlueprint } from '../../utils/blueprintGatekeeper';
 import {
   AUTO_TANK_COLORS,
+  compareSemver,
+  CURRENT_GAME_VERSION,
+  isNewerGameVersion,
+  MAX_AUTHOR_NAME_LENGTH,
+  MAX_AUTHOR_UUID_LENGTH,
+  MAX_TANK_NAME_LENGTH,
   parsePythonSourceToProgram,
   parsePythonSourceWithAutoSize,
   validateGridBlockFit,
 } from '../../utils/codeParser';
 import {
+  applyUserEnvironmentDump,
+  buildUserEnvironmentDump,
   decodeShareCode,
+  decodeUserEnvironmentDump,
   encodeShareCode,
+  encodeUserEnvironmentDump,
+  ENV_DUMP_PREFIX,
+  generateUuidV4,
+  loadLearningClears,
+  loadSavedBlueprints,
+  loadTutorialClears,
+  loadUiFontScaleFromStorage,
+  loadUserProfile,
+  markLearningCleared,
+  markTutorialCleared,
+  saveBlueprintToStorage,
+  saveUserName,
+  STORAGE_KEY_UI_FONT_SCALE,
   validateAndNormalizeBlueprint,
 } from '../../utils/share';
 import { runTankChipProgram } from '../chipRunner';
@@ -2758,6 +2781,306 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
       expect(autoSized.program.gridSize).toBe(6);
       expect(autoSized.warnings?.[0]).toContain('4×4 → 6×6');
     }
+  });
+
+  it('embeds author_name and author_uuid in Python source, truncates oversized lengths on import, preserves share metadata, and manages UserProfile UUID', () => {
+    const sampleUuid = generateUuidV4();
+    expect(sampleUuid).toHaveLength(36);
+    expect(sampleUuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+
+    // 1. Transpile embeds tank_name, author_name, author_uuid right after import time
+    const lines = transpileProgramToLines(
+      DEFAULT_PLAYER_BLUEPRINT.program,
+      'テスト戦車1号',
+      true,
+      DEFAULT_PLAYER_BLUEPRINT.assembly.radar,
+      DEFAULT_PLAYER_BLUEPRINT.assembly.chassis,
+      DEFAULT_PLAYER_BLUEPRINT.assembly.mainGun,
+      DEFAULT_PLAYER_BLUEPRINT.assembly.subWeapon,
+      DEFAULT_PLAYER_BLUEPRINT.color,
+      'パイロット太郎',
+      sampleUuid
+    );
+    const codeStrings = lines.map((l) => l.text);
+    const importIdx = codeStrings.indexOf('import time');
+    expect(importIdx).toBeGreaterThanOrEqual(0);
+    expect(codeStrings[importIdx + 1]).toContain('tank_name = "テスト戦車1号"');
+    expect(codeStrings[importIdx + 2]).toContain('author_name = "パイロット太郎"');
+    expect(codeStrings[importIdx + 3]).toContain(`author_uuid = "${sampleUuid}"`);
+    expect(codeStrings[importIdx + 4]).toContain(`game_version = "${CURRENT_GAME_VERSION}"`);
+
+    const roundTrip = parsePythonSourceToProgram(codeStrings.join('\n'), 4, 'relative');
+    expect(roundTrip.ok).toBe(true);
+    if (roundTrip.ok) {
+      expect(roundTrip.tankName).toBe('テスト戦車1号');
+      expect(roundTrip.authorName).toBe('パイロット太郎');
+      expect(roundTrip.authorUuid).toBe(sampleUuid);
+      expect(roundTrip.gameVersion).toBe(CURRENT_GAME_VERSION);
+    }
+
+    // 2. Oversized metadata in Python source truncates cleanly on import
+    const oversizedSource = [
+      'import time',
+      'tank_name = "あいうえおかきくけこさしすせそたちつてと"', // 20 chars -> 16
+      'author_name = "１２３４５６７８９０"', // 10 chars -> 8
+      `author_uuid = "${sampleUuid}-extra-suffix"`, // > 36 -> 36
+      'def on_tick():',
+      '  move(speed=50)',
+    ].join('\n');
+    const parsedOversized = parsePythonSourceToProgram(oversizedSource, 4, 'relative');
+    expect(parsedOversized.ok).toBe(true);
+    if (parsedOversized.ok) {
+      expect(parsedOversized.tankName).toBe('あいうえおかきくけこさしすせそた');
+      expect(Array.from(parsedOversized.tankName ?? '').length).toBe(MAX_TANK_NAME_LENGTH);
+      expect(parsedOversized.authorName).toBe('１２３４５６７８');
+      expect(Array.from(parsedOversized.authorName ?? '').length).toBe(MAX_AUTHOR_NAME_LENGTH);
+      expect(parsedOversized.authorUuid).toBe(sampleUuid);
+      expect(Array.from(parsedOversized.authorUuid ?? '').length).toBe(MAX_AUTHOR_UUID_LENGTH);
+    }
+
+    // 3. Share code round-trip preserves author and authorUuid, and normalizer truncates oversized values
+    const bpWithAuthor: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: 'テスト戦車1号',
+      author: 'ユーザーA',
+      authorUuid: sampleUuid,
+    };
+    const encoded = encodeShareCode(bpWithAuthor);
+    const decoded = decodeShareCode(encoded);
+    expect(decoded.name).toBe('テスト戦車1号');
+    expect(decoded.author).toBe('ユーザーA');
+    expect(decoded.authorUuid).toBe(sampleUuid);
+
+    const oversizedBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: '一二三四五六七八九十一二三四五六七八九十',
+      author: '全角八文字を超える長い名前',
+      authorUuid: `${sampleUuid}ZZZZ`,
+    };
+    const normalized = validateAndNormalizeBlueprint(oversizedBp);
+    expect(Array.from(normalized.name).length).toBe(MAX_TANK_NAME_LENGTH);
+    expect(Array.from(normalized.author ?? '').length).toBe(MAX_AUTHOR_NAME_LENGTH);
+    expect(normalized.author).toBe('全角八文字を超え');
+    expect(normalized.authorUuid).toBe(sampleUuid);
+
+    // Also encode oversized blueprint directly to confirm decodeShareCode enforces limits
+    const encodedOversized = encodeShareCode(oversizedBp);
+    const decodedOversized = decodeShareCode(encodedOversized);
+    expect(Array.from(decodedOversized.name).length).toBe(MAX_TANK_NAME_LENGTH);
+    expect(Array.from(decodedOversized.author ?? '').length).toBe(MAX_AUTHOR_NAME_LENGTH);
+    expect(decodedOversized.authorUuid).toBe(sampleUuid);
+
+    // 4. UserProfile loadUserProfile / saveUserName persists UUID across name edits
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => {
+        store.clear();
+      },
+    });
+    try {
+      const initialProfile = loadUserProfile();
+      expect(initialProfile.userId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+      expect(initialProfile.userName).toBe('Player');
+
+      const updatedProfile = saveUserName('テストプレイヤー１２３');
+      expect(updatedProfile.userName).toBe('テストプレイヤー');
+      expect(Array.from(updatedProfile.userName).length).toBe(MAX_AUTHOR_NAME_LENGTH);
+      expect(updatedProfile.userId).toBe(initialProfile.userId);
+
+      const reloadedProfile = loadUserProfile();
+      expect(reloadedProfile.userName).toBe('テストプレイヤー');
+      expect(reloadedProfile.userId).toBe(initialProfile.userId);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('builds, encodes, decodes, validates, and restores full user environment dumps (VSE1- and JSON)', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => {
+        store.clear();
+      },
+    });
+
+    try {
+      const profile = saveUserName('ゆうや太郎');
+      saveBlueprintToStorage({
+        ...DEFAULT_PLAYER_BLUEPRINT,
+        id: 'saved_custom_1',
+        name: 'カスタム一式',
+        author: profile.userName,
+        authorUuid: profile.userId,
+      });
+      markLearningCleared('learn_1_1');
+      markLearningCleared('learn_2_3');
+      markTutorialCleared('stage_1');
+      markTutorialCleared('stage_5');
+      localStorage.setItem(STORAGE_KEY_UI_FONT_SCALE, 'large');
+
+      const currentBp: TankBlueprint = {
+        ...DEFAULT_PLAYER_BLUEPRINT,
+        id: 'current_dev_1',
+        name: '開発中エース',
+        author: profile.userName,
+        authorUuid: profile.userId,
+      };
+      const dump = buildUserEnvironmentDump({
+        currentBlueprint: currentBp,
+        exportedAt: '2026-11-19T02:45:00.000Z',
+      });
+      expect(dump.version).toBe(1);
+      expect(dump.userProfile).toEqual(profile);
+      expect(dump.currentBlueprint?.name).toBe('開発中エース');
+      expect(dump.savedBlueprints).toHaveLength(1);
+      expect(dump.savedBlueprints[0].name).toBe('カスタム一式');
+      expect(dump.learningClears).toEqual(['learn_1_1', 'learn_2_3']);
+      expect(dump.tutorialClears).toEqual(['stage_1', 'stage_5']);
+      expect(dump.uiSettings?.fontScale).toBe('large');
+
+      // Encode -> decode VSE1- round-trip
+      const envCode = encodeUserEnvironmentDump(dump);
+      expect(envCode.startsWith(ENV_DUMP_PREFIX)).toBe(true);
+      const fromCode = decodeUserEnvironmentDump(envCode);
+      expect(fromCode.userProfile).toEqual(profile);
+      expect(fromCode.currentBlueprint?.name).toBe('開発中エース');
+      expect(fromCode.savedBlueprints[0].id).toBe('saved_custom_1');
+      expect(fromCode.learningClears).toEqual(['learn_1_1', 'learn_2_3']);
+      expect(fromCode.tutorialClears).toEqual(['stage_1', 'stage_5']);
+      expect(fromCode.uiSettings?.fontScale).toBe('large');
+
+      // Raw JSON round-trip with oversized values & duplicate clear IDs
+      const oversizedJson = JSON.stringify({
+        version: 1,
+        exportedAt: '2026-11-19T02:45:00.000Z',
+        userProfile: {
+          userName: 'あいうえおかきくけこ',
+          userId: `${profile.userId}-EXTRA`,
+        },
+        currentBlueprint: {
+          ...currentBp,
+          name: '一二三四五六七八九十一二三四五六七八九十',
+        },
+        savedBlueprints: [
+          { ...currentBp, id: 'dup_1', name: '保存A' },
+          { ...currentBp, id: 'dup_1', name: '保存B' },
+        ],
+        learningClears: ['learn_1_1', 'learn_1_1', '  learn_3_2  ', 123],
+        tutorialClears: ['stage_2', 'stage_2'],
+        uiSettings: { fontScale: 'xlarge' },
+      });
+      const fromJson = decodeUserEnvironmentDump(oversizedJson);
+      expect(fromJson.userProfile.userName).toBe('あいうえおかきく');
+      expect(fromJson.userProfile.userId).toBe(profile.userId);
+      expect(Array.from(fromJson.currentBlueprint?.name ?? '').length).toBe(MAX_TANK_NAME_LENGTH);
+      expect(fromJson.savedBlueprints).toHaveLength(1);
+      expect(fromJson.savedBlueprints[0].name).toBe('保存A');
+      expect(fromJson.learningClears).toEqual(['learn_1_1', 'learn_3_2']);
+      expect(fromJson.tutorialClears).toEqual(['stage_2']);
+      expect(fromJson.uiSettings?.fontScale).toBe('xlarge');
+
+      // Wipe storage to simulate migrating to a fresh browser with a new random UUID, then restore VSE1-
+      store.clear();
+      const freshProfile = loadUserProfile();
+      expect(freshProfile.userId).not.toBe(profile.userId);
+      expect(loadLearningClears()).toEqual([]);
+
+      const restored = applyUserEnvironmentDump(envCode);
+      expect(restored.userProfile).toEqual(profile);
+      expect(loadUserProfile()).toEqual(profile);
+      expect(loadSavedBlueprints().map((b) => b.name)).toEqual(['カスタム一式']);
+      expect(loadLearningClears()).toEqual(['learn_1_1', 'learn_2_3']);
+      expect(loadTutorialClears()).toEqual(['stage_1', 'stage_5']);
+      expect(loadUiFontScaleFromStorage()).toBe('large');
+
+      // Single-tank VST1- share code or single-tank JSON must be rejected clearly
+      const singleTankCode = encodeShareCode(currentBp);
+      expect(() => decodeUserEnvironmentDump(singleTankCode)).toThrow('VST1-');
+      expect(() => decodeUserEnvironmentDump(JSON.stringify(currentBp))).toThrow(
+        '環境ダンプデータの形式が不正です'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('tracks semantic gameVersion across Python, gatekeeper, share codes, and environment dumps', () => {
+    expect(CURRENT_GAME_VERSION).toBe('1.5.16');
+    expect(compareSemver('1.6.0', '1.5.16')).toBe(1);
+    expect(compareSemver('1.5.16', '1.5.16')).toBe(0);
+    expect(compareSemver('1.5.9', '1.5.16')).toBe(-1);
+    expect(isNewerGameVersion('1.6.0', '1.5.16')).toBe(true);
+    expect(isNewerGameVersion('1.5.16', '1.5.16')).toBe(false);
+    expect(isNewerGameVersion('1.5.9', '1.5.16')).toBe(false);
+
+    // Future game_version in Python source produces a clear compatibility warning
+    const futurePy = [
+      'import time',
+      'tank_name = "未来戦車"',
+      'game_version = "2.0.0"',
+      'def on_tick():',
+      '  move(speed=50)',
+    ].join('\n');
+    const parsedFuture = parsePythonSourceToProgram(futurePy, 4, 'relative');
+    expect(parsedFuture.ok).toBe(true);
+    if (parsedFuture.ok) {
+      expect(parsedFuture.gameVersion).toBe('2.0.0');
+      expect(parsedFuture.warnings?.some((w) => w.includes('2.0.0'))).toBe(true);
+    }
+
+    // Gatekeeper accepts current version cleanly and flags future schema/gameVersion
+    const currentBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      gameVersion: CURRENT_GAME_VERSION,
+    };
+    const okGate = validateAndRepairBlueprint(currentBp);
+    expect(okGate.isValid).toBe(true);
+    expect(okGate.fixes).toEqual([]);
+
+    const futureBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      version: 2,
+      gameVersion: '2.0.0',
+    };
+    const futureGate = validateAndRepairBlueprint(futureBp);
+    expect(futureGate.isValid).toBe(false);
+    expect(futureGate.fixes.some((f) => f.includes('v2'))).toBe(true);
+    expect(futureGate.fixes.some((f) => f.includes('v2.0.0'))).toBe(true);
+
+    // validateAndNormalizeBlueprint delegates repair through gatekeeper and stamps gameVersion
+    const rawOutOfRange = JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)) as TankBlueprint;
+    delete rawOutOfRange.gameVersion;
+    rawOutOfRange.program.cells[2][1] = {
+      id: 'clamp_test',
+      type: 'cond_proximity',
+      params: { mode: 'approaching', target: 'all', dist: 999 },
+      yes: null,
+      no: null,
+    };
+    const normalized = validateAndNormalizeBlueprint(rawOutOfRange);
+    expect(normalized.gameVersion).toBe(CURRENT_GAME_VERSION);
+    expect(normalized.program.cells[2][1]?.params.dist).toBe(300);
+
+    // Share code preserves gameVersion round-trip
+    const encoded = encodeShareCode({ ...DEFAULT_PLAYER_BLUEPRINT, gameVersion: CURRENT_GAME_VERSION });
+    const decoded = decodeShareCode(encoded);
+    expect(decoded.gameVersion).toBe(CURRENT_GAME_VERSION);
   });
 });
 

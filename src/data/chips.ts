@@ -8,12 +8,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'def on_tick():',
     shortLabel: 'START',
     shortLabelEn: 'def tick:',
-    description: '毎Tick (1/20秒) このエントリポイントから矢印に沿ってプログラムを実行します。',
+    description:
+      '毎Tick（1/20秒ごと）この開始地点から矢印に沿ってプログラムを実行します。\n・「完了まで待機 (wait)」や「秒数指定」の命令を実行している間は、完了するまでそのチップから続きが再開されます。\n・「プログラム停止 stop()」が実行されると、以降の Tick は停止状態を維持します。',
     pythonSyntax: 'def on_tick():',
-    conceptTag: '関数定義 (def / Entry)',
+    conceptTag: '関数定義 (def / エントリポイント)',
     signatureInfo: '引数: なし → 戻り値: None (毎Tick自動呼出)',
     learningTip:
-      'Pythonの関数定義 `def on_tick():` に相当します。インデント（字下げ）された中の処理を1/20秒ごとに上から順へ実行します。',
+      'Python の def は関数（処理のかたまり）を定義するキーワードです。末尾にコロン (:) を書き、次の行からインデント（字下げ）した部分が関数の本体になります。\nSTART から矢印で繋がったチップはすべて def on_tick(): の中にインデントされて並び、毎 Tick（1/20秒ごと）上から順番に実行されます。',
     isCondition: false,
     defaultParams: {},
     paramSchema: [],
@@ -25,12 +26,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'time.sleep(sec)',
     shortLabel: 'sleep()',
     shortLabelEn: 'sleep()',
-    description: '指定した秒数だけ処理を待機する、0だと何もしない',
+    description:
+      '設定した秒数に応じて「待機」または「配線の中継」として働きます。\n・0秒を指定：待ち時間なしで即座に「次のチップ」へ進みます。離れたチップ同士を繋ぐ配線（中継）として使えます。\n・0より大きい秒数を指定：その秒数（1秒 = 20 Tick）だけその場で処理を止め、時間経過後に次のチップへ進みます。',
     pythonSyntax: 'time.sleep(0)',
-    conceptTag: '待機 / 中継 (time.sleep)',
+    conceptTag: '標準ライブラリ関数 (time.sleep)',
     signatureInfo: '引数: sec: float (0 = 待機せず通過) → 戻り値: None',
     learningTip:
-      'Python標準ライブラリ `time.sleep(秒)` と同じ構文です。`0` を指定すると待機せずそのまま次の処理へ進み（中継）、`0` より大きい秒数を指定するとその時間だけ処理を停止して待機します。',
+      'time モジュールに含まれる sleep(秒数) 関数を呼び出します。括弧の中に渡す数値（引数）の秒数だけプログラムの進行を一時停止します。\nグリッド上で離れたチップ同士を繋ぐ「0秒の中継（配線）」として置いた場合は time.sleep(0) と出力され、待ち時間なしで次の行へ進みます。',
     isCondition: false,
     defaultParams: { seconds: 0 },
     paramSchema: [
@@ -54,12 +56,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'def sub',
     shortLabelEn: 'def sub:',
     description:
-      '共通処理をまとめるサブルーチン（A〜D）の開始地点です。sub() で呼び出されるとここから実行し、終端で呼び出し元へ戻ります。',
+      '共通処理をまとめるサブルーチン（A〜D の最大4種類）の開始地点です。\n「サブルーチン呼出 sub()」から呼ばれるとここから処理を実行し、矢印の先が未接続（終端）に到達すると呼び出し元の次のチップへ戻ります。\n移動・回避と索敵・射撃を分けるなど、盤面を整理したいときに便利です。',
     pythonSyntax: 'def sub_a():',
-    conceptTag: '関数定義 (def サブルーチン)',
+    conceptTag: '独自関数の定義 (def サブルーチン)',
     signatureInfo: '識別: A / B / C / D → 戻り値: None (終端で呼出元へ復帰)',
     learningTip:
-      'よく使う一連の処理（照準＋射撃など）を `def sub_a():` として盤面の空き場所へ切り出し、必要な場所から `sub_a()` で何度も呼び出せます。',
+      '何度も使う共通処理を def sub_a(): 〜 def sub_d(): という独立した関数として定義します。本体の処理は 2スペース分インデント（字下げ）されて出力されます。\n矢印の終端（未接続）まで到達すると関数が終了し、呼び出し元の sub_a() の次の行へ処理が戻ります。',
     isCondition: false,
     defaultParams: { sub: 'A' },
     paramSchema: [
@@ -85,12 +87,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'sub呼出',
     shortLabelEn: 'sub()',
     description:
-      '対応する def sub (A〜D) を呼び出して実行し、終了後にこのブロックの次の矢印へ処理が戻ります。',
+      '同じ記号（A〜D）の「サブルーチン定義 def sub():」を呼び出して実行します。\n呼び出したサブルーチンが終端まで実行されると、このチップの「次のチップ」へ処理が戻ります（最大4段階まで入れ子呼び出し可能）。\n対応する定義が盤面にない場合はそのまま次のチップへ進みます。',
     pythonSyntax: 'sub_a()',
-    conceptTag: '関数呼び出し (サブルーチン)',
+    conceptTag: '関数の呼び出し (Function Call)',
     signatureInfo: '対象: sub_a / sub_b / sub_c / sub_d → 終了後に元の流れへ復帰',
     learningTip:
-      '`if` と `else` の両方から同じ射撃・回避ルーチンを呼び出したいときなどに使うと、4方向隣接ルールでも配線をシンプルに保てます。',
+      '定義しておいた関数名に括弧 () をつけて sub_a() のように書くと、その関数の中身が呼び出されて実行されます。\n同じ処理を複数箇所に書く代わりにサブルーチンを呼び出すことで、コードの重複をなくして短く見通しよく整理（モジュール化）できます。',
     isCondition: false,
     defaultParams: { sub: 'A' },
     paramSchema: [
@@ -116,12 +118,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'while(...)',
     shortLabelEn: 'while cond:',
     description:
-      '条件が True の間は青矢印（反復処理）を実行し、False になると赤矢印（ループ終了後）へ抜けます。',
+      '指定した継続条件が成り立つ間「T:反復処理」を繰り返し、成り立たなくなると「F:ループ終了」へ抜けます（反復側の終端が未接続になるとループ先頭へ戻ります）。\n・敵が未検知の間 / 前方に壁がある間 / 砲塔誤差 > value° の間：毎Tickこのループから再開して条件が外れるまで続けます。\n・変数 a < value の間：1 Tick 内で同じ処理を高速反復します（CPU最大ステップ数まで）。',
     pythonSyntax: 'while not enemy_detected():',
-    conceptTag: '条件反復 (while文)',
+    conceptTag: '条件反復ループ (while文)',
     signatureInfo: '条件式: bool → True: 反復 / False: ループ脱出',
     learningTip:
-      'Pythonの `while 条件式:` は「条件が True の間ずっと繰り返す」反復構文です。条件が変化しないと無限ループになるため、必ず終了条件を意識しましょう。',
+      'while 条件式: は「条件式が True（成り立つ）の間、インデントされた中身を繰り返し実行する」反復構文です。\n・not enemy_detected()：論理否定 not で「敵が見つかっていない間」を表します。\n・abs(aim_error()) > 4：絶対値関数 abs() で「照準ズレが ±4° より大きい間」を表します。',
     isCondition: true,
     defaultParams: { cond: 'enemy_not_detected', value: 60 },
     paramSchema: [
@@ -172,12 +174,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'for(N回)',
     shortLabelEn: 'for range(N):',
     description:
-      '指定回数 N 回に達するまで青矢印（反復中）を実行し、N 回完了すると赤矢印（ループ終了後）へ進んでカウンタをリセットします。',
+      '指定した反復回数 (N) に達するまで「T:反復処理」を繰り返し、N 回終わると回数を 0 に戻して「F:ループ終了」へ進みます。\n反復側の最後を未接続にしておくと、待機命令や 1 Tick の終了後に自動でこのチップへ戻って次の周回を実行します。\n四角形の周回や 3方向射撃など、決まった回数の繰り返しに使います。',
     pythonSyntax: 'for i in range(15):',
-    conceptTag: '回数反復 (for文)',
+    conceptTag: '回数反復ループ (for / range)',
     signatureInfo: '引数: N: int → 0 〜 N-1 まで N 回反復',
     learningTip:
-      'Pythonの `for i in range(N):` は回数が決まった反復処理に使います。「15回だけ右へ旋回してから次の行動へ移る」といった定周期動作が組めます。',
+      'for i in range(N): は、変数 i を 0 から N-1 まで 1ずつ変えながら、インデントされた処理をちょうど N 回繰り返す構文です。\nグリッドの「T:反復処理」に繋いだチップがループの中身（インデントされた行）になり、「F:ループ終了」に繋いだチップがループを抜けた後の行になります。',
     isCondition: true,
     defaultParams: { iterations: 15 },
     paramSchema: [
@@ -200,12 +202,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'var += val',
     shortLabel: '変数演算',
     shortLabelEn: 'a += val',
-    description: '変数(a/b)に値を代入または加減算します。状態保持やループ制御に使います。',
+    description:
+      '戦車が記憶している変数（a または b、初期値 0）の値を書き換えます。変数の値は次の Tick にも引き継がれます。\n・加算 (+=) / 減算 (-=)：現在の値に指定値を足す・引く（経過 Tick やタイル通過回数のカウントなど）。\n・代入 (=)：指定した値で上書きしてリセットします。',
     pythonSyntax: 'a += 1',
-    conceptTag: '変数と代入 (Assignment)',
+    conceptTag: '変数と複合代入演算子 (=, +=, -=)',
     signatureInfo: '変数: a, b (int) → 値の更新 (=, +=, -=)',
     learningTip:
-      'プログラムでは `a = a + 1`（省略形 `a += 1`）のように変数へ値を記憶・更新します。`=` は数学の等号ではなく「右の値を左の変数に入れる」操作です。',
+      'プログラムの = は「右の値を左の変数に入れる（代入）」という意味です。\na += 1 は a = a + 1（現在の a に 1 を足して上書きする）の省略形で、a -= 1 は 1 を引きます。変数 a・b の値は次の Tick にもそのまま記憶されます。',
     isCondition: false,
     defaultParams: { reg: 'A', op: 'inc', value: 1 },
     paramSchema: [
@@ -241,12 +244,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: '乱数代入',
     shortLabelEn: 'randint()',
     description:
-      '指定範囲 [min, max] のランダムな整数を生成して変数(a/b)に代入します。予測不能な回避や行動分岐に使います。',
+      '最小値 (min) 以上・最大値 (max) 以下のランダムな整数を作り、変数（a または b）に代入します。\n直後に「if 変数比較」を繋ぐことで、左右どちらへ避けるかを毎回ランダムに切り替える不規則回避などが組めます。',
     pythonSyntax: 'a = random.randint(0, 1)',
-    conceptTag: '標準モジュールと乱数 (random)',
+    conceptTag: '乱数関数と戻り値の代入 (random)',
     signatureInfo: '引数: min: int, max: int → 戻り値: int (min <= N <= max)',
     learningTip:
-      'Python標準ライブラリ `random.randint(min, max)` は呼ぶたびにランダムな整数を返します。`a = random.randint(0, 1)` の直後に `if a == 0:` で分岐すれば、右旋回と左旋回をランダムに切り替えて敵の偏差射撃を翻弄できます。',
+      'random モジュールの randint(最小値, 最大値) 関数を呼び出し、返ってきたランダムな整数（戻り値）を左辺の変数 a または b に代入します。\n例えば a = random.randint(0, 1) と書くと、実行されるたびに 0 か 1 のどちらかがランダムに変数 a に入ります。',
     isCondition: false,
     defaultParams: { reg: 'A', min: 0, max: 1 },
     paramSchema: [
@@ -271,12 +274,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'mode = N',
     shortLabel: 'mode =',
     shortLabelEn: 'mode = N',
-    description: '戦車の状態変数 mode (0:索敵 / 1:攻撃 / 2:回避) を変更します。',
+    description:
+      '戦車の現在の状態を表す変数 mode（初期値 0）を 0・1・2 のいずれかに切り替えます。\n「if mode == 値」と組み合わせることで、「敵を倒し終わったら帰還モードへ移行する」「HPが減ったら回避モードへ切り替える」といった状態遷移（ステートマシン）を作れます。',
     pythonSyntax: 'mode = 1',
-    conceptTag: '状態管理 (State Variable)',
+    conceptTag: '状態変数の代入 (State Machine)',
     signatureInfo: '代入: mode: int (0=SEARCH, 1=ATTACK, 2=EVADE)',
     learningTip:
-      '「今どのモードで動いているか」を変数に覚えておく設計をステートマシン（状態遷移）と呼びます。状況に応じた行動切替の基本テクニックです。',
+      '戦車の行動フェーズを管理する変数 mode に整数（0・1・2）を代入します。\n直後のコードに # SEARCH（索敵）などのコメントが付くのは、数値の意味を読みやすくするためです（Python では # から行末まではコメントとして無視されます）。',
     isCondition: false,
     defaultParams: { mode: 1 },
     paramSchema: [
@@ -301,12 +305,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'stop()',
     shortLabelEn: 'stop()',
     description:
-      '移動・旋回・発砲をすべて停止し、以降の Tick でもプログラムを実行せず完全停止します。ゴール到達や作業完了時に使います。',
+      '移動・車体旋回・砲塔回転・レーダー回転をすべて停止し、以後の Tick でもプログラムを実行せず完全停止します。\n課題学習で「ゴールタイル上で停止」が条件になっているミッションや、作業完了後に無駄弾を撃たずに止めたいときに配置します（出力先の配線は不要です）。',
     pythonSyntax: 'stop()',
-    conceptTag: '実行終了・完全停止 (Halt)',
+    conceptTag: '実行終了関数 (stop)',
     signatureInfo: '引数: なし → 戻り値: None (戦車を停止し以降のTickを終了)',
     learningTip:
-      '「ゴールに着いたら停止する」「ターゲットをすべてクリアしたら止まる」といった完了処理に使う命令です。一度実行されると移動や旋回を止め、リセットまで待機状態を維持します。',
+      '引数を持たない関数 stop() を呼び出し、戦車の全アクチュエータと以降の Tick のプログラム実行を終了させます。\nコード編集画面で直接 stop() と記述した場合も、グリッド上の停止チップへ変換されます。',
     isCondition: false,
     defaultParams: {},
     paramSchema: [],
@@ -319,12 +323,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 敵検知',
     shortLabelEn: 'if detected:',
     description:
-      'レーダーで敵を捕捉していれば True (青/then)、未検知なら False (赤/else) へ分岐します。',
+      'レーダーで敵機（または課題学習の射撃バルーン）を捕捉しているか判定し、見つけていれば「T:True」、見失っていれば「F:False」へ進みます。\n「記憶保持Tick」を指定すると、敵がレーダー範囲から一瞬外れてもその Tick 数（1秒 = 20 Tick）の間は直前の検知情報を覚えたまま True になります。',
     pythonSyntax: 'if enemy_detected(max_age=12):',
-    conceptTag: '条件分岐 (if / else)',
+    conceptTag: '条件分岐と真偽値 (if / bool)',
     signatureInfo: '引数: max_age: int → 戻り値: bool (True / False)',
     learningTip:
-      '`enemy_detected()` は敵が見えていると `True`、見えないと `False` を返すブール関数です。`if` は `True` なら青、`False` なら赤（`else:`）を実行します。',
+      'enemy_detected(max_age=...) は、敵が見えていれば True（真）、見えていなければ False（偽）を返す関数です。\nif 条件式: は結果が True のとき直下のインデントされた処理（T:True 側）を実行し、False のときは else: 側（F:False 側）へ分岐します。',
     isCondition: true,
     defaultParams: { maxAgeTicks: 12 },
     paramSchema: [
@@ -348,12 +352,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 敵距離',
     shortLabelEn: 'if enemy_dist:',
     description:
-      'レーダー内に敵を捉えているとき、自動格納される変数 enemy_dist (敵との距離px) を比較して分岐します（未捕捉時は False）。',
+      'レーダーで捉えている敵までの距離（px）を指定距離と比較し、条件を満たせば「T:True」、満たさなければ「F:False」へ進みます（敵未検知のときは常に False）。\n・「以下 (<= 近い)」：敵に近づきすぎたときに後退する引き撃ち制御などに使います。\n・「以上 (>= 遠い)」：遠すぎるときに距離を詰める制御に使います。',
     pythonSyntax: 'if enemy_dist <= 300:',
-    conceptTag: 'センサー変数と比較 (<= / >=)',
+    conceptTag: '比較演算子による大小判定 (<=, >=)',
     signatureInfo: '変数: enemy_dist: int | None (レーダー捕捉時に距離pxを保持) → bool',
     learningTip:
-      'レーダー内に敵を捉えると `enemy_dist` 変数に敵までの距離(px)が自動で格納されます。`enemy_dist <= 250` で「近すぎたら後退」、`enemy_dist >= 450` で「遠すぎたら前進」といった間合い管理が組めます。',
+      'センサー変数 enemy_dist（敵までの距離 px）と数値を、比較演算子 <=（以下）または >=（以上）で比べます。\n比較式の結果は True か False になり、距離に応じた前進・後退の切り替え（if / else 分岐）としてコード化されます。',
     isCondition: true,
     defaultParams: { op: 'lte', dist: 300 },
     paramSchema: [
@@ -387,12 +391,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 扇形内',
     shortLabelEn: 'if in_sector:',
     description:
-      '指定した角度・距離の扇形エリア内に敵がいれば True (青/then)、いなければ False (赤/else) へ分岐します。',
+      '基準方向（砲塔正面・車体正面・絶対方位）から「中心角 ± 許容幅」かつ「最大距離」以内の扇形エリアに敵がいれば「T:True」、範囲外なら「F:False」へ進みます（敵未検知時は False）。\n砲塔正面基準（中心角 0°）に設定すると「砲塔が敵（または偏差射撃の予測位置）をしっかり向いた瞬間だけ撃つ」発砲ゲートとして働きます。',
     pythonSyntax: 'if enemy_in_sector(ref="turret", center=0, width=20, dist=900):',
-    conceptTag: '複数引数の関数と論理積 (and)',
+    conceptTag: '複数キーワード引数の条件関数',
     signatureInfo: '引数: ref: str, center: float, width: float, dist: float → 戻り値: bool',
     learningTip:
-      '複数の引数（キーワード引数）を関数に渡して「角度が許容内 AND 距離が射程内」の複合条件を一度に判定します。狙いが定まった瞬間だけ撃つ無駄撃ち防止に最適です。',
+      'enemy_in_sector(ref="turret", center=0, width=20, dist=900) のように、「引数名=値」（キーワード引数）で4つの条件を渡す関数です。\nPython ではキーワード引数を使うことで、引数の順番に迷わず「何がどの設定値か」を読みやすいコードとして記述できます。',
     isCondition: true,
     defaultParams: { ref: 'turret', centerAngle: 0, halfWidth: 20, maxDist: 900 },
     paramSchema: [
@@ -448,12 +452,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 壁接近',
     shortLabelEn: 'if wall_near:',
     description:
-      '指定方向に壁または障害物が距離以内にある場合 True (青/then)、なければ False (赤/else) へ分岐します。',
+      '指定方向に壁または障害物が距離以内にある場合 True、なければ False へ分岐します。',
     pythonSyntax: 'if wall_near(dir="front", dist=110):',
     conceptTag: 'センサー判定 (if / 比較)',
     signatureInfo: '引数: dir: str, dist: float → 戻り値: bool (True / False)',
     learningTip:
-      '距離センサーの返り値が `dist` 以下かを判定する `if` 分岐です。障害物にぶつかる前に「予防的に旋回する」回避アルゴリズムが書けます。',
+      '距離センサーの返り値が dist 以下かを判定する if 分岐です。障害物にぶつかる前に予防的に旋回する回避処理が書けます。',
     isCondition: true,
     defaultParams: { direction: 'front', angle: 0, dist: 110 },
     paramSchema: [
@@ -503,12 +507,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 近接',
     shortLabelEn: 'if prox:',
     description:
-      '全周の壁・障害物・戦車までの距離をスキャンし、指定条件に当てはまる場合は True (青/then)、そうでなければ False (赤/else) へ分岐します。',
+      '車体周囲の壁・障害物・他戦車との距離を調べ、条件に当てはまれば「T:True」、そうでなければ「F:False」へ進みます。\n・全周 (接近中のみ)：進行方向側に近づいている対象が検知レンジ内にあるときだけ True になり、回避方向を向いた瞬間に False へ戻ります。\n・前方のみ (車体正面)：車体の正面方向に障害物や他戦車があるか調べます。\n・全周 (無条件)：向きを問わず周囲に接近対象があるか判定します。\n・左側 / 右側が開いている：壁沿いに進みながら角を曲がれる切れ目（左手法・右手法）を検知します。\n・左右比較：左右のどちら側に障害物・対象が近いかを比較します。',
     pythonSyntax: 'if proximity_near(mode="approaching", target="all", dist=130):',
-    conceptTag: '近接センサー (全周スキャン)',
+    conceptTag: 'キーワード引数によるセンサー分岐',
     signatureInfo: '引数: mode: str, target: str, dist: float → 戻り値: bool (True / False)',
     learningTip:
-      '車体の全周をスキャンして壁・障害物・他戦車との接触を事前に検知します。「接近中のみ」を選ぶと、離れる向きに旋回した瞬間に False に戻るため、その場で回り続けるのを防げます。',
+      'proximity_near(mode=..., target=..., dist=...) は、3つのキーワード引数で「どう調べるか（mode）」「何を調べるか（target）」「何px以内か（dist）」を指定する条件関数です。\n文字列の引数（"approaching" や "walls"）はダブルクォーテーション "" で囲み、数値の引数（dist=100）はそのまま記述します。',
     isCondition: true,
     defaultParams: { mode: 'approaching', target: 'all', dist: 130 },
     paramSchema: [
@@ -557,12 +561,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 被弾',
     shortLabelEn: 'if hit:',
     description:
-      '直近の一定時間内に指定方向から砲弾を受けた場合 True (青/then)、そうでなければ False (赤/else) へ分岐します。',
+      '直近の「検知時間（Tick）」以内に敵の攻撃を受けたか判定し、該当する方向からの被弾があれば「T:True」、なければ「F:False」へ進みます（壁衝突では反応しません）。\n被弾方向は「全方向」「後方」「側面」「正面」から選べ、直後に車体旋回やレーダー制御の「被弾方向基準 (last_hit)」を繋ぐと死角からの奇襲にすぐ反撃できます。',
     pythonSyntax: 'if hit_from(zone="any", ticks=20):',
-    conceptTag: '被弾方向センサー (if)',
+    conceptTag: '文字列引数と数値引数の条件関数',
     signatureInfo: '引数: zone: str, ticks: int → 戻り値: bool (True / False)',
     learningTip:
-      '背後や側面から撃たれたとき、`turn_radar(mode="last_hit")` と組み合わせて被弾方向へレーダーを向けると、死角からの攻撃にもすぐ反撃できます。',
+      'hit_from(zone="any", ticks=20) は、被弾方向を表す文字列 zone と、遡って調べる時間を表す整数 ticks の 2つの引数を受け取り True / False を返します。\nグリッドでパラメータを変更すると、上の Python コード内の引数もリアルタイムに書き換わります。',
     isCondition: true,
     defaultParams: { zone: 'any', ticks: 20 },
     paramSchema: [
@@ -598,12 +602,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 主冷却',
     shortLabelEn: 'if main_cd==0:',
     description:
-      '主砲のクールダウン(main_cooldown)が0になり発射可能な状態なら True (青/then)、冷却中なら False (赤/else) へ分岐します。',
+      '主砲の冷却が完了して発射できる状態なら「T:True」、冷却中（連続発射の待ち時間）なら「F:False」へ進みます。\n発砲可能な瞬間だけ次の動作へ進めたいときや、クールダウン中の待ち時間を別の行動（回避など）に回したいときに使います。',
     pythonSyntax: 'if main_cooldown == 0:',
-    conceptTag: '等値比較 (==)',
+    conceptTag: '等値比較演算子 (==)',
     signatureInfo: '式: main_cooldown == 0 → 戻り値: bool',
     learningTip:
-      '代入の `=` と比較の `==` の違いに注意！ `main_cooldown == 0` は「主砲クールダウンが 0 と等しいか？」を調べる比較式で、結果は `True` か `False` になります。',
+      '代入の =（1つ）と、等しいか調べる ==（2つ）の違いは Python の大切な基本です。\nmain_cooldown == 0 は「主砲の残り冷却時間が 0 と等しいか？」を判定する比較式で、0 なら True、冷却中なら False になります。',
     isCondition: true,
     defaultParams: {},
     paramSchema: [],
@@ -616,12 +620,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if SP冷却',
     shortLabelEn: 'if sp_cd==0:',
     description:
-      'Special (SP) のクールダウン(sp_cooldown)が0かつ残弾があり発動可能なら True (青/then)、冷却中または弾切れなら False (赤/else) へ分岐します。',
+      '装備している Special 兵装のクールダウンが 0 かつ残弾が 1 以上あり発動可能なら「T:True」、準備中または弾切れなら「F:False」へ進みます。\n無駄な呼び出しを防ぐため、「Special発動 fire_sp()」の前に置いて確認するのが基本です。',
     pythonSyntax: 'if sp_cooldown == 0:',
-    conceptTag: '等値比較 (==)',
+    conceptTag: '等値比較演算子 (==)',
     signatureInfo: '式: sp_cooldown == 0 → 戻り値: bool',
     learningTip:
-      'Special 兵装にも使用後の待ち時間（クールダウン）と回数制限があります。`if sp_cooldown == 0:` で準備完了か確認してから `fire_sp()` を呼び出すのが安全な設計です。',
+      'sp_cooldown == 0 で Special 兵装のクールダウンが 0 と等しいかを比較します（残弾確認も同時に行われます）。\nこの if 文の中にインデントして fire_sp() を配置することで、「発動できる状態のときだけ実行する」安全なコードになります。',
     isCondition: true,
     defaultParams: {},
     paramSchema: [],
@@ -633,12 +637,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'if hp_pct <= N:',
     shortLabel: 'if HP≤%',
     shortLabelEn: 'if hp<=%:',
-    description: '自機の残りHP割合が指定パーセント以下なら True (青/then) へ分岐します。',
+    description:
+      '自機の残り HP が最大 HP に対して指定パーセント以下なら「T:True」、それより多く残っていれば「F:False」へ進みます。\n体力が減ってきたタイミングで「状態変数変更 (mode =)」を切り替えて後半戦の戦い方へ移行する用途などに使います。',
     pythonSyntax: 'if hp_percent <= 45:',
-    conceptTag: '大小比較 (<=)',
+    conceptTag: '大小比較演算子 (<=)',
     signatureInfo: '式: hp_percent <= threshold → 戻り値: bool',
     learningTip:
-      '比較演算子 `<=`（以下）を使って、ピンチのときだけシールドを張る・回避行動を優先するといった防御ロジックを分岐できます。',
+      '自機の残り HP 割合を表す変数 hp_percent（0〜100）が、右辺の数値以下（<=）かどうかを判定します。\n条件が成り立つ（True）ときにインデント内の処理（mode = 1 など）が実行されます。',
     isCondition: true,
     defaultParams: { percent: 45 },
     paramSchema: [
@@ -661,12 +666,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'if var <op> val:',
     shortLabel: 'if 変数?',
     shortLabelEn: 'if a ? val:',
-    description: '変数(a/b)の値を比較演算子で判定し、条件が成り立てば True (青/then) へ分岐します。',
+    description:
+      '変数（a または b）の値を比較し、条件が成り立てば「T:True」、成り立たなければ「F:False」へ進みます。\n・「以上 (>=) / 以下 (<=) / 等しい (==)」：タイルの通過回数や繰り返し回数の判定に使います。\n・「剰余0 (% val == 0)」：変数が指定値で割り切れるときだけ True になるため、「20 Tick ごとに 1回だけ急旋回する」といった周期処理を作れます。',
     pythonSyntax: 'if a >= 60:',
-    conceptTag: '比較演算子 (>=, <=, ==, %)',
+    conceptTag: '比較演算子と剰余演算子 (==, >=, <=, %)',
     signatureInfo: '式: var (>= | <= | == | %) val → 戻り値: bool',
     learningTip:
-      '`a % 20 == 0`（剰余演算子 `%`）を使うと「20 Tick ごとに1回だけ特別な行動をする」といった周期イベントを作れます。',
+      '変数 a・b の値を比較します。== は等しい、>= は以上、<= は以下を表します。\n「剰余0」を選ぶと a % 20 == 0 という式になります。% は割り算の余りを求める演算子で、「a を 20 で割った余りが 0（＝20の倍数のとき）」という意味になります。',
     isCondition: true,
     defaultParams: { reg: 'A', op: 'gte', value: 60 },
     paramSchema: [
@@ -702,12 +708,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'if incoming_shell():',
     shortLabel: 'if 弾接近',
     shortLabelEn: 'if shell_near:',
-    description: '自機へ向かって飛んでくる敵弾が指定距離以内にあれば True (青/then) へ分岐します。',
+    description:
+      '警戒半径（px）以内にあり、かつ自機に当たるコースで飛んでくる敵の砲弾を検知すると「T:True」、なければ「F:False」へ進みます。\n自機の方向へ向かっていない外れ弾には反応しないため、バリアや緊急ブーストを無駄撃ちせず命中直前だけ発動できます。',
     pythonSyntax: 'if incoming_shell(radius=220):',
-    conceptTag: '条件分岐 (危険検知)',
+    conceptTag: '引数付きの危険検知関数',
     signatureInfo: '引数: radius: float → 戻り値: bool',
     learningTip:
-      '飛んでくる弾の軌道予測が自機に近づいたときだけ `True` を返します。普段は攻撃し、弾が迫った瞬間だけ回避やシールドへ分岐するリアクティブな制御が可能です。',
+      'incoming_shell(radius=220) は、警戒半径 radius（px）を引数として渡し、命中コースの敵弾が近づいているかを True / False で返す関数です。\n連続する if 分岐（例えば incoming_shell の True 側にさらに sp_cooldown == 0 を繋ぐ）は、Python では 2段のインデント（ネストした if 文）として表現されます。',
     isCondition: true,
     defaultParams: { maxDist: 220 },
     paramSchema: [
@@ -731,12 +738,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if 被ロック',
     shortLabelEn: 'if under_lock:',
     description:
-      '敵機のレーダー（視界）に自機が捕捉されているとき True (青/then)、捕捉されていなければ False (赤/else) へ分岐します。',
+      '敵機のレーダー（視界）に自機が捉えられている間は「T:True」、捉えられていなければ「F:False」へ進みます。\n自分のレーダーで敵を発見する前でも狙われていることが分かるため、回避機動・煙幕・デコイなどの防御行動を始める合図として使えます。',
     pythonSyntax: 'if under_lock():',
-    conceptTag: '条件分岐 (被ロックオン警戒)',
+    conceptTag: '引数なしの真偽値関数 (bool)',
     signatureInfo: '引数: なし → 戻り値: bool (True / False)',
     learningTip:
-      '自機のレーダーで敵を見つける前でも、死角や背後から敵に狙われていることを検知できます。旋回して正面装甲を向けたり、回避機動へ移るトリガーとして有効です。',
+      'under_lock() は引数を必要としない関数ですが、Python で関数を呼び出すときは必ず末尾に空の括弧 () を付けます。\n敵レーダーに捕捉されていれば True、そうでなければ False に評価されます。',
     isCondition: true,
     defaultParams: {},
     paramSchema: [],
@@ -748,12 +755,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'if mode == N:',
     shortLabel: 'if mode==',
     shortLabelEn: 'if mode==N:',
-    description: '現在の状態変数 mode が指定値と一致すれば True (青/then) へ分岐します。',
+    description:
+      '現在の状態変数 mode（初期値 0）が指定した値（0〜2）と一致すれば「T:True」、異なれば「F:False」へ進みます。\n「状態変数変更 (mode =)」と組み合わせて、フェーズや役割ごとの専用処理へ分岐させるときに使います。',
     pythonSyntax: 'if mode == 1:',
-    conceptTag: '状態分岐 (if / elif)',
+    conceptTag: '状態変数の等値比較 (if / elif / else)',
     signatureInfo: '式: mode == state → 戻り値: bool',
     learningTip:
-      '複数の `if mode == ...:` を繋ぐことで、Pythonの `if / elif / else` と同じように「状態ごとの専用ルーチン」へ処理を振り分けられます。',
+      '状態変数 mode の現在値が指定した番号と等しいか（==）を調べます。\n「F:False」側に別の色タイルや別モードの if チップを続けて繋ぐと、Python の多段分岐（if 〜 else の入れ子）と同じ働きになります。',
     isCondition: true,
     defaultParams: { mode: 1 },
     paramSchema: [
@@ -779,12 +787,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if タイル',
     shortLabelEn: 'if on_tile:',
     description:
-      '戦車の中心が指定した種別・色の床タイル上にあると True (青/then)、そうでなければ False (赤/else) へ分岐します。（学習モード専用）',
+      '戦車の中心が指定した種別・色の床タイル上にあるか判定し、乗っていれば「T:True」、そうでなければ「F:False」へ進みます（課題学習専用）。\n・「踏んだ瞬間のみ (edge)」が ON のとき：同じタイルに入った最初の 1 Tick だけ True になり、タイルを出るまで再反応しません（色タイル上での連続旋回ループ防止に必須です）。\n・OFF のとき：タイルの上に乗っている間ずっと True になります（ゴール停止判定などに適しています）。',
     pythonSyntax: 'if on_tile("goal"):',
-    conceptTag: '環境センサー分岐 (Floor Tile)',
+    conceptTag: '文字列引数と真偽値フラグ (edge=True)',
     signatureInfo: '引数: target: str, edge?: bool → 戻り値: bool (True / False)',
     learningTip:
-      '足元にあるゴールやチェックポイント、色タイル（赤・青・緑・黄）、危険タイルを判別します。「踏んだ瞬間のみ (edge=True)」をONにすると、同じタイルを踏み続けている間は再判定せず離れてから再度判定するため、タイル上での連続旋回ループを防げます。',
+      'on_tile("blue", edge=True) のように、第1引数でタイルの種類（文字列）、第2引数で踏んだ瞬間のみ反応させるかの真偽値（True）を渡します。\nTrue / False は Python の真偽値（bool型）リテラルで、先頭を大文字で書くルールになっています。',
     isCondition: true,
     defaultParams: { target: 'goal', edge: 0 },
     paramSchema: [
@@ -821,12 +829,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'if ミッション',
     shortLabelEn: 'if mission:',
     description:
-      'マップ上のターゲット残数やチェックポイントの達成状況に応じて True (青/then) / False (赤/else) へ分岐します。（学習モード専用）',
+      'マップ上の標的（風船など）の残り数やチェックポイントの通過状況を判定し、条件を満たせば「T:True」、そうでなければ「F:False」へ進みます（課題学習専用）。\n「ターゲットをすべて割ったらゴールへ向かう」「全チェックポイントを通過済みならゴール上で stop() する」といった工程の切り替えに使います。',
     pythonSyntax: 'if targets_left() > 0:',
-    conceptTag: '達成状況の条件判定 (Mission State)',
+    conceptTag: '関数の戻り値と比較式の組み合わせ',
     signatureInfo: '引数: check: str → 戻り値: bool (True / False)',
     learningTip:
-      '「ターゲットがまだ残っているか」「すべてのチェックポイントを踏み終えたか」を調べます。条件を満たした後にゴールへ向かう分岐などが組めます。',
+      'targets_left() は「残っている標的の個数（整数）」を返す関数です。その戻り値を > 0（0より大きい）や == 0（0と等しい）と直接比較しています。\ncheckpoints_done() は全チェックポイント通過済みなら True を返す真偽値関数です。',
     isCondition: true,
     defaultParams: { check: 'targets_remaining' },
     paramSchema: [
@@ -868,12 +876,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'move()',
     shortLabelEn: 'move()',
     description:
-      '移動目標速度(%)を設定します。プラスで前進、マイナスで後退、0で停止。時間(秒)を0より大きくすると、その秒数だけ移動し終えてから次の処理へ進みます（0で1Tick設定してすぐ次へ進みます）。',
+      '指定した速度出力（+1〜+100% で前進、-1〜-100% で後退、0% で減速停止）で移動します。\n・移動時間 = 0秒（継続）：その Tick の速度を設定してすぐ次のチップへ進みます。センサー判定や射撃と組み合わせるときに使います。\n・移動時間 > 0秒：指定秒数が経過するまで移動し続け、完了してから次のチップへ進みます。',
     pythonSyntax: 'move(speed=80, duration=0)',
-    conceptTag: '関数呼び出し (引数: 数値)',
+    conceptTag: '数値引数とオプション引数 (move)',
     signatureInfo: '引数: speed: int (-100 〜 100), duration: float (秒, 0=継続) → 戻り値: None',
     learningTip:
-      '関数 `move(speed)` に正の数を渡すと前進、負の数を渡すと後退します。`duration` に秒数を指定すると「n秒間移動してから次の命令へ進む」、`0` のままなら毎Tick設定して進み続けます。',
+      'move(speed=80) は速度（-100〜100）を引数に渡して移動を指示する関数です。\n移動時間を 0秒（継続）にしたときは duration 引数が省略されてシンプルに move(speed=80) となり、秒数を指定したときだけ move(speed=80, duration=3.0) と出力されます。',
     isCondition: false,
     defaultParams: { speedPercent: 80, duration: 0 },
     paramSchema: [
@@ -907,12 +915,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'turn_body()',
     shortLabelEn: 'turn_body()',
     description:
-      '相対角度での旋回・絶対方位(北=0°)への旋回に加え、敵方向基準(enemy_rel)や砲塔方向基準(turret_rel)でも制御できます。「完了まで待機」を有効にすると目標角度に到達するまで停止して旋回し続け、完了後に次のチップへ進みます。',
+      '車体の向きを変えます。用途に合わせて以下の制御方式を選べます。\n・座標モード自動 / 相対角度 / 絶対方位：現在の向きからの回転量（右+ / 左-）や、北=0°のコンパス方位を指定します。\n・壁回避方向へ：進行方向側の壁・障害物を避ける向きへ自動で曲がります。\n・砲塔 / 敵 / 被弾方向基準：砲塔向き・捕捉中の敵・直近の被弾方向を基準（0°で正面）に車体を向けます。\n・「完了まで待機 (wait)」ON：移動を一時停止して目標角度に向き終えてから次へ進みます（OFF なら走りながら即座に次へ進みます）。',
     pythonSyntax: 'turn_body(mode="auto", angle=4)',
-    conceptTag: '関数呼び出し (座標基準とブロッキング制御)',
+    conceptTag: 'モード文字列と角度・待機フラグ',
     signatureInfo: '引数: mode: str, angle: float, wait?: bool → 戻り値: None',
     learningTip:
-      '同じ `turn_body()` でも `mode` や `wait` により挙動が変わります。`wait=True` をONにすると、例えば `mode="delta", angle=90, wait=True` で移動を一時停止しながら90°旋回し終えてから次の前進チップへ素直に進めます。',
+      'turn_body(mode="delta", angle=90, wait=True) のように、制御方式（文字列）・角度（数値）・完了待機（wait=True）を引数で指定します。\nwait が OFF（初期値）のときは wait 引数が省略され、wait を ON にしたときだけ末尾に , wait=True が追加されます。',
     isCondition: false,
     defaultParams: { mode: 'auto', angle: 4, wait: 0 },
     paramSchema: [
@@ -957,12 +965,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'turn_turret()',
     shortLabelEn: 'turn_turret()',
     description:
-      '相対回転・絶対方位(北=0°)に加え、車体正面基準(body_rel)も指定できます。「完了まで待機」を有効にすると指定角度を向き終えるまで次のチップへ進まず待機します。',
+      '車体とは独立して砲塔だけを回転させます（固定砲塔の「超重シャシー」では回転しません）。\n・座標モード自動 / 相対回転 / 絶対方位：現在の砲塔向きからの回転量や、北=0°の絶対方位を指定します。\n・車体正面基準 (body_rel)：車体の向きを 0° として砲塔の相対角度を指定します。\n・「完了まで待機 (wait)」ON：砲塔が目標角度に向き終えるまで待ってから次のチップへ進みます。',
     pythonSyntax: 'turn_turret(angle=6)',
-    conceptTag: '関数呼び出し (独立アクチュエータ)',
+    conceptTag: '独立制御関数とキーワード引数',
     signatureInfo: '引数: mode: str, angle: float, wait?: bool → 戻り値: None',
     learningTip:
-      '車体とは独立して砲塔の向きだけを変える関数です。`wait=True` にすると砲塔が目標角度（例: `mode="delta", angle=90, wait=True`）に向き終わってから次の発砲チップへ進めます。',
+      '車体旋回とは別の関数 turn_turret(...) を呼び出して砲塔の角度を操作します。\n同じ引数名（mode, angle, wait）でも、どの関数（turn_body か turn_turret か）に渡すかによって操作対象が変わります。',
     isCondition: false,
     defaultParams: { mode: 'auto', angle: 6, wait: 0 },
     paramSchema: [
@@ -1003,12 +1011,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'aim_enemy(lead=...)',
     shortLabel: 'aim_enemy()',
     shortLabelEn: 'aim_enemy()',
-    description: '検知中の敵へ砲塔を自動旋回させます。偏差射撃モードにすると敵の移動先を予測します。',
+    description:
+      'レーダーで捉えている敵に向けて砲塔を自動で旋回させます（未検知のときは動きません）。\n・直接照準 (direct)：敵の現在位置をそのまま狙います。静止標的や近距離向きです。\n・偏差予測照準 (Lead)：敵の移動速度と自機の弾速から「弾が届く未来の位置」を計算して先読みで狙います。\n・「角度オフセット」を足すと、予測点から左右にずらして狙うこともできます。',
     pythonSyntax: 'aim_enemy(lead="direct", offset=0)',
-    conceptTag: 'アルゴリズム関数 (物理予測)',
+    conceptTag: '文字列によるアルゴリズム選択引数',
     signatureInfo: '引数: lead: "direct" | "lead", offset: float → 戻り値: None',
     learningTip:
-      '引数の `lead="lead"` を選ぶと、敵の速度ベクトルと砲弾速度から「弾が着弾する未来位置」を連立方程式で計算して狙います。',
+      'aim_enemy(lead="direct", offset=0) の lead 引数を "direct"（直接）にするか "lead"（偏差予測）にするかで、関数内部の照準計算アルゴリズムが切り替わります。\nこのように Python では引数ひとつで高機能な処理を簡単に呼び分けられます。',
     isCondition: false,
     defaultParams: { lead: 'direct', offset: 0 },
     paramSchema: [
@@ -1042,12 +1051,12 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     shortLabel: 'radar()',
     shortLabelEn: 'radar()',
     description:
-      'レーダー（視界）を連続回転(delta)で全周サーチするか、砲塔正面の首振り(sweep)・ロック追尾(lock_enemy)で精密に捉えます。',
+      '敵を探すセンサーであるレーダー（視界）の向きを制御します。\n・敵ロック追尾：捕捉中の敵へレーダーを向け続けて見失わないようにします（未捕捉時は自動で首振り索敵します）。\n・砲塔正面首振り：砲塔の向きを中心に指定角度だけ左右に往復スキャンします。\n・座標モード自動 / 連続回転 / 絶対方位：周囲を探し続けたいときや北=0°の決まった方角へ向けたいときに使います。\n・被弾方向へ向く：直前に攻撃を受けた方向へ振り向きます（未被弾時は首振りスキャン）。',
     pythonSyntax: 'turn_radar(mode="sweep", angle=60)',
-    conceptTag: '関数呼び出し (モード引数)',
-    signatureInfo: '引数: mode: str, angle: float → 戻り値: None',
+    conceptTag: '動作モード別の引数指定',
+    signatureInfo: '引数: mode: str, angle?: float → 戻り値: None',
     learningTip:
-      '敵未発見時は `mode="delta"` で360°回転して死角なく探し、発見後は `mode="sweep"` や `mode="lock_enemy"` に切り替えて連続捕捉すると偏差射撃の精度が最大限に発揮されます。死角から撃たれたときは `if hit_from():` ＋ `mode="last_hit"` も有効です。',
+      'turn_radar(mode="lock_enemy") や turn_radar(mode="delta", angle=20) のように、選んだ動作モードに必要な引数だけがコードに出力されます。\n複数のチップが 1本の矢印（次のチップ）で繋がっていると、Python コードでも同じインデント幅で上から下へ順番に並びます。',
     isCondition: false,
     defaultParams: { mode: 'sweep', angle: 60 },
     paramSchema: [
@@ -1079,18 +1088,18 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
   },
   act_fire: {
     type: 'act_fire',
-    category: 'action',
+    category: 'sub',
     name: '主砲発射 fire_main()',
     nameEn: 'fire_main(power="normal")',
     shortLabel: 'fire_main()',
     shortLabelEn: 'fire_main()',
     description:
-      '主砲の射撃モード（速弱・標準・遅強）を指定して発射します。「発射完了まで待機」を有効にすると、冷却完了を待ってから確実に発射して次のチップへ進みます。',
+      '指定した射撃モードで主砲を発射します（クールダウン中の場合は不発になります）。\n・速弱 / 標準 / 遅強：主砲パーツごとに設定された範囲で、弾速・連射力重視（速弱）から単発威力重視（遅強）まで選びます。\n・「発射可能まで待機 (wait)」ON：主砲が冷却中なら発射可能になるまでその場で待ち、確実に 1発撃ってから次のチップへ進みます（OFF なら即座に次へ進みます）。',
     pythonSyntax: 'fire_main(power="normal")',
-    conceptTag: '関数呼び出し (モード切り替えと発射待機)',
+    conceptTag: '文字列引数と待機オプション (fire_main)',
     signatureInfo: '引数: power: "fast" | "normal" | "heavy", wait?: bool → 戻り値: None',
     learningTip:
-      '同じ関数 `fire_main(power)` でも引数によって弾速と威力が変わります。連続射撃の順次処理で不発を防ぎたいときは `wait=True` をONにすると、冷却が0になるまで待ってから発射して次へ進めます。',
+      'fire_main(power="normal") は射撃モードを "fast"（速弱）・"normal"（標準）・"heavy"（遅強）の文字列で指定します。\n「発射可能まで待機」を ON にすると末尾に , wait=True が付きます。また下に現在装備中の主砲での実測威力・弾速・冷却 Tick 数も表示されます。',
     isCondition: false,
     defaultParams: { power: 'normal', wait: 0 },
     paramSchema: [
@@ -1120,12 +1129,13 @@ export const CHIP_DEFINITIONS: Record<ChipType, ChipDefinition> = {
     nameEn: 'fire_sp()',
     shortLabel: 'SP発動',
     shortLabelEn: 'fire_sp()',
-    description: '搭載している Special 兵装（誘導ミサイル・地雷・バリア・煙幕・緊急ブースト・デコイ）を発射・展開します。',
+    description:
+      '機体に装備している Special 兵装（誘導ミサイル・地雷・バリア・煙幕・緊急ブースト・デコイ）を発動します。\n発動回数（残弾）と使用後のクールダウンがあるため、直前に「if SP発動可能」を置いて条件を満たすときだけ実行するのが基本です。',
     pythonSyntax: 'fire_sp()',
-    conceptTag: '関数呼び出し (リソース消費)',
+    conceptTag: '引数なしのアクション関数 (fire_sp)',
     signatureInfo: '引数: なし → 戻り値: None (残弾・sp_cooldownあり)',
     learningTip:
-      '回数や `sp_cooldown` の制約がある関数です。`if sp_cooldown == 0:` や `if incoming_shell():` と組み合わせて呼び出すと効果的です。',
+      'fire_sp() を呼び出すと、機体上部の special = {"type": "..."} で設定されている Special 兵装を発動します。\n引数はありませんが、関数を実行するために末尾の () が必要です。',
     isCondition: false,
     defaultParams: {},
     paramSchema: [],
@@ -1141,5 +1151,5 @@ export const CHIP_CATEGORY_LABELS: Record<ChipDefinition['category'], string> = 
   flow: '制御・反復 (while/for/sub)',
   condition: '条件分岐 (if / else)',
   action: '動作関数 (Action)',
-  sub: 'Special (SP)',
+  sub: '武装 (Weapon)',
 };
