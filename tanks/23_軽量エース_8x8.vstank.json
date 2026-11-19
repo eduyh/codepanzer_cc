@@ -146,7 +146,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -160,7 +161,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 90
+            "angle": 90,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -269,7 +271,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 88
+            "angle": 88,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -283,7 +286,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -90
+            "angle": -90,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -312,7 +316,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -28
+            "angle": -28,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -340,7 +345,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "last_hit",
-            "angle": 0
+            "angle": 0,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -351,7 +357,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": -88
+            "angle": -88,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -367,7 +374,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 28
+            "angle": 28,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -379,7 +387,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 2
+            "angle": 2,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -444,7 +453,8 @@
           "id": "c_37_4_6",
           "type": "act_fire",
           "params": {
-            "power": "fast"
+            "power": "fast",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -471,7 +481,8 @@
           "id": "c_36_6_6",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -574,7 +585,8 @@
           "id": "c_34_6_7",
           "type": "act_fire",
           "params": {
-            "power": "heavy"
+            "power": "heavy",
+            "wait": 0
           },
           "next": null,
           "yes": null,

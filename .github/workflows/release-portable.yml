@@ -1,0 +1,71 @@
+name: Build & Release Portable ZIP
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "portable-release"
+  cancel-in-progress: true
+
+jobs:
+  release-portable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build portable ZIP package
+        run: npm run package
+
+      - name: Publish to GitHub Release (latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TITLE="CodePanzer.py v${VERSION} オフライン配布版"
+          NOTES_FILE=$(mktemp)
+          node -e '
+            const fs = require("fs");
+            const ver = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+            const sha = process.env.GITHUB_SHA.slice(0, 7);
+            const lines = [
+              `# CodePanzer.py v${ver} オフライン配布版`,
+              "",
+              `\`main\` ブランチ (\`${sha}\`) から自動ビルドされたオフライン版です。`,
+              "",
+              "## 使い方",
+              "1. 下の **Assets** から `codepanzer-portable.zip` をダウンロードします。",
+              "2. ZIP ファイルをフォルダに展開（解凍）します。",
+              "3. フォルダ内の `index.html` をダブルクリックしてブラウザで開きます。",
+            ];
+            fs.writeFileSync(process.argv[1], lines.join("\n"), "utf8");
+          ' "$NOTES_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f latest "$GITHUB_SHA"
+          git push -f origin "refs/tags/latest"
+
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest codepanzer-portable.zip --clobber
+            gh release edit latest --title "$TITLE" --notes-file "$NOTES_FILE"
+          else
+            gh release create latest codepanzer-portable.zip --title "$TITLE" --notes-file "$NOTES_FILE"
+          fi

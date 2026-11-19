@@ -143,7 +143,8 @@
           "id": "c_5_3_2",
           "type": "act_fire",
           "params": {
-            "power": "fast"
+            "power": "fast",
+            "wait": 0
           },
           "next": {
             "x": 2,
@@ -160,7 +161,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": -10
+            "angle": -10,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -171,7 +173,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 14
+            "angle": 14,
+            "wait": 0
           },
           "next": null,
           "yes": null,

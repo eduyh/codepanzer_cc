@@ -108,7 +108,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": {
             "x": 6,
@@ -143,7 +144,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 2
+            "angle": 2,
+            "wait": 0
           },
           "next": {
             "x": 6,
@@ -175,7 +177,8 @@
           "id": "c_13_7_1",
           "type": "act_fire",
           "params": {
-            "power": "heavy"
+            "power": "heavy",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -188,7 +191,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 15
+            "angle": 15,
+            "wait": 0
           },
           "next": null,
           "yes": null,

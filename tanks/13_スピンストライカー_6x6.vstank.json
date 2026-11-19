@@ -64,7 +64,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 12
+            "angle": 12,
+            "wait": 0
           },
           "next": {
             "x": 3,
@@ -84,7 +85,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 3
+            "angle": 3,
+            "wait": 0
           },
           "next": {
             "x": 3,
@@ -148,7 +150,8 @@
           "id": "c_9_5_2",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": {
             "x": 5,
@@ -167,7 +170,8 @@
           "type": "act_turn_turret",
           "params": {
             "mode": "delta",
-            "angle": 9
+            "angle": 9,
+            "wait": 0
           },
           "next": null,
           "yes": null,

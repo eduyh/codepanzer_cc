@@ -128,7 +128,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 1
+            "angle": 1,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -139,7 +140,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": {
             "x": 2,
@@ -173,7 +175,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -184,7 +187,8 @@
           "id": "c_12_2_3",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -195,7 +199,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 78
+            "angle": 78,
+            "wait": 0
           },
           "next": {
             "x": 2,

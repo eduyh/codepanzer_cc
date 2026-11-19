@@ -11,7 +11,7 @@ const indexPath = path.join(distDir, 'index.html');
 const readmePath = path.join(distDir, 'README.txt');
 const distTanksDir = path.join(distDir, 'tanks');
 const workspaceTanksDir = path.join(rootDir, 'tanks');
-const zipPath = path.join(rootDir, 'vstank-portable.zip');
+const zipPath = path.join(rootDir, 'codepanzer-portable.zip');
 
 if (!fs.existsSync(indexPath)) {
   throw new Error(`dist/index.html not found at ${indexPath}. Run npm run build first.`);
@@ -105,7 +105,7 @@ async function exportTankPresetFiles() {
     process.platform === 'win32' ? 'esbuild.cmd' : 'esbuild'
   );
   const presetsSrc = path.join(rootDir, 'src', 'data', 'presets.ts');
-  const tmpBundle = path.join(os.tmpdir(), `vstank-presets-${process.pid}-${Date.now()}.mjs`);
+  const tmpBundle = path.join(os.tmpdir(), `codepanzer-presets-${process.pid}-${Date.now()}.mjs`);
 
   try {
     execFileSync(esbuildBin, [

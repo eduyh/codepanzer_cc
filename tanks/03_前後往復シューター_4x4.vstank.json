@@ -107,7 +107,8 @@
           "id": "c_4_3_1",
           "type": "act_fire",
           "params": {
-            "power": "fast"
+            "power": "fast",
+            "wait": 0
           },
           "next": {
             "x": 2,

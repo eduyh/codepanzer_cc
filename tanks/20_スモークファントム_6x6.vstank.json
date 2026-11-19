@@ -89,7 +89,8 @@
           "id": "c_9_5_0",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": {
             "x": 5,
@@ -106,7 +107,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -136,7 +138,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -168,7 +171,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 1
+            "angle": 1,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -237,7 +241,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 85
+            "angle": 85,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -248,7 +253,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 75
+            "angle": 75,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -259,7 +265,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 28
+            "angle": 28,
+            "wait": 0
           },
           "next": null,
           "yes": null,

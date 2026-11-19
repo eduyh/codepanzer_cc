@@ -50,7 +50,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 12
+            "angle": 12,
+            "wait": 0
           },
           "next": {
             "x": 2,
@@ -159,7 +160,8 @@
           "id": "c_8_4_2",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": {
             "x": 3,

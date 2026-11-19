@@ -68,7 +68,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 12
+            "angle": 12,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -96,7 +97,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": -12
+            "angle": -12,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -168,7 +170,8 @@
           "id": "c_11_2_3",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": null,
           "yes": null,

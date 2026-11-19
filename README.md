@@ -1,5 +1,5 @@
 # CodePanzer.py - Code Your Tank, Command the Arena.
-**Version: v1.5.19**
+**Version: v1.5.19** | **オフライン版ダウンロード**: [codepanzer-portable.zip（最新版）](https://github.com/eduyh/codepanzer_cc/releases/latest/download/codepanzer-portable.zip)（[GitHub Releases](https://github.com/eduyh/codepanzer_cc/releases/latest)）
 
 **CodePanzer.py** は、2D グリッド上に命令チップを並べて戦車の自律 AI を設計し、リアルタイムに対戦・検証できるプログラミング戦車バトルシミュレータです。
 
@@ -11,11 +11,12 @@
 
 ## 1. 起動方法と動作環境
 
-### 方法 A: ポータブル版をブラウザで直接起動（推奨・インストール不要）
-Node.js や Python の環境構築は不要で、オフラインの Web ブラウザだけでそのまま動作します。
+### 方法 A: ポータブル版（オフライン版）をブラウザで直接起動（推奨・インストール不要）
+Node.js や Python の環境構築は不要で、インターネット接続がない環境でも Web ブラウザだけでそのまま動作します。
 
-1. `dist/index.html` または配布アーカイブ（`vstank-portable.zip`）を展開したフォルダ内の **`index.html`** をダブルクリックするか、Web ブラウザへドラッグ＆ドロップします。
-2. 対応ブラウザ: Google Chrome / Microsoft Edge / Safari / Firefox（WebGL 対応環境。非対応時は 2D Canvas へ自動フォールバックします）
+1. GitHub Releases から最新版の配布アーカイブ **[`codepanzer-portable.zip`](https://github.com/eduyh/codepanzer_cc/releases/latest/download/codepanzer-portable.zip)**（[リリースページ](https://github.com/eduyh/codepanzer_cc/releases/latest)）をダウンロードします（`main` ブランチ更新時に自動ビルド・更新されます。ローカルでビルドした場合はプロジェクト直下の `codepanzer-portable.zip` または `dist/index.html`）。
+2. ダウンロードした ZIP ファイルをフォルダに展開（解凍）し、フォルダ内の **`index.html`** をダブルクリックするか、Web ブラウザへドラッグ＆ドロップします。
+3. 対応ブラウザ: Google Chrome / Microsoft Edge / Safari / Firefox（WebGL 対応環境。非対応時は 2D Canvas へ自動フォールバックします）
 
 ### 方法 B: 開発環境から起動（ソースコード編集・テスト）
 Node.js (v18 以上推奨) 環境でリポジトリをクローンして実行します。
@@ -134,7 +135,7 @@ CP1-<UUID 32桁>-<暗号ブロックA 8桁>-<暗号ブロックB 8桁>-<改ざ�
 ```
 
 - **暗号ブロックA（復号後 12桁 `D1`）**: 単元番号（`11`〜`14`=課題学習第1〜4回 / `21`〜`24`=開発訓練第1〜4部）・問題数・うち自力クリア数（模範解答未使用・丸写し除外）・修了月日時分
-- **暗号ブロックB（復号後 12桁 `D2`）**: ゲームバージョン（`MNNPP`）・合計クリア秒数・プログラム配線指紋（`000`〜`999`）
+- **暗号ブロックB（復号後 12桁 `D2`）**: ゲームバージョン（`MNNPP`）・合計クリア秒数・プログラムフィンガープリント（`000`〜`999`）
 - UUID の一部を用いた `BITXOR` 暗号化とモジュラー署名が付与されているため、他人のコードの UUID 書き換えや数値の捏造を行うと真贋判定で即座に無効と判定されます。
 
 ### 4.4 教員向け：Excel 確認シート用 復号・真贋判定関数一覧（Excel 2013 以降 / マクロ不要）
@@ -151,10 +152,10 @@ CP1-<UUID 32桁>-<暗号ブロックA 8桁>-<暗号ブロックB 8桁>-<改ざ�
 | `G2` | **自力 / 問題数** | `=IF(E2<>"✓ 正規","-",MID(C2,4,1)&"/"&MID(C2,3,1)&"問 自力")` |
 | `H2` | **修了日時** | `=IF(E2<>"✓ 正規","-",MID(C2,5,2)&"/"&MID(C2,7,2)&" "&MID(C2,9,2)&":"&MID(C2,11,2))` |
 | `I2` | **バージョン** | `=IF(E2<>"✓ 正規","-",VALUE(LEFT(D2,1))&"."&VALUE(MID(D2,2,2))&"."&VALUE(MID(D2,4,2)))` |
-| `J2` | **所要秒数・配線指紋** | `=IF(E2<>"✓ 正規","-",VALUE(MID(D2,6,4))&"秒 (指紋:"&MID(D2,10,3)&")")` |
+| `J2` | **所要秒数・フィンガープリント** | `=IF(E2<>"✓ 正規","-",VALUE(MID(D2,6,4))&"秒 (指紋:"&MID(D2,10,3)&")")` |
 
 - **ハイフン付き UUID 表記に戻す場合**: `=LOWER(LEFT(B2,8)&"-"&MID(B2,9,4)&"-"&MID(B2,13,4)&"-"&MID(B2,17,4)&"-"&RIGHT(B2,12))`
-- **丸写し検知の目安**: 「UUID（`B2`）が異なるのに、`J2` の配線指紋や `G2` の達成状況が同じ時刻帯で一致するペア」は同じ機体データを使った可能性があるため、条件付き書式の重複チェック等で簡単に確認できます。
+- **丸写し検知の目安**: 「UUID（`B2`）が異なるのに、`J2` のフィンガープリントや `G2` の達成状況が同じ時刻帯で一致するペア」は同じ機体データを使った可能性があるため、条件付き書式の重複チェック等で簡単に確認できます。
 
 ---
 

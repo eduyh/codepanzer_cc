@@ -94,7 +94,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "turret_rel",
-            "angle": 0
+            "angle": 0,
+            "wait": 0
           },
           "next": {
             "x": 3,
@@ -111,7 +112,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 5
+            "angle": 5,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -155,7 +157,8 @@
           "id": "c_9_2_3",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": null,
           "yes": null,

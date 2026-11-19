@@ -95,7 +95,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 14
+            "angle": 14,
+            "wait": 0
           },
           "next": {
             "x": 0,
@@ -136,7 +137,8 @@
           "id": "c_9_4_1",
           "type": "act_fire",
           "params": {
-            "power": "heavy"
+            "power": "heavy",
+            "wait": 0
           },
           "next": {
             "x": 4,
@@ -231,7 +233,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,

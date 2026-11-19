@@ -218,7 +218,8 @@
           "id": "c_16_6_2",
           "type": "act_fire",
           "params": {
-            "power": "heavy"
+            "power": "heavy",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -293,7 +294,8 @@
           "id": "c_18_6_3",
           "type": "act_fire",
           "params": {
-            "power": "normal"
+            "power": "normal",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -315,7 +317,8 @@
           "id": "c_19_5_4",
           "type": "act_fire",
           "params": {
-            "power": "fast"
+            "power": "fast",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -418,7 +421,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "enemy_rel",
-            "angle": 0
+            "angle": 0,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -569,7 +573,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 5
+            "angle": 5,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -591,7 +596,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 16
+            "angle": 16,
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -602,7 +608,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "last_hit",
-            "angle": 0
+            "angle": 0,
+            "wait": 0
           },
           "next": null,
           "yes": null,

@@ -33,7 +33,8 @@
           "id": "c_9_3_0",
           "type": "act_fire",
           "params": {
-            "power": "fast"
+            "power": "fast",
+            "wait": 0
           },
           "next": null,
           "yes": null,
@@ -78,7 +79,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "wall_away",
-            "angle": 14
+            "angle": 14,
+            "wait": 0
           },
           "next": {
             "x": 2,
@@ -109,7 +111,8 @@
           "type": "act_turn_body",
           "params": {
             "mode": "delta",
-            "angle": 4
+            "angle": 4,
+            "wait": 0
           },
           "next": {
             "x": 2,
