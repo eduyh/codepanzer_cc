@@ -183,6 +183,42 @@ export interface UserProfile {
 
 export type UiFontScale = 'normal' | 'large' | 'xlarge';
 
+export type ClearUnitId = 'L1' | 'L2' | 'L3' | 'L4' | 'T1' | 'T2' | 'T3' | 'T4';
+
+export interface StageClearTelemetry {
+  stageId: string;
+  clearedAt: string;
+  clearTicks: number;
+  blockCount: number;
+  usedModelAnswer: boolean;
+  programFingerprint: number; // 0..999
+}
+
+export interface LearningAttemptRecord {
+  missionId: string;
+  failedFingerprints: number[];
+  openedModelAnswer: boolean;
+}
+
+export interface DecodedClearCode {
+  valid: boolean;
+  rawCode: string;
+  uuidHex: string; // 32 uppercase hex chars
+  formattedUuid: string; // 8-4-4-4-12 lowercase uuid
+  unitCode: number; // 11..14 or 21..24
+  unitId: ClearUnitId | null;
+  unitLabel: string;
+  totalStages: number;
+  selfClearedStages: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  gameVersion: string;
+  totalClearSeconds: number;
+  programFingerprint: number;
+}
+
 export interface UserEnvironmentDump {
   version: number;
   gameVersion?: string;
@@ -192,6 +228,8 @@ export interface UserEnvironmentDump {
   savedBlueprints: TankBlueprint[];
   learningClears: string[];
   tutorialClears: string[];
+  clearTelemetry?: Record<string, StageClearTelemetry>;
+  learningAttempts?: Record<string, LearningAttemptRecord>;
   uiSettings?: {
     fontScale?: UiFontScale;
   };

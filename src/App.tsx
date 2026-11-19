@@ -56,10 +56,13 @@ import {
   CameraMode,
   ChassisId,
   ChipProgram,
+  ClearUnitId,
+  LearningAttemptRecord,
   MainGunId,
   ObstacleMode,
   RadarId,
   LearningMission,
+  StageClearTelemetry,
   SubWeaponId,
   TankBlueprint,
   UiFontScale,
@@ -81,21 +84,56 @@ import {
 } from './utils/codeParser';
 import {
   applyUserEnvironmentDump,
+  buildUnitClearCode,
   buildUserEnvironmentDump,
   decodeShareCode,
   encodeUserEnvironmentDump,
   exportUserEnvironmentFile,
   extractEnemyFromUrl,
+  loadClearTelemetry,
+  loadLearningAttempts,
   loadLearningClears,
   loadSavedBlueprints,
   loadTutorialClears,
   loadUserProfile,
   markLearningCleared,
+  markLearningModelAnswerOpened,
   markTutorialCleared,
+  MIN_BLOCKS_FOR_FAILURE_ATTEMPT,
+  recordLearningFailedAttempt,
+  recordStageClearTelemetry,
+  REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER,
   saveUserName,
   STORAGE_KEY_UI_FONT_SCALE,
   validateAndNormalizeBlueprint,
+  verifyDailyUnlockCode,
 } from './utils/share';
+
+function arePrevLessonMissionsCleared(
+  missionId: string,
+  lessonNumber: number,
+  clearedIds: string[]
+): boolean {
+  const lessonMissions = LEARNING_MISSIONS.filter((m) => m.lessonNumber === lessonNumber);
+  const posInLesson = lessonMissions.findIndex((m) => m.id === missionId);
+  return (
+    posInLesson <= 0 ||
+    lessonMissions.slice(0, posInLesson).every((m) => clearedIds.includes(m.id))
+  );
+}
+
+function arePrevSectionStagesCleared(
+  stageId: string,
+  sectionNumber: number,
+  clearedIds: string[]
+): boolean {
+  const sectionStages = TUTORIAL_STAGES.filter((s) => (s.section ?? 1) === sectionNumber);
+  const posInSection = sectionStages.findIndex((s) => s.id === stageId);
+  return (
+    posInSection <= 0 ||
+    sectionStages.slice(0, posInSection).every((s) => clearedIds.includes(s.id))
+  );
+}
 
 const BASE_TPS = 20;
 const MAX_MOBILE_BATTLE_TANKS = 4;
@@ -238,14 +276,31 @@ export function App() {
   const [clearedTutorials, setClearedTutorials] = useState<string[]>(() =>
     loadTutorialClears()
   );
+  const [clearTelemetry, setClearTelemetry] = useState<Record<string, StageClearTelemetry>>(() =>
+    loadClearTelemetry()
+  );
+  const [learningAttempts, setLearningAttempts] = useState<Record<string, LearningAttemptRecord>>(
+    () => loadLearningAttempts()
+  );
+  const [usedSolutionInStage, setUsedSolutionInStage] = useState(false);
+  const [showSolutionConfirm, setShowSolutionConfirm] = useState(false);
+  const [solutionLockNotice, setSolutionLockNotice] = useState<string | null>(null);
+  const [copiedClearUnit, setCopiedClearUnit] = useState<string | null>(null);
+  const [clearCodeToast, setClearCodeToast] = useState<string | null>(null);
+  const clearToastTimerRef = useRef<number | null>(null);
+  const recordedFinishRef = useRef<boolean>(false);
 
   const [userProfile, setUserProfile] = useState<UserProfile>(() => loadUserProfile());
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [userNameDraft, setUserNameDraft] = useState<string>(() => userProfile.userName);
-  const [uuidCopied, setUuidCopied] = useState(false);
   const [envCodeCopied, setEnvCodeCopied] = useState(false);
   const [envRestoreText, setEnvRestoreText] = useState('');
   const [envNotice, setEnvNotice] = useState<{ type: 'ok' | 'error'; text: string } | null>(null);
+  const [isDemoUnlocked, setIsDemoUnlocked] = useState(false);
+  const [unlockCodeInput, setUnlockCodeInput] = useState('');
+  const [unlockNotice, setUnlockNotice] = useState<{ type: 'ok' | 'error'; text: string } | null>(
+    null
+  );
   const [savedTanksCount, setSavedTanksCount] = useState<number>(() => loadSavedBlueprints().length);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const envFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -447,16 +502,6 @@ export function App() {
     }));
   };
 
-  const handleCopyUuid = async () => {
-    try {
-      await navigator.clipboard.writeText(userProfile.userId);
-      setUuidCopied(true);
-      window.setTimeout(() => setUuidCopied(false), 1800);
-    } catch {
-      // Clipboard blocked; input already auto-selects on focus
-    }
-  };
-
   const currentEnvDump = useMemo<UserEnvironmentDump>(
     () =>
       buildUserEnvironmentDump({
@@ -499,6 +544,8 @@ export function App() {
     setUserNameDraft(restored.userProfile.userName);
     setClearedLearnings(restored.learningClears);
     setClearedTutorials(restored.tutorialClears);
+    setClearTelemetry(restored.clearTelemetry ?? loadClearTelemetry());
+    setLearningAttempts(restored.learningAttempts ?? loadLearningAttempts());
     setSavedTanksCount(restored.savedBlueprints.length);
     if (restored.uiSettings?.fontScale) {
       setUiFontScale(restored.uiSettings.fontScale);
@@ -546,6 +593,143 @@ export function App() {
     }
   };
 
+  const unitClearSummaries = useMemo(() => {
+    const UNIT_MEDAL_ICONS = ['🥉', '🥈', '🥇', '🏆'] as const;
+    const learningUnits = ([1, 2, 3, 4] as const).map((n) => ({
+      unitId: `L${n}` as ClearUnitId,
+      label: `課題学習 第${n}回`,
+      badgeLabel: `${UNIT_MEDAL_ICONS[n - 1]}第${n}回`,
+      stageIds: LEARNING_MISSIONS.filter((m) => m.lessonNumber === n).map((m) => m.id),
+      clearedIds: clearedLearnings,
+    }));
+    const tutorialUnits = ([1, 2, 3, 4] as const).map((n) => ({
+      unitId: `T${n}` as ClearUnitId,
+      label: `開発訓練 第${n}部`,
+      badgeLabel: `${UNIT_MEDAL_ICONS[n - 1]}第${n}部`,
+      stageIds: TUTORIAL_STAGES.filter((s) => (s.section ?? 1) === n).map((s) => s.id),
+      clearedIds: clearedTutorials,
+    }));
+    return [...learningUnits, ...tutorialUnits].map((u) => {
+      const clearedCount = u.stageIds.filter((id) => u.clearedIds.includes(id)).length;
+      const totalCount = u.stageIds.length;
+      const isComplete = totalCount > 0 && clearedCount === totalCount;
+      const clearCode = isComplete
+        ? buildUnitClearCode({
+            unitId: u.unitId,
+            stageIds: u.stageIds,
+            clearedIds: u.clearedIds,
+            telemetry: clearTelemetry,
+            userId: userProfile.userId,
+            gameVersion: CURRENT_GAME_VERSION,
+          })
+        : null;
+      return {
+        unitId: u.unitId,
+        label: u.label,
+        badgeLabel: u.badgeLabel,
+        stageIds: u.stageIds,
+        clearedCount,
+        totalCount,
+        isComplete,
+        clearCode,
+      };
+    });
+  }, [clearedLearnings, clearedTutorials, clearTelemetry, userProfile.userId]);
+
+  const handleCopyClearCode = async (code: string, key: string) => {
+    if (clearToastTimerRef.current !== null) {
+      window.clearTimeout(clearToastTimerRef.current);
+      clearToastTimerRef.current = null;
+    }
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopiedClearUnit(key);
+      setClearCodeToast('クリップボードにクリアコードをコピーしました');
+    } catch {
+      setClearCodeToast('クリップボードへのコピーに失敗しました');
+    }
+    clearToastTimerRef.current = window.setTimeout(() => {
+      clearToastTimerRef.current = null;
+      setCopiedClearUnit((prev) => (prev === key ? null : prev));
+      setClearCodeToast(null);
+    }, 2400);
+  };
+
+  const renderUnitMedalBar = (units: typeof unitClearSummaries) => {
+    if (isDemoUnlocked) {
+      return (
+        <div className="unit-medal-bar" aria-label="アンロック状態表示">
+          <span className="demo-unlock-status-badge" role="status">
+            🔓 アンロック中（達成度は記録されません）
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="unit-medal-bar" aria-label="単元クリアバッジ">
+        {units.map((u) => (
+          <button
+            key={u.unitId}
+            type="button"
+            className={`unit-medal-badge ${u.isComplete ? 'unlocked' : 'locked'} ${
+              copiedClearUnit === u.unitId ? 'copied' : ''
+            }`}
+            disabled={!u.isComplete || !u.clearCode}
+            onClick={() => u.clearCode && handleCopyClearCode(u.clearCode, u.unitId)}
+            title={
+              u.isComplete
+                ? `${u.label} 修了（${u.clearedCount}/${u.totalCount}問）— タップしてクリアコードをコピー`
+                : `${u.label}（達成 ${u.clearedCount}/${u.totalCount}問）— 全問クリアでクリアコード発行`
+            }
+          >
+            {u.badgeLabel}
+          </button>
+        ))}
+        {clearCodeToast && (
+          <span className="unit-medal-toast" role="status">
+            {clearCodeToast}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const handleApplyUnlockCode = (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (verifyDailyUnlockCode(unlockCodeInput)) {
+      setIsDemoUnlocked(true);
+      setUnlockCodeInput('');
+      setUnlockNotice(null);
+      setShowSolutionConfirm(false);
+      setSolutionLockNotice(null);
+    } else {
+      setUnlockNotice({
+        type: 'error',
+        text: 'アンロックコードが一致しません。',
+      });
+    }
+  };
+
+  const handleDisableDemoUnlock = () => {
+    setIsDemoUnlocked(false);
+    setUnlockCodeInput('');
+    setUnlockNotice(null);
+    setShowSolutionConfirm(false);
+    setSolutionLockNotice(null);
+    setUsedSolutionInStage(false);
+    if (gameMode === 'learning') {
+      const blank = createBlankTutorialBlueprint(activeLearningMission.playerStarter);
+      setLearningPlayerBp(blank);
+      setPassedLearningVariants([]);
+      setLearningVariantIndex(0);
+      resetBattleWith(blank, currentEnemyList);
+    } else if (gameMode === 'tutorial') {
+      const blank = createBlankTutorialBlueprint(activeStage.playerStarter);
+      setTutorialPlayerBp(blank);
+      resetBattleWith(blank, currentEnemyList);
+    }
+  };
+
   const [showShareModal, setShowShareModal] = useState(false);
   const [mobileBattleDetailsOpen, setMobileBattleDetailsOpen] = useState(false);
   const [requestedSidebarTab, setRequestedSidebarTab] = useState<{
@@ -578,6 +762,9 @@ export function App() {
     setLearningIndex(idx);
     setLearningVariantIndex(0);
     setPassedLearningVariants([]);
+    setUsedSolutionInStage(false);
+    setShowSolutionConfirm(false);
+    setSolutionLockNotice(null);
     setLearningPlayerBp(starter);
     setShowHints(false);
     setIsPlaying(false);
@@ -598,6 +785,9 @@ export function App() {
     const stEnemies = stage.enemies && stage.enemies.length > 0 ? stage.enemies : [stage.enemy];
     setGameMode('tutorial');
     setTutorialIndex(idx);
+    setUsedSolutionInStage(false);
+    setShowSolutionConfirm(false);
+    setSolutionLockNotice(null);
     setTutorialPlayerBp(starter);
     setShowHints(false);
     setIsPlaying(false);
@@ -618,9 +808,17 @@ export function App() {
   };
 
   const handleLoadStarterSolution = () => {
+    setUsedSolutionInStage(true);
+    setShowSolutionConfirm(false);
+    setSolutionLockNotice(null);
     const solution = cloneBlueprint(
       gameMode === 'learning' ? activeLearningMission.playerStarter : activeStage.playerStarter
     );
+    const targetId = gameMode === 'learning' ? activeLearningMission.id : activeStage.id;
+    if (!isDemoUnlocked) {
+      const nextAttempts = markLearningModelAnswerOpened(targetId);
+      setLearningAttempts(nextAttempts);
+    }
     if (gameMode === 'learning') {
       setLearningPlayerBp(solution);
     } else {
@@ -979,23 +1177,48 @@ export function App() {
 
   // Stop playback & record mission / tutorial clear when finished
   useEffect(() => {
-    if (battleState.status === 'finished') {
-      setIsPlaying(false);
-      if (
-        gameMode === 'learning' &&
-        battleState.winnerId === 'player' &&
-        battleState.winType === 'mission'
-      ) {
+    if (battleState.status !== 'finished') {
+      recordedFinishRef.current = false;
+      return;
+    }
+    setIsPlaying(false);
+    if (recordedFinishRef.current) return;
+    recordedFinishRef.current = true;
+
+    if (gameMode === 'learning') {
+      if (battleState.winnerId === 'player' && battleState.winType === 'mission') {
         const variants = activeLearningMission.variants;
         if (!variants || variants.length <= 1) {
-          const updated = markLearningCleared(activeLearningMission.id);
-          setClearedLearnings(updated);
+          if (!isDemoUnlocked) {
+            const updated = markLearningCleared(activeLearningMission.id);
+            setClearedLearnings(updated);
+            const nextTel = recordStageClearTelemetry({
+              stageId: activeLearningMission.id,
+              clearTicks: Math.max(1, battleState.tick),
+              program: learningPlayerBp.program,
+              usedModelAnswer: usedSolutionInStage,
+              starterProgram: activeLearningMission.playerStarter.program,
+            });
+            setClearTelemetry(nextTel);
+          }
+          setSolutionLockNotice(null);
         } else {
           const nextPassed = Array.from(new Set([...passedLearningVariants, learningVariantIndex]));
           setPassedLearningVariants(nextPassed);
           if (nextPassed.length >= variants.length) {
-            const updated = markLearningCleared(activeLearningMission.id);
-            setClearedLearnings(updated);
+            if (!isDemoUnlocked) {
+              const updated = markLearningCleared(activeLearningMission.id);
+              setClearedLearnings(updated);
+              const nextTel = recordStageClearTelemetry({
+                stageId: activeLearningMission.id,
+                clearTicks: Math.max(1, battleState.tick),
+                program: learningPlayerBp.program,
+                usedModelAnswer: usedSolutionInStage,
+                starterProgram: activeLearningMission.playerStarter.program,
+              });
+              setClearTelemetry(nextTel);
+            }
+            setSolutionLockNotice(null);
             shouldAutoAdvanceVariantRef.current = false;
           } else if (shouldAutoAdvanceVariantRef.current) {
             const nextVarIdx = variants.findIndex((_, i) => !nextPassed.includes(i));
@@ -1013,29 +1236,77 @@ export function App() {
           }
         }
       } else if (
-        gameMode === 'tutorial' &&
-        battleState.winnerId === 'player' &&
-        battleState.winType === 'elimination'
+        !isDemoUnlocked &&
+        arePrevLessonMissionsCleared(
+          activeLearningMission.id,
+          activeLearningMission.lessonNumber,
+          clearedLearnings
+        )
       ) {
-        const updated = markTutorialCleared(activeStage.id);
-        setClearedTutorials(updated);
+        const nextAttempts = recordLearningFailedAttempt({
+          missionId: activeLearningMission.id,
+          program: learningPlayerBp.program,
+          hintsOpen: showHints,
+        });
+        setLearningAttempts(nextAttempts);
+      }
+    } else if (gameMode === 'tutorial') {
+      if (battleState.winnerId === 'player' && battleState.winType === 'elimination') {
+        if (!isDemoUnlocked) {
+          const updated = markTutorialCleared(activeStage.id);
+          setClearedTutorials(updated);
+          const nextTel = recordStageClearTelemetry({
+            stageId: activeStage.id,
+            clearTicks: Math.max(1, battleState.tick),
+            program: tutorialPlayerBp.program,
+            usedModelAnswer: usedSolutionInStage,
+            starterProgram: activeStage.playerStarter.program,
+          });
+          setClearTelemetry(nextTel);
+        }
+        setSolutionLockNotice(null);
+      } else if (
+        !isDemoUnlocked &&
+        arePrevSectionStagesCleared(activeStage.id, activeStage.section ?? 1, clearedTutorials)
+      ) {
+        const nextAttempts = recordLearningFailedAttempt({
+          missionId: activeStage.id,
+          program: tutorialPlayerBp.program,
+          hintsOpen: showHints,
+        });
+        setLearningAttempts(nextAttempts);
       }
     }
   }, [
     battleState.status,
     battleState.winnerId,
     battleState.winType,
+    battleState.tick,
     gameMode,
     activeLearningMission,
     learningVariantIndex,
     passedLearningVariants,
     learningPlayerBp,
+    tutorialPlayerBp,
+    usedSolutionInStage,
+    showHints,
+    clearedLearnings,
+    clearedTutorials,
+    isDemoUnlocked,
     buildMissionBattle,
     clearVariantTimer,
-    activeStage.id,
+    activeStage,
   ]);
 
-  useEffect(() => () => clearVariantTimer(), [clearVariantTimer]);
+  useEffect(
+    () => () => {
+      clearVariantTimer();
+      if (clearToastTimerRef.current !== null) {
+        window.clearTimeout(clearToastTimerRef.current);
+      }
+    },
+    [clearVariantTimer]
+  );
 
   const handleTogglePlay = () => {
     clearVariantTimer();
@@ -1181,6 +1452,7 @@ export function App() {
                 setUserNameDraft(userProfile.userName);
                 setSavedTanksCount(loadSavedBlueprints().length);
                 setEnvNotice(null);
+                setUnlockNotice(null);
                 setUserMenuOpen((v) => !v);
               }}
               aria-label="ユーザーメニュー"
@@ -1230,7 +1502,7 @@ export function App() {
                 </form>
 
                 <div className="user-menu-field">
-                  <span>ユーザーUUID（自動発行・読取専用）</span>
+                  <span>UUID</span>
                   <div className="user-menu-uuid-row">
                     <input
                       type="text"
@@ -1238,15 +1510,6 @@ export function App() {
                       value={userProfile.userId}
                       onFocus={(e) => e.currentTarget.select()}
                     />
-                    <button
-                      type="button"
-                      className="btn-secondary"
-                      onClick={handleCopyUuid}
-                      title="UUIDをコピー"
-                    >
-                      {uuidCopied ? <Check size={13} /> : <Copy size={13} />}
-                      {uuidCopied ? 'コピー済' : 'コピー'}
-                    </button>
                   </div>
                 </div>
 
@@ -1337,6 +1600,52 @@ export function App() {
                     <div className={`user-menu-notice ${envNotice.type}`} role="status">
                       {envNotice.text}
                     </div>
+                  )}
+                </div>
+
+                <div className="user-menu-divider" />
+
+                <div className="user-menu-section">
+                  <div className="user-menu-subhead">
+                    <strong>アンロックコード</strong>
+                  </div>
+                  {isDemoUnlocked ? (
+                    <div className="user-menu-unlock-active" role="status">
+                      <span>🔓 アンロック中（達成度は記録されません）</span>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={handleDisableDemoUnlock}
+                      >
+                        アンロック解除
+                      </button>
+                    </div>
+                  ) : (
+                    <form className="user-menu-form" onSubmit={handleApplyUnlockCode}>
+                      <div className="user-menu-input-row">
+                        <input
+                          type="password"
+                          inputMode="numeric"
+                          maxLength={8}
+                          value={unlockCodeInput}
+                          onChange={(e) => setUnlockCodeInput(e.target.value)}
+                          placeholder="アンロックコードを入力"
+                          aria-label="アンロックコード"
+                        />
+                        <button
+                          type="submit"
+                          className="btn-secondary"
+                          disabled={!unlockCodeInput.trim()}
+                        >
+                          解除
+                        </button>
+                      </div>
+                      {unlockNotice && (
+                        <div className={`user-menu-notice ${unlockNotice.type}`} role="status">
+                          {unlockNotice.text}
+                        </div>
+                      )}
+                    </form>
                   )}
                 </div>
               </div>
@@ -1439,6 +1748,59 @@ export function App() {
               ? activeLearningMission.goalDescription
               : activeStage.goalDescription;
             const hintList = isLearning ? activeLearningMission.hints : activeStage.hints;
+            const targetId = isLearning ? activeLearningMission.id : activeStage.id;
+            const targetClearedIds = isLearning ? clearedLearnings : clearedTutorials;
+            const attemptRec = learningAttempts[targetId];
+            const failCount = attemptRec?.failedFingerprints.length ?? 0;
+            const prevMissionsCleared = isLearning
+              ? arePrevLessonMissionsCleared(
+                  activeLearningMission.id,
+                  activeLearningMission.lessonNumber,
+                  clearedLearnings
+                )
+              : arePrevSectionStagesCleared(
+                  activeStage.id,
+                  activeStage.section ?? 1,
+                  clearedTutorials
+                );
+            const isSelfCleared =
+              targetClearedIds.includes(targetId) &&
+              clearTelemetry[targetId]?.usedModelAnswer !== true &&
+              !attemptRec?.openedModelAnswer;
+            const isAlreadyOpened = Boolean(attemptRec?.openedModelAnswer);
+            const isSolutionUnlocked =
+              isDemoUnlocked ||
+              isSelfCleared ||
+              isAlreadyOpened ||
+              (prevMissionsCleared &&
+                showHints &&
+                failCount >= REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER);
+
+            const handleClickSolutionButton = () => {
+              if (isDemoUnlocked || isSelfCleared || isAlreadyOpened) {
+                handleLoadStarterSolution();
+                return;
+              }
+              if (isSolutionUnlocked) {
+                setShowSolutionConfirm(true);
+                setSolutionLockNotice(null);
+                return;
+              }
+              if (!prevMissionsCleared) {
+                setSolutionLockNotice(
+                  `${isLearning ? 'この回の前の課題' : 'この部の前のステージ'}をすべてクリアすると、模範解答の試行カウントが有効になります。`
+                );
+              } else if (!showHints) {
+                setSolutionLockNotice(
+                  `まず「ヒント」を開き、${MIN_BLOCKS_FOR_FAILURE_ATTEMPT}ブロック以上の異なる配線で${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回挑戦（現在 ${failCount}/${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回）すると模範解答が解放されます。`
+                );
+              } else {
+                setSolutionLockNotice(
+                  `${MIN_BLOCKS_FOR_FAILURE_ATTEMPT}ブロック以上の異なる配線で${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回挑戦して失敗（現在 ${failCount}/${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回）すると模範解答が解放されます（同じ配線の連続実行は1回分のみ計上）。`
+                );
+              }
+            };
+
             return (
               <div className="tutorial-banner">
                 <div className="tut-head">
@@ -1459,11 +1821,29 @@ export function App() {
                     </button>
                     <button
                       type="button"
-                      className="mini-btn"
-                      onClick={handleLoadStarterSolution}
-                      title="このミッションの模範解答プログラムを入力します"
+                      className={`mini-btn ${!isSolutionUnlocked ? 'locked-solution-btn' : ''}`}
+                      onClick={handleClickSolutionButton}
+                      title={
+                        isDemoUnlocked
+                          ? 'アンロック中：確認なしで模範解答を読み込みます'
+                          : isSelfCleared
+                            ? 'クリア済みの模範解答と自分の解法を比較します（自力達成記録は維持されます）'
+                            : isAlreadyOpened
+                              ? '閲覧済みの模範解答を読み込みます'
+                              : isSolutionUnlocked
+                                ? '模範解答を読み込む（使用すると提出用クリアコードの自力達成から除外されます）'
+                                : `ロック中：${isLearning ? '前の課題' : '前のステージ'}をクリアし、ヒントを開いた状態で${MIN_BLOCKS_FOR_FAILURE_ATTEMPT}ブロック以上の異なる配線で${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回挑戦すると解放（現在 ${failCount}/${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER}回）`
+                      }
                     >
-                      模範解答
+                      {isDemoUnlocked
+                        ? '🔓 模範解答'
+                        : isSelfCleared
+                          ? '模範解答（復習）'
+                          : isAlreadyOpened
+                            ? '模範解答（閲覧済）'
+                            : isSolutionUnlocked
+                              ? '🔓 模範解答'
+                              : `🔒 模範解答 (${failCount}/${REQUIRED_DISTINCT_FAILURES_FOR_MODEL_ANSWER})`}
                     </button>
                   </div>
                 </div>
@@ -1484,6 +1864,44 @@ export function App() {
                           <li key={i}>{h}</li>
                         ))}
                       </ul>
+                    </div>
+                  )}
+                  {solutionLockNotice && (
+                    <div className="tut-lock-notice" role="status">
+                      <span>{solutionLockNotice}</span>
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        onClick={() => setSolutionLockNotice(null)}
+                      >
+                        閉じる
+                      </button>
+                    </div>
+                  )}
+                  {showSolutionConfirm && (
+                    <div className="tut-solution-confirm" role="alertdialog">
+                      <p>
+                        <strong>模範解答を読み込みますか？</strong>
+                        <br />
+                        未クリア状態で模範解答を開くと、その後に盤面を変更・リセットしても提出用クリアコード上は
+                        <strong>「模範解答使用（自力クリア外）」</strong>として記録されます。
+                      </p>
+                      <div className="tut-solution-confirm-actions">
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          onClick={() => setShowSolutionConfirm(false)}
+                        >
+                          キャンセル
+                        </button>
+                        <button
+                          type="button"
+                          className="mini-btn active"
+                          onClick={handleLoadStarterSolution}
+                        >
+                          模範解答を読み込む
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1590,10 +2008,7 @@ export function App() {
                 広さ: {ARENA_SIZE_SPECS[activeLearningMission.arenaSize].label}
               </span>
 
-              <span className="tutorial-progress-badge">
-                達成: {LEARNING_MISSIONS.filter((m) => clearedLearnings.includes(m.id)).length} /{' '}
-                {LEARNING_MISSIONS.length}
-              </span>
+              {renderUnitMedalBar(unitClearSummaries.slice(0, 4))}
 
               {activeLearningMission.variants && activeLearningMission.variants.length > 1 && (
                 <div className="variant-pill-group">
@@ -1675,10 +2090,7 @@ export function App() {
                 広さ: {ARENA_SIZE_SPECS[activeStage.arenaSize ?? 'large'].label}
               </span>
 
-              <span className="tutorial-progress-badge">
-                達成: {TUTORIAL_STAGES.filter((s) => clearedTutorials.includes(s.id)).length} /{' '}
-                {TUTORIAL_STAGES.length}
-              </span>
+              {renderUnitMedalBar(unitClearSummaries.slice(4, 8))}
 
               {currentEnemyList.length > 1 && (
                 <span className="team-battle-badge">
@@ -2213,6 +2625,28 @@ export function App() {
                     ? `全${variants!.length}パターンの検証をクリアしました！`
                     : `${variants![learningVariantIndex].label} 合格！ 続いて別パターンをテストします…`
                   : battleState.endReason;
+              let currentUnitSummary: (typeof unitClearSummaries)[number] | undefined;
+              let isLastStageOfUnit = false;
+              if (isLearning && isMissionWin && isAllVariantsCleared) {
+                currentUnitSummary = unitClearSummaries.find(
+                  (u) => u.unitId === (`L${activeLearningMission.lessonNumber}` as ClearUnitId)
+                );
+                const lessonMissions = LEARNING_MISSIONS.filter(
+                  (m) => m.lessonNumber === activeLearningMission.lessonNumber
+                );
+                isLastStageOfUnit =
+                  lessonMissions[lessonMissions.length - 1]?.id === activeLearningMission.id;
+              } else if (gameMode === 'tutorial' && isEliminationWin) {
+                const secNum = activeStage.section ?? 1;
+                currentUnitSummary = unitClearSummaries.find(
+                  (u) => u.unitId === (`T${secNum}` as ClearUnitId)
+                );
+                const sectionStages = TUTORIAL_STAGES.filter(
+                  (s) => (s.section ?? 1) === secNum
+                );
+                isLastStageOfUnit =
+                  sectionStages[sectionStages.length - 1]?.id === activeStage.id;
+              }
               return (
                 <div className="result-overlay">
                   <div className="result-card">
@@ -2267,6 +2701,52 @@ export function App() {
                           </>
                         )}
                       </div>
+                    )}
+
+                    {isDemoUnlocked &&
+                    ((isLearning && isMissionWin && isAllVariantsCleared) ||
+                      (gameMode === 'tutorial' && isEliminationWin)) ? (
+                      <div className="result-clear-code-pending">
+                        🔓 アンロック中のため達成度およびクリアコードは記録されません。
+                      </div>
+                    ) : currentUnitSummary?.isComplete && currentUnitSummary.clearCode ? (
+                      <div className="result-clear-code-box">
+                        <div className="result-clear-code-head">
+                          {currentUnitSummary.label} 修了！ 提出用クリアコード
+                        </div>
+                        <div className="result-clear-code-row">
+                          <input
+                            type="text"
+                            readOnly
+                            value={currentUnitSummary.clearCode}
+                            onFocus={(e) => e.currentTarget.select()}
+                          />
+                          <button
+                            type="button"
+                            className="btn-primary"
+                            onClick={() =>
+                              handleCopyClearCode(currentUnitSummary!.clearCode!, 'result')
+                            }
+                            title="クリアコードをコピー"
+                          >
+                            {copiedClearUnit === 'result' ? (
+                              <Check size={14} />
+                            ) : (
+                              <Copy size={14} />
+                            )}
+                            {copiedClearUnit === 'result' ? 'コピー済' : 'コピー'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      currentUnitSummary &&
+                      !currentUnitSummary.isComplete &&
+                      isLastStageOfUnit && (
+                        <div className="result-clear-code-pending">
+                          {currentUnitSummary.label} の未クリア課題があと{' '}
+                          {currentUnitSummary.totalCount - currentUnitSummary.clearedCount} 問あります（全問達成で提出用クリアコードが発行されます）。
+                        </div>
+                      )
                     )}
 
                     <div className="result-actions">

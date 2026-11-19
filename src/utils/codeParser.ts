@@ -24,7 +24,7 @@ import {
 export const ALLOWED_CHASSIS_IDS: ChassisId[] = ['light', 'standard', 'heavy', 'destroyer'];
 export const ALLOWED_RADAR_IDS: RadarId[] = ['wide', 'balanced', 'long'];
 export const ALLOWED_MAIN_GUN_IDS: MainGunId[] = ['rapid', 'standard', 'cannon'];
-export const CURRENT_GAME_VERSION = '1.5.16';
+export const CURRENT_GAME_VERSION = '1.5.19';
 export const CURRENT_BLUEPRINT_VERSION = 1;
 export const CURRENT_ENV_DUMP_VERSION = 1;
 export const MAX_GAME_VERSION_LENGTH = 24;

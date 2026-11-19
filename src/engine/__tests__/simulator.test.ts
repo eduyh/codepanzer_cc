@@ -27,24 +27,37 @@ import {
 } from '../../utils/codeParser';
 import {
   applyUserEnvironmentDump,
+  buildUnitClearCode,
   buildUserEnvironmentDump,
+  CLEAR_CODE_PREFIX,
+  computeProgramFingerprint,
+  decodeClearCode,
   decodeShareCode,
   decodeUserEnvironmentDump,
+  encodeClearCode,
   encodeShareCode,
   encodeUserEnvironmentDump,
   ENV_DUMP_PREFIX,
   generateUuidV4,
+  getExpectedDailyUnlockCode,
+  isProgramIdenticalToStarter,
+  loadClearTelemetry,
+  loadLearningAttempts,
   loadLearningClears,
   loadSavedBlueprints,
   loadTutorialClears,
   loadUiFontScaleFromStorage,
   loadUserProfile,
   markLearningCleared,
+  markLearningModelAnswerOpened,
   markTutorialCleared,
+  recordLearningFailedAttempt,
+  recordStageClearTelemetry,
   saveBlueprintToStorage,
   saveUserName,
   STORAGE_KEY_UI_FONT_SCALE,
   validateAndNormalizeBlueprint,
+  verifyDailyUnlockCode,
 } from '../../utils/share';
 import { runTankChipProgram } from '../chipRunner';
 import {
@@ -3021,13 +3034,13 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
   });
 
   it('tracks semantic gameVersion across Python, gatekeeper, share codes, and environment dumps', () => {
-    expect(CURRENT_GAME_VERSION).toBe('1.5.16');
-    expect(compareSemver('1.6.0', '1.5.16')).toBe(1);
-    expect(compareSemver('1.5.16', '1.5.16')).toBe(0);
-    expect(compareSemver('1.5.9', '1.5.16')).toBe(-1);
-    expect(isNewerGameVersion('1.6.0', '1.5.16')).toBe(true);
-    expect(isNewerGameVersion('1.5.16', '1.5.16')).toBe(false);
-    expect(isNewerGameVersion('1.5.9', '1.5.16')).toBe(false);
+    expect(CURRENT_GAME_VERSION).toBe('1.5.19');
+    expect(compareSemver('1.6.0', '1.5.19')).toBe(1);
+    expect(compareSemver('1.5.19', '1.5.19')).toBe(0);
+    expect(compareSemver('1.5.9', '1.5.19')).toBe(-1);
+    expect(isNewerGameVersion('1.6.0', '1.5.19')).toBe(true);
+    expect(isNewerGameVersion('1.5.19', '1.5.19')).toBe(false);
+    expect(isNewerGameVersion('1.5.9', '1.5.19')).toBe(false);
 
     // Future game_version in Python source produces a clear compatibility warning
     const futurePy = [
@@ -3081,6 +3094,362 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
     const encoded = encodeShareCode({ ...DEFAULT_PLAYER_BLUEPRINT, gameVersion: CURRENT_GAME_VERSION });
     const decoded = decodeShareCode(encoded);
     expect(decoded.gameVersion).toBe(CURRENT_GAME_VERSION);
+  });
+
+  it('encodes, decodes, verifies tamper resistance, and builds Excel-compatible 59-char Clear Codes (CP1-)', () => {
+    const sampleUuid = '550e8400-e29b-41d4-a716-446655440000';
+    const clearedAt = new Date(2026, 10, 19, 14, 5, 0); // 11/19 14:05 local time
+    const code = encodeClearCode({
+      userId: sampleUuid,
+      unitId: 'L1',
+      totalStages: 6,
+      selfClearedStages: 5,
+      clearedAt,
+      gameVersion: CURRENT_GAME_VERSION,
+      totalClearSeconds: 142,
+      programFingerprint: 739,
+    });
+
+    expect(code).toHaveLength(59);
+    expect(code.startsWith(CLEAR_CODE_PREFIX)).toBe(true);
+    expect(code).toMatch(/^CP1-[0-9A-F]{32}-[0-9A-Z]{8}-[0-9A-Z]{8}-[0-9A-Z]{4}$/);
+
+    const dec = decodeClearCode(code);
+    expect(dec.valid).toBe(true);
+    expect(dec.formattedUuid).toBe(sampleUuid);
+    expect(dec.unitId).toBe('L1');
+    expect(dec.unitCode).toBe(11);
+    expect(dec.unitLabel).toBe('課題学習 第1回');
+    expect(dec.totalStages).toBe(6);
+    expect(dec.selfClearedStages).toBe(5);
+    expect(dec.month).toBe(11);
+    expect(dec.day).toBe(19);
+    expect(dec.hour).toBe(14);
+    expect(dec.minute).toBe(5);
+    expect(dec.gameVersion).toBe(CURRENT_GAME_VERSION);
+    expect(dec.totalClearSeconds).toBe(142);
+    expect(dec.programFingerprint).toBe(739);
+
+    // Simulate Excel formulas directly (1-indexed MID, HEX2DEC, DECIMAL(...,36), BITXOR, MOD)
+    const xlMid = (s: string, start: number, len: number) => s.slice(start - 1, start - 1 + len);
+    const b2 = xlMid(code, 5, 32);
+    const u1 = Number.parseInt(xlMid(b2, 1, 8), 16);
+    const u3 = Number.parseInt(xlMid(b2, 9, 8), 16);
+    const u4 = Number.parseInt(xlMid(b2, 17, 8), 16);
+    const u2 = Number.parseInt(xlMid(b2, 25, 8), 16);
+    const xorNum = (a: number, b: number) => Number(BigInt(a) ^ BigInt(b));
+    const c2Val = xorNum(Number.parseInt(xlMid(code, 38, 8), 36), xorNum(u1 * 193 + u2, 608472915341));
+    const d2Val = xorNum(Number.parseInt(xlMid(code, 47, 8), 36), xorNum(u3 * 197 + u4, 839164720519));
+    expect(String(c2Val).padStart(12, '0')).toBe('116511191405');
+    expect(String(d2Val).padStart(12, '0')).toBe('105190142739');
+    const sigSum = u1 * 3 + u2 * 5 + u3 * 7 + u4 * 11 + c2Val * 17 + d2Val * 29 + 948271635;
+    expect(Number.isSafeInteger(sigSum)).toBe(true);
+    const expectedSig = (sigSum % 1679609).toString(36).toUpperCase().padStart(4, '0');
+    expect(expectedSig).toBe(xlMid(code, 56, 4));
+
+    // Tamper any part (UUID, Block A, Block B, or Signature) -> must fail verification
+    const flipCharAt = (s: string, idx: number) => {
+      const alt = s[idx] === 'A' ? 'B' : 'A';
+      return s.slice(0, idx) + alt + s.slice(idx + 1);
+    };
+    expect(decodeClearCode(flipCharAt(code, 6)).valid).toBe(false); // UUID tampered
+    expect(decodeClearCode(flipCharAt(code, 40)).valid).toBe(false); // Block A tampered
+    expect(decodeClearCode(flipCharAt(code, 50)).valid).toBe(false); // Block B tampered
+    expect(decodeClearCode(flipCharAt(code, 57)).valid).toBe(false); // Signature tampered
+    expect(decodeClearCode('INVALID').valid).toBe(false);
+
+    // Partial vs full unit completion via buildUnitClearCode & clearTelemetry persistence
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => {
+        store.clear();
+      },
+    });
+
+    try {
+      const lesson1Ids = LEARNING_MISSIONS.filter((m) => m.lessonNumber === 1).map((m) => m.id);
+      const partialCode = buildUnitClearCode({
+        unitId: 'L1',
+        stageIds: lesson1Ids,
+        clearedIds: lesson1Ids.slice(0, lesson1Ids.length - 1),
+        telemetry: {},
+        userId: sampleUuid,
+      });
+      expect(partialCode).toBeNull();
+
+      lesson1Ids.forEach((id, idx) => {
+        markLearningCleared(id);
+        recordStageClearTelemetry({
+          stageId: id,
+          clearTicks: 100 + idx * 20,
+          program: LEARNING_MISSIONS[idx].playerStarter.program,
+          usedModelAnswer: idx === 0, // 1 mission used model answer, 5 self-cleared
+          clearedAt: '2026-11-19T05:30:00.000Z',
+        });
+      });
+
+      // Re-clearing mission 0 on own should upgrade usedModelAnswer -> false; later using model answer stays false
+      recordStageClearTelemetry({
+        stageId: lesson1Ids[0],
+        clearTicks: 100,
+        program: LEARNING_MISSIONS[0].playerStarter.program,
+        usedModelAnswer: false,
+        clearedAt: '2026-11-19T05:31:00.000Z',
+      });
+      recordStageClearTelemetry({
+        stageId: lesson1Ids[0],
+        clearTicks: 100,
+        program: LEARNING_MISSIONS[0].playerStarter.program,
+        usedModelAnswer: true,
+        clearedAt: '2026-11-19T05:32:00.000Z',
+      });
+
+      const tel = loadClearTelemetry();
+      expect(tel[lesson1Ids[0]].usedModelAnswer).toBe(false);
+      expect(computeProgramFingerprint(DEFAULT_PLAYER_BLUEPRINT.program)).toBeGreaterThanOrEqual(0);
+      expect(computeProgramFingerprint(DEFAULT_PLAYER_BLUEPRINT.program)).toBeLessThan(1000);
+
+      const unitCode = buildUnitClearCode({
+        unitId: 'L1',
+        stageIds: lesson1Ids,
+        clearedIds: loadLearningClears(),
+        telemetry: tel,
+        userId: sampleUuid,
+        gameVersion: CURRENT_GAME_VERSION,
+      });
+      expect(unitCode).not.toBeNull();
+      const decUnit = decodeClearCode(unitCode!);
+      expect(decUnit.valid).toBe(true);
+      expect(decUnit.unitId).toBe('L1');
+      expect(decUnit.totalStages).toBe(6);
+      expect(decUnit.selfClearedStages).toBe(6);
+      expect(decUnit.totalClearSeconds).toBe(Math.round((100 + 120 + 140 + 160 + 180 + 200) / 20));
+
+      // Clear telemetry survives environment dump export -> wipe -> restore
+      const envCode = encodeUserEnvironmentDump(buildUserEnvironmentDump());
+      store.clear();
+      expect(loadClearTelemetry()).toEqual({});
+      applyUserEnvironmentDump(envCode);
+      expect(Object.keys(loadClearTelemetry())).toHaveLength(6);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('enforces learning model-answer lock rules, irreversible open tracking, and starter clone detection', () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+      clear: () => {
+        store.clear();
+      },
+    });
+
+    try {
+      const m11 = LEARNING_MISSIONS.find((m) => m.id === 'learn_1_1')!;
+      const m12 = LEARNING_MISSIONS.find((m) => m.id === 'learn_1_2')!;
+      const m13 = LEARNING_MISSIONS.find((m) => m.id === 'learn_1_3')!;
+
+      // 1. Two-block board or hints closed -> ignored
+      const twoBlockProg = buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 50 }, next: null },
+      ]);
+      const threeBlockProgA = buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 50 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_halt', next: null },
+      ]);
+
+      expect(
+        recordLearningFailedAttempt({ missionId: m13.id, program: threeBlockProgA, hintsOpen: false })[
+          m13.id
+        ]
+      ).toBeUndefined();
+      expect(
+        recordLearningFailedAttempt({ missionId: m13.id, program: twoBlockProg, hintsOpen: true })[
+          m13.id
+        ]
+      ).toBeUndefined();
+
+      // Same 3-block program run multiple times deduplicates to 1 failure
+      recordLearningFailedAttempt({ missionId: m13.id, program: threeBlockProgA, hintsOpen: true });
+      const afterDup = recordLearningFailedAttempt({
+        missionId: m13.id,
+        program: threeBlockProgA,
+        hintsOpen: true,
+      });
+      expect(afterDup[m13.id]?.failedFingerprints).toHaveLength(1);
+
+      // 4 more distinct 3-block failing attempts unlock (total 5)
+      for (const speed of [60, 70, 80, 90]) {
+        recordLearningFailedAttempt({
+          missionId: m13.id,
+          hintsOpen: true,
+          program: buildProgram(4, 'relative', [
+            { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+            { x: 1, y: 0, type: 'act_move', params: { speedPercent: speed }, next: { x: 2, y: 0 } },
+            { x: 2, y: 0, type: 'act_halt', next: null },
+          ]),
+        });
+      }
+      expect(loadLearningAttempts()[m13.id]?.failedFingerprints).toHaveLength(5);
+
+      // 2. Opening model answer irreversibly marks openedModelAnswer even if later solved with custom board
+      markLearningModelAnswerOpened(m13.id);
+      expect(loadLearningAttempts()[m13.id]?.openedModelAnswer).toBe(true);
+      const afterCustomClear = recordStageClearTelemetry({
+        stageId: m13.id,
+        clearTicks: 180,
+        program: threeBlockProgA,
+        usedModelAnswer: false, // Even if caller didn't pass flag (e.g. after page reload)
+        starterProgram: m13.playerStarter.program,
+      });
+      expect(afterCustomClear[m13.id].usedModelAnswer).toBe(true);
+
+      // 3. Self-cleared mission keeps review credit even if model answer opened afterward
+      markLearningCleared(m12.id);
+      recordStageClearTelemetry({
+        stageId: m12.id,
+        clearTicks: 140,
+        program: threeBlockProgA,
+        usedModelAnswer: false,
+        starterProgram: m12.playerStarter.program,
+      });
+      markLearningModelAnswerOpened(m12.id);
+      expect(loadLearningAttempts()[m12.id]?.openedModelAnswer).toBeFalsy();
+      const afterReview = recordStageClearTelemetry({
+        stageId: m12.id,
+        clearTicks: 120,
+        program: m12.playerStarter.program,
+        usedModelAnswer: true,
+        starterProgram: m12.playerStarter.program,
+      });
+      expect(afterReview[m12.id].usedModelAnswer).toBe(false);
+
+      // 4. Exact copy of 4+ block starter without opening button is flagged, while 1-1 (<4 blocks) is exempted
+      const m14 = LEARNING_MISSIONS.find((m) => m.id === 'learn_1_4')!;
+      expect(isProgramIdenticalToStarter(m14.playerStarter.program, m14.playerStarter.program, m14.id)).toBe(
+        true
+      );
+      expect(isProgramIdenticalToStarter(m11.playerStarter.program, m11.playerStarter.program, m11.id)).toBe(
+        false
+      );
+      const copiedTel = recordStageClearTelemetry({
+        stageId: m14.id,
+        clearTicks: 200,
+        program: m14.playerStarter.program,
+        usedModelAnswer: false,
+        starterProgram: m14.playerStarter.program,
+      });
+      expect(copiedTel[m14.id].usedModelAnswer).toBe(true);
+
+      // 5. learningAttempts survives environment dump restore
+      const envCode = encodeUserEnvironmentDump(buildUserEnvironmentDump());
+      store.clear();
+      expect(loadLearningAttempts()).toEqual({});
+      applyUserEnvironmentDump(envCode);
+      expect(loadLearningAttempts()[m13.id]?.openedModelAnswer).toBe(true);
+      expect(loadLearningAttempts()[m13.id]?.failedFingerprints).toHaveLength(5);
+
+      // 6. Daily 4-digit MMDD unlock code verification
+      const sampleDate = new Date(2026, 10, 19); // Nov 19 -> "1119"
+      expect(getExpectedDailyUnlockCode(sampleDate)).toBe('1119');
+      expect(verifyDailyUnlockCode('1119', sampleDate)).toBe(true);
+      expect(verifyDailyUnlockCode(' 1119 ', sampleDate)).toBe(true);
+      expect(verifyDailyUnlockCode('1120', sampleDate)).toBe(false);
+      expect(verifyDailyUnlockCode('abcd', sampleDate)).toBe(false);
+
+      // 7. Development Training (開発訓練) self-cleared review credit preservation & irreversible open tracking
+      const tut0 = TUTORIAL_STAGES[0];
+      const tut1 = TUTORIAL_STAGES[1];
+      type TestGridCell = (typeof tut0.playerStarter.program.cells)[number][number];
+      const tutCustomProgram = {
+        gridSize: tut0.playerStarter.program.gridSize,
+        coordinateMode: tut0.playerStarter.program.coordinateMode,
+        cells: Array.from({ length: tut0.playerStarter.program.gridSize }, () =>
+          Array.from(
+            { length: tut0.playerStarter.program.gridSize },
+            () => null as TestGridCell
+          )
+        ),
+      };
+      tutCustomProgram.cells[0][0] = {
+        id: 'tut_custom_start',
+        type: 'start',
+        params: {},
+        next: { x: 1, y: 0 },
+      };
+      tutCustomProgram.cells[0][1] = {
+        id: 'tut_custom_fire1',
+        type: 'act_fire',
+        params: {},
+        next: { x: 2, y: 0 },
+      };
+      tutCustomProgram.cells[0][2] = {
+        id: 'tut_custom_fire2',
+        type: 'act_fire',
+        params: {},
+        next: { x: 3, y: 0 },
+      };
+      tutCustomProgram.cells[0][3] = {
+        id: 'tut_custom_fire3',
+        type: 'act_fire',
+        params: {},
+        next: { x: 3, y: 1 },
+      };
+      tutCustomProgram.cells[1][3] = {
+        id: 'tut_custom_halt',
+        type: 'act_halt',
+        params: {},
+      };
+
+      markTutorialCleared(tut0.id);
+      recordStageClearTelemetry({
+        stageId: tut0.id,
+        clearTicks: 30,
+        program: tutCustomProgram,
+        usedModelAnswer: false,
+        starterProgram: tut0.playerStarter.program,
+      });
+      const afterTutReviewAttempts = markLearningModelAnswerOpened(tut0.id);
+      expect(afterTutReviewAttempts[tut0.id]?.openedModelAnswer ?? false).toBe(false);
+      const afterTutReviewTel = recordStageClearTelemetry({
+        stageId: tut0.id,
+        clearTicks: 30,
+        program: tut0.playerStarter.program,
+        usedModelAnswer: true,
+        starterProgram: tut0.playerStarter.program,
+      });
+      expect(afterTutReviewTel[tut0.id]?.usedModelAnswer).toBe(false);
+
+      // Opening model answer before clearing a tutorial stage persists openedModelAnswer irreversibly
+      const afterTut1Opened = markLearningModelAnswerOpened(tut1.id);
+      expect(afterTut1Opened[tut1.id]?.openedModelAnswer).toBe(true);
+      const afterTut1Tel = recordStageClearTelemetry({
+        stageId: tut1.id,
+        clearTicks: 40,
+        program: tutCustomProgram,
+        usedModelAnswer: false,
+        starterProgram: tut1.playerStarter.program,
+      });
+      expect(afterTut1Tel[tut1.id]?.usedModelAnswer).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
