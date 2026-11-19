@@ -280,11 +280,16 @@ export interface TankStats {
   damageDealt: number;
   damageTaken: number;
   wallHits: number;
+  kills?: number;
+  eliminatedAtTick?: number | null;
+  ruleScore?: number;
 }
 
 export interface TankRuntime {
   id: string;
   team: 'player' | 'enemy';
+  teamId?: string;
+  playerName?: string;
   blueprint: TankBlueprint;
   x: number;
   y: number;
@@ -313,8 +318,11 @@ export interface TankRuntime {
   lastAimAngle?: number | null;
   lastAimTick?: number;
   wallHitCooldown: number;
+  outerWallBounceCooldown?: number;
   lastTankCollisionTick?: number;
+  lastCollidedTankId?: string | null;
   tankCollisionStreak?: number;
+  lastCollisionImpactSpeed?: number;
   lastHitZone?: 'front' | 'side' | 'rear';
   killedById?: string | null;
   counters: Record<string, number>;
@@ -424,8 +432,9 @@ export interface ArenaObstacle {
   height: number;
 }
 
-export type FloorTileKind = 'goal' | 'checkpoint' | 'color' | 'hazard';
+export type FloorTileKind = 'goal' | 'checkpoint' | 'color' | 'hazard' | 'slow' | 'no_weapon';
 export type FloorTileColor = 'red' | 'blue' | 'green' | 'yellow';
+export type OuterWallMode = 'normal' | 'bounce' | 'damage' | 'damage_bounce';
 
 export interface ArenaTile {
   id: string;
@@ -452,6 +461,7 @@ export interface ArenaTarget {
   popped?: boolean;
   color?: string;
   label?: string;
+  points?: number;
   patrol?: {
     ax: number;
     ay: number;
@@ -483,6 +493,51 @@ export interface ArenaConfig {
   targets?: ArenaTarget[];
   learningRule?: LearningGoalRule;
   teamBattle?: boolean;
+  multiTeamMode?: boolean;
+  disableWeapons?: boolean;
+  disableSubWeapons?: boolean;
+  outerWallMode?: OuterWallMode;
+  gravitySpeedMult?: number;
+  radarRangeMult?: number;
+  ruleId?: string;
+  radarTargetMode?: 'default' | 'targets_only' | 'ball_only';
+  disableTankDamage?: boolean;
+  tankBounceMult?: number;
+  allowBalloonRamPop?: boolean;
+  continueUntilTimeout?: boolean;
+  scoreOnlyVictory?: boolean;
+}
+
+export interface TerritoryGridState {
+  cols: number;
+  rows: number;
+  owners: Array<string | null>;
+  blocked: boolean[];
+  teamColors: Record<string, string>;
+  teamLabels: Record<string, string>;
+  version: number;
+}
+
+export interface FootballState {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  lastTouchTankId: string | null;
+  lastTouchTeamId: string | null;
+  westTeamId: string;
+  eastTeamId: string;
+  westTeamLabel: string;
+  eastTeamLabel: string;
+  westTeamColor: string;
+  eastTeamColor: string;
+  kickoffFreezeTicks: number;
+  kickoffSeed: number;
+  kickoffCount: number;
+  pendingKickoffReset?: boolean;
+  kickoffSpawns: Record<string, { x: number; y: number; bodyAngle: number }>;
+  lastGoalBanner?: { teamId: string; teamLabel: string; color: string; tick: number } | null;
 }
 
 export interface SmokeCloud {
@@ -499,6 +554,7 @@ export interface DecoyEntity {
   id: string;
   ownerId: string;
   team: 'player' | 'enemy';
+  teamId?: string;
   x: number;
   y: number;
   radius: number;
@@ -517,6 +573,11 @@ export interface BattleState {
   smokes?: SmokeCloud[];
   decoys?: DecoyEntity[];
   explosions: BattleExplosion[];
+  territoryGrid?: TerritoryGridState;
+  football?: FootballState;
+  ruleTeamScores?: Record<string, number>;
+  ruleTeamLabels?: Record<string, string>;
+  ruleTeamColors?: Record<string, string>;
   status: 'running' | 'finished';
   winnerId: string | null;
   winType?: 'elimination' | 'decision' | 'draw' | 'defeat' | 'mission' | null;

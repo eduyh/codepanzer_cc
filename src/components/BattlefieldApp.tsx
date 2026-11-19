@@ -1,0 +1,2364 @@
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Award,
+  Camera,
+  Check,
+  ChevronDown,
+  ChevronUp,
+  Copy,
+  Cpu,
+  Eye,
+  EyeOff,
+  FastForward,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Shuffle,
+  Swords,
+  Trash2,
+  Trophy,
+  Upload,
+  Users,
+  Wrench,
+  Zap,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import { DEFAULT_PLAYER_BLUEPRINT, PRESET_ENEMIES } from '../data/presets';
+import {
+  applyTournamentMatchResult,
+  ARENA_ZONE_MODE_SPECS,
+  ArenaZoneMode,
+  BATTLEFIELD_RULE_REGISTRY,
+  BattlefieldConfig,
+  BattlefieldFormat,
+  BattlefieldParticipant,
+  BattlefieldRosterEntry,
+  BattlefieldRuleId,
+  buildMatchReport,
+  buildParticipantsFromUnitPair,
+  CompetitionUnit,
+  computeLeagueStandings,
+  CPU_REGULATION_SPECS,
+  CpuRegulationId,
+  createBattlefieldMatchState,
+  createLeagueSchedule,
+  createRosterEntryFromBlueprint,
+  createTournamentBracket,
+  DEFAULT_BATTLEFIELD_CONFIG,
+  formatConfigConditionSuffix,
+  formatLeagueStandingsText,
+  formatMatchReportText,
+  formatMatchReportTsv,
+  formatTankListLabel,
+  formatTournamentSummaryText,
+  GRAVITY_PRESET_SPECS,
+  GravityPresetId,
+  LeagueMatch,
+  OUTER_WALL_MODE_SPECS,
+  parseImportedTankContent,
+  SANDSTORM_PRESET_SPECS,
+  SandstormPresetId,
+  simulateMatchHeadless,
+  sortRosterEntries,
+  stepBattlefieldTick,
+  TEAM_COLORS,
+  TEAM_LABELS,
+  TournamentBracket,
+  validateEntryForRegulation,
+  validateTeamForRegulation,
+} from '../engine/battlefield';
+import {
+  ARENA_SIZE_SPECS,
+  cloneBattleStateForStep,
+} from '../engine/simulator';
+import {
+  ArenaSizeId,
+  BattleState,
+  CameraMode,
+  ObstacleMode,
+  OuterWallMode,
+  TankBlueprint,
+} from '../types/game';
+import {
+  CURRENT_GAME_VERSION,
+  getAutoTankColor,
+  sanitizeAuthorName,
+} from '../utils/codeParser';
+import { loadSavedBlueprints } from '../utils/share';
+import { BattleCanvas3D } from './BattleCanvas3D';
+
+const BASE_TPS = 20;
+
+function createInitialRoster(): BattlefieldRosterEntry[] {
+  const picks = [
+    DEFAULT_PLAYER_BLUEPRINT,
+    ...PRESET_ENEMIES.filter((e) => e.program.gridSize <= 6).slice(0, 3),
+  ];
+  return sortRosterEntries(
+    picks.map((bp, idx) => {
+      const entry = createRosterEntryFromBlueprint(bp, '規定戦車', true);
+      entry.teamSlot = idx % 2;
+      return entry;
+    })
+  );
+}
+
+function buildUnitsForCompetition(
+  entries: BattlefieldRosterEntry[],
+  config: BattlefieldConfig
+): { units: CompetitionUnit[]; skippedNames: string[] } {
+  const skippedNames: string[] = [];
+  const enabled = entries.filter((e) => e.enabled);
+
+  if (config.teamUnitSize === 1 && config.cpuRegulation !== 'pair_6x6_4x4') {
+    const units: CompetitionUnit[] = [];
+    enabled.forEach((entry) => {
+      const chk = validateEntryForRegulation(entry, config.cpuRegulation);
+      if (!chk.valid) {
+        skippedNames.push(`${entry.machineName} (${chk.reason ?? '規格外'})`);
+        return;
+      }
+      units.push({
+        unitId: `unit_${entry.entryId}`,
+        unitName: `${entry.machineName} (${entry.playerName})`,
+        entries: [entry],
+        color: getAutoTankColor(units.length),
+      });
+    });
+    return { units, skippedNames };
+  }
+
+  // Pair unit assembly (2 tanks per unit)
+  const units: CompetitionUnit[] = [];
+  if (config.cpuRegulation === 'pair_6x6_4x4') {
+    const fourPool = enabled.filter((e) => e.blueprint.program.gridSize === 4);
+    const sixPool = enabled.filter((e) => e.blueprint.program.gridSize === 6);
+    const invalid = enabled.filter((e) => e.blueprint.program.gridSize > 6);
+    invalid.forEach((e) =>
+      skippedNames.push(`${e.machineName} (${e.blueprint.program.gridSize}×${e.blueprint.program.gridSize}はペア規格外)`)
+    );
+
+    const usedIds = new Set<string>();
+    // First pair 6x6 + 4x4 cleanly; leftover 4x4s can pair with each other (since 4<=6 and 4<=4)
+    for (const s of sixPool) {
+      const partner = fourPool.find((f) => !usedIds.has(f.entryId));
+      if (!partner) {
+        skippedNames.push(`${s.machineName} (4×4のパートナー不足)`);
+        continue;
+      }
+      usedIds.add(s.entryId);
+      usedIds.add(partner.entryId);
+      const idx = units.length;
+      units.push({
+        unitId: `pair_${idx + 1}`,
+        unitName: `${s.playerName} & ${partner.playerName}`,
+        entries: [s, partner],
+        color: getAutoTankColor(idx),
+      });
+    }
+    const leftoverFour = fourPool.filter((f) => !usedIds.has(f.entryId));
+    for (let i = 0; i + 1 < leftoverFour.length; i += 2) {
+      const a = leftoverFour[i];
+      const b = leftoverFour[i + 1];
+      const idx = units.length;
+      units.push({
+        unitId: `pair_${idx + 1}`,
+        unitName: `${a.playerName} & ${b.playerName}`,
+        entries: [a, b],
+        color: getAutoTankColor(idx),
+      });
+    }
+    if (leftoverFour.length % 2 === 1) {
+      const last = leftoverFour[leftoverFour.length - 1];
+      skippedNames.push(`${last.machineName} (ペア相手不足)`);
+    }
+    return { units, skippedNames };
+  }
+
+  const eligible = enabled.filter((e) => {
+    const chk = validateEntryForRegulation(e, config.cpuRegulation);
+    if (!chk.valid) {
+      skippedNames.push(`${e.machineName} (${chk.reason ?? '規格外'})`);
+      return false;
+    }
+    return true;
+  });
+  for (let i = 0; i + 1 < eligible.length; i += 2) {
+    const a = eligible[i];
+    const b = eligible[i + 1];
+    const idx = units.length;
+    units.push({
+      unitId: `pair_${idx + 1}`,
+      unitName: `${a.playerName} & ${b.playerName}`,
+      entries: [a, b],
+      color: getAutoTankColor(idx),
+    });
+  }
+  if (eligible.length % 2 === 1) {
+    skippedNames.push(`${eligible[eligible.length - 1].machineName} (ペア相手不足)`);
+  }
+  return { units, skippedNames };
+}
+
+function buildParticipantsForSingleMatch(
+  roster: BattlefieldRosterEntry[],
+  config: BattlefieldConfig
+): {
+  participants: BattlefieldParticipant[];
+  notice: string | null;
+} {
+  const enabled = roster.filter((e) => e.enabled);
+  const isTwoTeamFootball = config.ruleId === 'tank_soccer';
+
+  if (config.format === 'battle_royale' && !isTwoTeamFootball) {
+    const eligible: BattlefieldParticipant[] = [];
+    let skipped = 0;
+    for (const entry of enabled) {
+      const chk = validateEntryForRegulation(entry, config.cpuRegulation);
+      if (!chk.valid) {
+        skipped += 1;
+        continue;
+      }
+      if (eligible.length >= 8) break;
+      const idx = eligible.length;
+      eligible.push({
+        entry,
+        teamId: `ffa_${idx}`,
+        teamLabel: entry.playerName,
+        teamColor: getAutoTankColor(idx),
+        slotIndex: idx,
+      });
+    }
+    return {
+      participants: eligible,
+      notice:
+        skipped > 0
+          ? `レギュレーション不適合の ${skipped}機を除外しました。`
+          : eligible.length < 2
+            ? 'バトルロワイヤルには適合機体が 2機以上必要です。'
+            : null,
+    };
+  }
+
+  // Team match (Team A..D grouped)
+  const grouped: Map<number, BattlefieldRosterEntry[]> = new Map();
+  for (const e of enabled) {
+    const slot = Math.max(0, Math.min(3, e.teamSlot ?? 0));
+    const arr = grouped.get(slot) ?? [];
+    arr.push(e);
+    grouped.set(slot, arr);
+  }
+
+  const validTeams: Array<{ slot: number; members: BattlefieldRosterEntry[] }> = [];
+  const warnings: string[] = [];
+  for (const [slot, members] of Array.from(grouped.entries()).sort((a, b) => a[0] - b[0])) {
+    const ordered =
+      config.cpuRegulation === 'pair_6x6_4x4'
+        ? [...members].sort((a, b) => b.blueprint.program.gridSize - a.blueprint.program.gridSize)
+        : members;
+    const chk = validateTeamForRegulation(ordered, config.cpuRegulation);
+    if (!chk.valid) {
+      warnings.push(`${TEAM_LABELS[slot]}: ${chk.reason}`);
+      continue;
+    }
+    validTeams.push({ slot, members: ordered });
+  }
+
+  // Combat Football is always 2-sided (West vs East); auto-balance if <2 or >2 teams
+  if (isTwoTeamFootball && validTeams.length !== 2) {
+    const eligibleEntries: BattlefieldRosterEntry[] = [];
+    let skipped = 0;
+    for (const entry of enabled) {
+      const chk = validateEntryForRegulation(entry, config.cpuRegulation);
+      if (!chk.valid) {
+        skipped += 1;
+        continue;
+      }
+      if (eligibleEntries.length >= 8) break;
+      eligibleEntries.push(entry);
+    }
+    const splitParticipants: BattlefieldParticipant[] = eligibleEntries.map((entry, idx) => {
+      const side = idx % 2;
+      return {
+        entry,
+        teamId: `team_${side}`,
+        teamLabel: TEAM_LABELS[side],
+        teamColor: TEAM_COLORS[side],
+        slotIndex: Math.floor(idx / 2),
+      };
+    });
+    return {
+      participants: splitParticipants,
+      notice:
+        eligibleEntries.length < 2
+          ? 'コンバットフットボールには適合機体が 2機以上必要です。'
+          : skipped > 0
+            ? `レギュレーション不適合の ${skipped}機を除外し、2チームへ自動振り分けしました。`
+            : '2チーム対抗戦用に自動で Team A / Team B へ均等振り分けしました。',
+    };
+  }
+
+  const participants: BattlefieldParticipant[] = [];
+  const maxRoundLen = Math.max(0, ...validTeams.map((t) => t.members.length));
+  // Interleave spawn order across teams
+  for (let i = 0; i < maxRoundLen; i++) {
+    for (const t of validTeams) {
+      if (t.members[i] && participants.length < 8) {
+        participants.push({
+          entry: t.members[i],
+          teamId: `team_${t.slot}`,
+          teamLabel: TEAM_LABELS[t.slot],
+          teamColor: TEAM_COLORS[t.slot],
+          slotIndex: i,
+        });
+      }
+    }
+  }
+
+  const notice =
+    warnings.length > 0
+      ? warnings.join(' / ')
+      : validTeams.length < 2
+        ? 'チーム戦には適合するチームが 2つ以上必要です。'
+        : null;
+
+  return { participants, notice };
+}
+
+export const BattlefieldApp: React.FC = () => {
+  const [roster, setRoster] = useState<BattlefieldRosterEntry[]>(() => createInitialRoster());
+  const [config, setConfig] = useState<BattlefieldConfig>(() => ({ ...DEFAULT_BATTLEFIELD_CONFIG }));
+
+  const initialMatch = useMemo(() => {
+    const initRoster = createInitialRoster();
+    const { participants } = buildParticipantsForSingleMatch(
+      initRoster,
+      DEFAULT_BATTLEFIELD_CONFIG
+    );
+    return {
+      participants,
+      state: createBattlefieldMatchState(participants, DEFAULT_BATTLEFIELD_CONFIG),
+    };
+  }, []);
+
+  const [activeParticipants, setActiveParticipants] = useState<BattlefieldParticipant[]>(
+    initialMatch.participants
+  );
+  const [battleState, setBattleState] = useState<BattleState>(initialMatch.state);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speedMultiplier, setSpeedMultiplier] = useState<number>(0.5);
+  const [cameraMode, setCameraMode] = useState<CameraMode>('tactical');
+  const [focusTankId, setFocusTankId] = useState<string | null>(null);
+  const [showDebugOverlay, setShowDebugOverlay] = useState(true);
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+  const [setupCollapsed, setSetupCollapsed] = useState(false);
+
+  const savedPickerItems = useMemo(() => {
+    const saved = loadSavedBlueprints();
+    return [...saved]
+      .sort((a, b) => {
+        const pA = sanitizeAuthorName(a.author, 'Player');
+        const pB = sanitizeAuthorName(b.author, 'Player');
+        const pCmp = pA.localeCompare(pB, 'ja');
+        if (pCmp !== 0) return pCmp;
+        const gsCmp = a.program.gridSize - b.program.gridSize;
+        if (gsCmp !== 0) return gsCmp;
+        return a.name.localeCompare(b.name, 'ja');
+      })
+      .map((bp) => ({
+        key: `saved:${bp.id}`,
+        bp,
+        isPreset: false,
+        label: formatTankListLabel(
+          bp.name,
+          sanitizeAuthorName(bp.author, 'Player'),
+          bp.program.gridSize
+        ),
+      }));
+  }, []);
+
+  const presetPickerItems = useMemo(() => {
+    const allPresets: TankBlueprint[] = [DEFAULT_PLAYER_BLUEPRINT, ...PRESET_ENEMIES];
+    return [...allPresets]
+      .sort((a, b) => {
+        const gsCmp = a.program.gridSize - b.program.gridSize;
+        if (gsCmp !== 0) return gsCmp;
+        return a.name.localeCompare(b.name, 'ja');
+      })
+      .map((bp) => ({
+        key: `preset:${bp.id}`,
+        bp,
+        isPreset: true,
+        label: formatTankListLabel(bp.name, 'CPU', bp.program.gridSize),
+      }));
+  }, []);
+
+  const [shareCodeInput, setShareCodeInput] = useState('');
+  const [presetPickerId, setPresetPickerId] = useState(
+    () => savedPickerItems[0]?.key ?? presetPickerItems[0]?.key ?? ''
+  );
+  const [importNotice, setImportNotice] = useState<{ type: 'ok' | 'err'; text: string } | null>(
+    null
+  );
+  const [matchNotice, setMatchNotice] = useState<string | null>(null);
+
+  const [tournamentBracket, setTournamentBracket] = useState<TournamentBracket | null>(null);
+  const [leagueData, setLeagueData] = useState<{
+    units: CompetitionUnit[];
+    matches: LeagueMatch[];
+  } | null>(null);
+  const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
+  const [autoAdvance, setAutoAdvance] = useState(false);
+
+  const [latestReport, setLatestReport] = useState<ReturnType<typeof buildMatchReport> | null>(
+    null
+  );
+  const [showResultModal, setShowResultModal] = useState(false);
+  const [copyToast, setCopyToast] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const accumulatorRef = useRef(0);
+  const recordedFinishRef = useRef(false);
+  const autoAdvanceTimerRef = useRef<number | null>(null);
+  const resultModalTimerRef = useRef<number | null>(null);
+  const goalPauseUntilRef = useRef<number>(0);
+
+  const showToast = useCallback((msg: string) => {
+    setCopyToast(msg);
+  }, []);
+
+  useEffect(() => {
+    if (!copyToast) return;
+    const t = window.setTimeout(() => setCopyToast(null), 2600);
+    return () => window.clearTimeout(t);
+  }, [copyToast]);
+
+  const clearAutoTimer = useCallback(() => {
+    if (autoAdvanceTimerRef.current !== null) {
+      window.clearTimeout(autoAdvanceTimerRef.current);
+      autoAdvanceTimerRef.current = null;
+    }
+  }, []);
+
+  const clearResultModalTimer = useCallback(() => {
+    if (resultModalTimerRef.current !== null) {
+      window.clearTimeout(resultModalTimerRef.current);
+      resultModalTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearAutoTimer();
+      clearResultModalTimer();
+    };
+  }, [clearAutoTimer, clearResultModalTimer]);
+
+  const loadSingleMatch = useCallback(
+    (nextRoster: BattlefieldRosterEntry[], nextConfig: BattlefieldConfig, autoPlay = false) => {
+      clearAutoTimer();
+      clearResultModalTimer();
+      goalPauseUntilRef.current = 0;
+      const { participants, notice } = buildParticipantsForSingleMatch(nextRoster, nextConfig);
+      setActiveParticipants(participants);
+      setMatchNotice(notice);
+      setActiveMatchId(null);
+      setLatestReport(null);
+      setShowResultModal(false);
+      recordedFinishRef.current = false;
+      setFocusTankId(null);
+      setBattleState(createBattlefieldMatchState(participants, nextConfig));
+      setIsPlaying(autoPlay && participants.length >= 2);
+    },
+    [clearAutoTimer, clearResultModalTimer]
+  );
+
+  const loadCompetitionMatchIntoArena = useCallback(
+    (
+      matchId: string,
+      unitA: CompetitionUnit,
+      unitB: CompetitionUnit,
+      nextConfig: BattlefieldConfig,
+      autoPlay: boolean
+    ) => {
+      clearAutoTimer();
+      clearResultModalTimer();
+      goalPauseUntilRef.current = 0;
+      const participants = buildParticipantsFromUnitPair(unitA, unitB);
+      setActiveParticipants(participants);
+      setActiveMatchId(matchId);
+      setLatestReport(null);
+      setShowResultModal(false);
+      recordedFinishRef.current = false;
+      setFocusTankId(null);
+      setBattleState(createBattlefieldMatchState(participants, nextConfig));
+      setIsPlaying(autoPlay);
+    },
+    [clearAutoTimer, clearResultModalTimer]
+  );
+
+  const rebuildFormatAndMatch = useCallback(
+    (nextRoster: BattlefieldRosterEntry[], nextConfig: BattlefieldConfig) => {
+      clearAutoTimer();
+      clearResultModalTimer();
+      goalPauseUntilRef.current = 0;
+      setIsPlaying(false);
+      setLatestReport(null);
+      setShowResultModal(false);
+      recordedFinishRef.current = false;
+
+      if (nextConfig.format === 'battle_royale' || nextConfig.format === 'team_match') {
+        setTournamentBracket(null);
+        setLeagueData(null);
+        loadSingleMatch(nextRoster, nextConfig, false);
+        return;
+      }
+
+      const { units, skippedNames } = buildUnitsForCompetition(nextRoster, nextConfig);
+      const skipMsg =
+        skippedNames.length > 0 ? `規格外・対象外: ${skippedNames.join(', ')}` : null;
+
+      if (nextConfig.format === 'tournament') {
+        setLeagueData(null);
+        if (units.length < 2) {
+          setTournamentBracket(null);
+          setMatchNotice(
+            skipMsg ?? 'トーナメントの開催には適合ユニットが 2つ以上必要です。'
+          );
+          setActiveParticipants([]);
+          setBattleState(createBattlefieldMatchState([], nextConfig));
+          return;
+        }
+        const bracket = createTournamentBracket(units);
+        setTournamentBracket(bracket);
+        const firstPlayable = bracket.rounds
+          .flat()
+          .find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+        if (firstPlayable) {
+          const uA = units.find((u) => u.unitId === firstPlayable.unitAId);
+          const uB = units.find((u) => u.unitId === firstPlayable.unitBId);
+          if (uA && uB) {
+            setMatchNotice(skipMsg);
+            loadCompetitionMatchIntoArena(firstPlayable.matchId, uA, uB, nextConfig, false);
+            return;
+          }
+        }
+        setMatchNotice(skipMsg);
+        return;
+      }
+
+      // League
+      setTournamentBracket(null);
+      if (units.length < 2) {
+        setLeagueData(null);
+        setMatchNotice(skipMsg ?? 'リーグ戦の開催には適合ユニットが 2つ以上必要です。');
+        setActiveParticipants([]);
+        setBattleState(createBattlefieldMatchState([], nextConfig));
+        return;
+      }
+      const matches = createLeagueSchedule(units);
+      setLeagueData({ units, matches });
+      setMatchNotice(skipMsg);
+      const first = matches[0];
+      if (first) {
+        const uA = units.find((u) => u.unitId === first.unitAId);
+        const uB = units.find((u) => u.unitId === first.unitBId);
+        if (uA && uB) {
+          loadCompetitionMatchIntoArena(first.matchId, uA, uB, nextConfig, false);
+        }
+      }
+    },
+    [clearAutoTimer, loadCompetitionMatchIntoArena, loadSingleMatch]
+  );
+
+  const handleFormatChange = (format: BattlefieldFormat) => {
+    const nextConfig: BattlefieldConfig = {
+      ...config,
+      format,
+      teamUnitSize:
+        config.cpuRegulation === 'pair_6x6_4x4' ? 2 : config.teamUnitSize,
+    };
+    setConfig(nextConfig);
+    rebuildFormatAndMatch(roster, nextConfig);
+  };
+
+  const handleRuleChange = (ruleId: BattlefieldRuleId) => {
+    const spec = BATTLEFIELD_RULE_REGISTRY[ruleId];
+    if (!spec || !spec.ready) return;
+    const wasRamming = config.ruleId === 'ramming_derby';
+    const nextDisableWeapons = spec.recommendedDisableWeapons
+      ? true
+      : wasRamming
+        ? false
+        : config.disableWeapons;
+    const nextFormat: BattlefieldFormat =
+      ruleId === 'tank_soccer' && config.format === 'battle_royale'
+        ? 'team_match'
+        : config.format;
+    const nextConfig: BattlefieldConfig = {
+      ...config,
+      ruleId,
+      format: nextFormat,
+      disableWeapons: nextDisableWeapons,
+    };
+    setConfig(nextConfig);
+    rebuildFormatAndMatch(roster, nextConfig);
+  };
+
+  const handleCpuRegulationChange = (cpuRegulation: CpuRegulationId) => {
+    const isPairReg = cpuRegulation === 'pair_6x6_4x4';
+    const nextFormat: BattlefieldFormat =
+      isPairReg && config.format === 'battle_royale' ? 'team_match' : config.format;
+    const nextConfig: BattlefieldConfig = {
+      ...config,
+      cpuRegulation,
+      format: nextFormat,
+      teamUnitSize: isPairReg ? 2 : config.teamUnitSize,
+    };
+    setConfig(nextConfig);
+    rebuildFormatAndMatch(roster, nextConfig);
+  };
+
+  const updateConfigField = <K extends keyof BattlefieldConfig>(
+    key: K,
+    value: BattlefieldConfig[K]
+  ) => {
+    const nextConfig = { ...config, [key]: value };
+    setConfig(nextConfig);
+    rebuildFormatAndMatch(roster, nextConfig);
+  };
+
+  // Playback animation loop (with 1-second real-time hold on Combat Football goals)
+  useEffect(() => {
+    if (!isPlaying) return;
+    let rafId = 0;
+    let lastTime = performance.now();
+
+    const loop = (now: number) => {
+      if (now < goalPauseUntilRef.current) {
+        lastTime = now;
+        accumulatorRef.current = 0;
+        rafId = requestAnimationFrame(loop);
+        return;
+      }
+      const dt = Math.min(100, now - lastTime);
+      lastTime = now;
+      accumulatorRef.current += (dt / 1000) * BASE_TPS * speedMultiplier;
+      const steps = Math.min(16, Math.floor(accumulatorRef.current));
+      if (steps > 0) {
+        accumulatorRef.current -= steps;
+        setBattleState((prev) => {
+          if (prev.status === 'finished') return prev;
+          if (prev.football?.pendingKickoffReset && performance.now() < goalPauseUntilRef.current) {
+            return prev;
+          }
+          const next = cloneBattleStateForStep(prev);
+          for (let i = 0; i < steps; i++) {
+            stepBattlefieldTick(next, config);
+            if (next.status === 'finished') break;
+            if (next.football?.pendingKickoffReset) {
+              goalPauseUntilRef.current = performance.now() + 1000;
+              break;
+            }
+          }
+          return next;
+        });
+      }
+      rafId = requestAnimationFrame(loop);
+    };
+
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, speedMultiplier, config]);
+
+  // Handle battle finished -> build report & update Tournament/League & optional Auto-Advance (1s beat before modal)
+  useEffect(() => {
+    if (battleState.status !== 'finished') {
+      recordedFinishRef.current = false;
+      clearResultModalTimer();
+      return;
+    }
+    setIsPlaying(false);
+    if (recordedFinishRef.current) return;
+    recordedFinishRef.current = true;
+
+    const report = buildMatchReport(battleState, activeParticipants, config);
+    setLatestReport(report);
+    clearResultModalTimer();
+    resultModalTimerRef.current = window.setTimeout(() => {
+      resultModalTimerRef.current = null;
+      setShowResultModal(true);
+    }, 1000);
+
+    if (config.format === 'tournament' && tournamentBracket && activeMatchId) {
+      const winUnitId =
+        report.winnerTeamId === 'unit_A'
+          ? tournamentBracket.rounds.flat().find((m) => m.matchId === activeMatchId)?.unitAId ?? null
+          : report.winnerTeamId === 'unit_B'
+            ? tournamentBracket.rounds.flat().find((m) => m.matchId === activeMatchId)?.unitBId ?? null
+            : null;
+
+      const updatedBracket = applyTournamentMatchResult(
+        tournamentBracket,
+        activeMatchId,
+        winUnitId,
+        report,
+        report.winType === 'draw'
+      );
+      setTournamentBracket(updatedBracket);
+
+      if (autoAdvance) {
+        const nextMatch = updatedBracket.rounds
+          .flat()
+          .find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+        if (nextMatch) {
+          const uA = updatedBracket.units.find((u) => u.unitId === nextMatch.unitAId);
+          const uB = updatedBracket.units.find((u) => u.unitId === nextMatch.unitBId);
+          if (uA && uB) {
+            clearAutoTimer();
+            autoAdvanceTimerRef.current = window.setTimeout(() => {
+              loadCompetitionMatchIntoArena(nextMatch.matchId, uA, uB, config, true);
+            }, 4500);
+          }
+        }
+      }
+    } else if (config.format === 'league' && leagueData && activeMatchId) {
+      const updatedMatches = leagueData.matches.map((m) => {
+        if (m.matchId !== activeMatchId) return m;
+        const winnerUnitId =
+          report.winnerTeamId === 'unit_A'
+            ? m.unitAId
+            : report.winnerTeamId === 'unit_B'
+              ? m.unitBId
+              : null;
+        return {
+          ...m,
+          winnerUnitId,
+          isDraw: report.winType === 'draw' || !winnerUnitId,
+          report,
+        };
+      });
+      const nextLeague = { units: leagueData.units, matches: updatedMatches };
+      setLeagueData(nextLeague);
+
+      if (autoAdvance) {
+        const nextMatch = updatedMatches.find((m) => !m.report);
+        if (nextMatch) {
+          const uA = nextLeague.units.find((u) => u.unitId === nextMatch.unitAId);
+          const uB = nextLeague.units.find((u) => u.unitId === nextMatch.unitBId);
+          if (uA && uB) {
+            clearAutoTimer();
+            autoAdvanceTimerRef.current = window.setTimeout(() => {
+              loadCompetitionMatchIntoArena(nextMatch.matchId, uA, uB, config, true);
+            }, 4500);
+          }
+        }
+      }
+    }
+  }, [
+    battleState,
+    activeParticipants,
+    config,
+    tournamentBracket,
+    leagueData,
+    activeMatchId,
+    autoAdvance,
+    clearAutoTimer,
+    clearResultModalTimer,
+    loadCompetitionMatchIntoArena,
+  ]);
+
+  const handleInstantFinishCurrentMatch = () => {
+    if (activeParticipants.length < 2) return;
+    setIsPlaying(false);
+    setBattleState((prev) => {
+      const next = cloneBattleStateForStep(prev);
+      const guardMax = next.arena.maxTicks + 4;
+      let guard = 0;
+      while (next.status !== 'finished' && guard < guardMax) {
+        stepBattlefieldTick(next, config);
+        guard += 1;
+      }
+      return next;
+    });
+  };
+
+  const handleSimulateAllRemainingCompetition = () => {
+    clearAutoTimer();
+    setIsPlaying(false);
+
+    if (config.format === 'tournament' && tournamentBracket) {
+      let cur = tournamentBracket;
+      let lastRep: ReturnType<typeof buildMatchReport> | null = null;
+      let lastState: BattleState | null = null;
+      let lastParts: BattlefieldParticipant[] = [];
+      let safety = 0;
+      while (safety < 64) {
+        safety += 1;
+        const nextM = cur.rounds.flat().find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+        if (!nextM) break;
+        const uA = cur.units.find((u) => u.unitId === nextM.unitAId);
+        const uB = cur.units.find((u) => u.unitId === nextM.unitBId);
+        if (!uA || !uB) break;
+        const parts = buildParticipantsFromUnitPair(uA, uB);
+        const sim = simulateMatchHeadless(parts, config);
+        const winId =
+          sim.report.winnerTeamId === 'unit_A'
+            ? uA.unitId
+            : sim.report.winnerTeamId === 'unit_B'
+              ? uB.unitId
+              : null;
+        cur = applyTournamentMatchResult(
+          cur,
+          nextM.matchId,
+          winId,
+          sim.report,
+          sim.report.winType === 'draw'
+        );
+        lastRep = sim.report;
+        lastState = sim.state;
+        lastParts = parts;
+      }
+      setTournamentBracket(cur);
+      if (lastState && lastRep) {
+        setActiveParticipants(lastParts);
+        recordedFinishRef.current = true;
+        setBattleState(lastState);
+        setLatestReport(lastRep);
+        setShowResultModal(false);
+        showToast('トーナメントの全未消化試合を高速シミュレートしました');
+      }
+      return;
+    }
+
+    if (config.format === 'league' && leagueData) {
+      let lastRep: ReturnType<typeof buildMatchReport> | null = null;
+      let lastState: BattleState | null = null;
+      let lastParts: BattlefieldParticipant[] = [];
+      const updatedMatches = leagueData.matches.map((m) => {
+        if (m.report) return m;
+        const uA = leagueData.units.find((u) => u.unitId === m.unitAId);
+        const uB = leagueData.units.find((u) => u.unitId === m.unitBId);
+        if (!uA || !uB) return m;
+        const parts = buildParticipantsFromUnitPair(uA, uB);
+        const sim = simulateMatchHeadless(parts, config);
+        const winId =
+          sim.report.winnerTeamId === 'unit_A'
+            ? uA.unitId
+            : sim.report.winnerTeamId === 'unit_B'
+              ? uB.unitId
+              : null;
+        lastRep = sim.report;
+        lastState = sim.state;
+        lastParts = parts;
+        return {
+          ...m,
+          winnerUnitId: winId,
+          isDraw: sim.report.winType === 'draw' || !winId,
+          report: sim.report,
+        };
+      });
+      setLeagueData({ units: leagueData.units, matches: updatedMatches });
+      if (lastState && lastRep) {
+        setActiveParticipants(lastParts);
+        recordedFinishRef.current = true;
+        setBattleState(lastState);
+        setLatestReport(lastRep);
+        setShowResultModal(false);
+        showToast('リーグ戦の全未消化試合を高速シミュレートしました');
+      }
+    }
+  };
+
+  // File / share code / preset importing
+  const handleFilesSelected = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const added: BattlefieldRosterEntry[] = [];
+    const errors: string[] = [];
+
+    for (const file of Array.from(files)) {
+      try {
+        const text = await file.text();
+        const res = parseImportedTankContent(text, file.name);
+        if (res.ok) {
+          added.push({
+            ...res.entry,
+            teamSlot: (roster.length + added.length) % 2,
+          });
+        } else {
+          errors.push(res.error);
+        }
+      } catch {
+        errors.push(`${file.name}: 読み込みに失敗しました`);
+      }
+    }
+
+    if (added.length > 0) {
+      const nextRoster = sortRosterEntries([...roster, ...added]);
+      setRoster(nextRoster);
+      rebuildFormatAndMatch(nextRoster, config);
+      setImportNotice({
+        type: errors.length > 0 ? 'err' : 'ok',
+        text: `${added.length}機の戦車を登録しました${errors.length > 0 ? `（失敗: ${errors.join(' / ')}）` : ''}`,
+      });
+    } else if (errors.length > 0) {
+      setImportNotice({ type: 'err', text: errors.join(' / ') });
+    }
+  };
+
+  const handleImportShareCode = () => {
+    const trimmed = shareCodeInput.trim();
+    if (!trimmed) return;
+    const res = parseImportedTankContent(trimmed, 'シェアコード');
+    if (!res.ok) {
+      setImportNotice({ type: 'err', text: res.error });
+      return;
+    }
+    res.entry.teamSlot = roster.length % 2;
+    const nextRoster = sortRosterEntries([...roster, res.entry]);
+    setRoster(nextRoster);
+    setShareCodeInput('');
+    setImportNotice({
+      type: 'ok',
+      text: `「${formatTankListLabel(res.entry.machineName, res.entry.playerName, res.entry.blueprint.program.gridSize)}」を追加しました`,
+    });
+    rebuildFormatAndMatch(nextRoster, config);
+  };
+
+  const handleAddPresetSingle = () => {
+    const picked =
+      savedPickerItems.find((item) => item.key === presetPickerId) ??
+      presetPickerItems.find((item) => item.key === presetPickerId);
+    if (!picked) return;
+    const entry = createRosterEntryFromBlueprint(
+      picked.bp,
+      picked.isPreset ? '規定戦車' : 'ユーザー追加',
+      picked.isPreset
+    );
+    entry.teamSlot = roster.length % 2;
+    const nextRoster = sortRosterEntries([...roster, entry]);
+    setRoster(nextRoster);
+    setImportNotice({
+      type: 'ok',
+      text: `「${formatTankListLabel(entry.machineName, entry.playerName, entry.blueprint.program.gridSize)}」をエントリーに追加しました`,
+    });
+    rebuildFormatAndMatch(nextRoster, config);
+  };
+
+  const handleUpdateEntry = (
+    entryId: string,
+    patch: Partial<Pick<BattlefieldRosterEntry, 'playerName' | 'machineName' | 'enabled' | 'teamSlot'>>
+  ) => {
+    const mapped = roster.map((e) => (e.entryId === entryId ? { ...e, ...patch } : e));
+    const nextRoster =
+      patch.enabled !== undefined || patch.teamSlot !== undefined
+        ? sortRosterEntries(mapped)
+        : mapped;
+    setRoster(nextRoster);
+    if (patch.enabled !== undefined || patch.teamSlot !== undefined) {
+      rebuildFormatAndMatch(nextRoster, config);
+    }
+  };
+
+  const handleCommitRosterSort = () => {
+    const sorted = sortRosterEntries(roster);
+    setRoster(sorted);
+    if (!isPlaying) {
+      rebuildFormatAndMatch(sorted, config);
+    }
+  };
+
+  const handleRemoveEntry = (entryId: string) => {
+    const nextRoster = roster.filter((e) => e.entryId !== entryId);
+    setRoster(nextRoster);
+    rebuildFormatAndMatch(nextRoster, config);
+  };
+
+  const handleCopyText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(`${label}をクリップボードにコピーしました`);
+    } catch {
+      showToast('クリップボードへのコピーに失敗しました');
+    }
+  };
+
+  const leagueStandings = useMemo(() => {
+    if (!leagueData) return [];
+    return computeLeagueStandings(leagueData.units, leagueData.matches);
+  }, [leagueData]);
+
+  const currentRuleSpec = BATTLEFIELD_RULE_REGISTRY[config.ruleId];
+  const currentActiveTeamLabel = useMemo(() => {
+    if (config.format === 'battle_royale') {
+      return `バトルロワイヤル（${activeParticipants.length}機）`;
+    }
+    if (config.format === 'team_match') {
+      const teamSet = Array.from(new Set(activeParticipants.map((p) => p.teamLabel)));
+      return `チーム戦: ${teamSet.join(' vs ')}`;
+    }
+    if (config.format === 'tournament' && tournamentBracket && activeMatchId) {
+      const m = tournamentBracket.rounds.flat().find((x) => x.matchId === activeMatchId);
+      const uA = tournamentBracket.units.find((u) => u.unitId === m?.unitAId);
+      const uB = tournamentBracket.units.find((u) => u.unitId === m?.unitBId);
+      if (m && uA && uB) {
+        return `${m.roundLabel}: ${uA.unitName} vs ${uB.unitName}`;
+      }
+    }
+    if (config.format === 'league' && leagueData && activeMatchId) {
+      const m = leagueData.matches.find((x) => x.matchId === activeMatchId);
+      const uA = leagueData.units.find((u) => u.unitId === m?.unitAId);
+      const uB = leagueData.units.find((u) => u.unitId === m?.unitBId);
+      if (m && uA && uB) {
+        return `第${m.roundNumber}節: ${uA.unitName} vs ${uB.unitName}`;
+      }
+    }
+    return 'バトルフィールド待機中';
+  }, [activeParticipants, config.format, tournamentBracket, leagueData, activeMatchId]);
+
+  const handleReplayCurrentMatch = () => {
+    clearAutoTimer();
+    clearResultModalTimer();
+    goalPauseUntilRef.current = 0;
+    recordedFinishRef.current = false;
+    setLatestReport(null);
+    setShowResultModal(false);
+    setIsPlaying(false);
+    setBattleState(createBattlefieldMatchState(activeParticipants, config));
+  };
+
+  const handleLoadNextPendingMatch = (autoPlay = false) => {
+    if (config.format === 'tournament' && tournamentBracket) {
+      const nextM = tournamentBracket.rounds
+        .flat()
+        .find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+      if (nextM) {
+        const uA = tournamentBracket.units.find((u) => u.unitId === nextM.unitAId);
+        const uB = tournamentBracket.units.find((u) => u.unitId === nextM.unitBId);
+        if (uA && uB) {
+          loadCompetitionMatchIntoArena(nextM.matchId, uA, uB, config, autoPlay);
+          return;
+        }
+      }
+    } else if (config.format === 'league' && leagueData) {
+      const nextM = leagueData.matches.find((m) => !m.report);
+      if (nextM) {
+        const uA = leagueData.units.find((u) => u.unitId === nextM.unitAId);
+        const uB = leagueData.units.find((u) => u.unitId === nextM.unitBId);
+        if (uA && uB) {
+          loadCompetitionMatchIntoArena(nextM.matchId, uA, uB, config, autoPlay);
+          return;
+        }
+      }
+    }
+    showToast('すべての試合が消化済みです');
+  };
+
+  const hasMoreCompetitionMatches = useMemo(() => {
+    if (config.format === 'tournament' && tournamentBracket) {
+      return tournamentBracket.rounds
+        .flat()
+        .some((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+    }
+    if (config.format === 'league' && leagueData) {
+      return leagueData.matches.some((m) => !m.report);
+    }
+    return false;
+  }, [config.format, tournamentBracket, leagueData]);
+
+  return (
+    <div className="app-shell bf-shell">
+      <header className="top-nav bf-top-nav">
+        <div className="brand">
+          <div className="brand-logo bf-logo">CP</div>
+          <div>
+            <h1>
+              CodePanzer.py <span className="bf-badge">BATTLEFIELD</span>{' '}
+              <span className="bf-ver">v{CURRENT_GAME_VERSION}</span>
+            </h1>
+            <span className="brand-sub">大会進行・チーム戦・変則ルール・結果集計アリーナ</span>
+          </div>
+        </div>
+
+        <div className="mode-switcher bf-format-tabs">
+          {(
+            [
+              { id: 'battle_royale', label: 'バトルロワイヤル', icon: <Swords size={14} /> },
+              { id: 'team_match', label: 'チーム・ペア戦', icon: <Users size={14} /> },
+              { id: 'tournament', label: 'トーナメント', icon: <Trophy size={14} /> },
+              { id: 'league', label: 'リーグ戦', icon: <Award size={14} /> },
+            ] as Array<{ id: BattlefieldFormat; label: string; icon: React.ReactNode }>
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              className={`nav-tab ${config.format === tab.id ? 'active' : ''}`}
+              onClick={() => handleFormatChange(tab.id)}
+            >
+              {tab.icon} {tab.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="nav-actions">
+          <button
+            type="button"
+            className="mini-btn"
+            onClick={() => setSetupCollapsed((v) => !v)}
+            title="設定・エントリーパネルの表示を切り替え（プロジェクター観戦向け）"
+          >
+            {setupCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            {setupCollapsed ? '設定/機体一覧を表示' : '観戦拡大 (設定を隠す)'}
+          </button>
+          <a href="./index.html" className="btn-primary bf-back-link">
+            <Wrench size={14} /> 開発画面
+          </a>
+        </div>
+      </header>
+
+      <main className={`bf-workspace ${setupCollapsed ? 'is-collapsed' : ''}`}>
+        {!setupCollapsed && (
+          <aside className="bf-left-panel">
+            {/* Rules & Regulation Card */}
+            <section className="bf-card">
+              <div className="bf-card-header">
+                <h2>⚙ ルール・レギュレーション設定</h2>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() => rebuildFormatAndMatch(roster, config)}
+                  title="現在の設定で試合・大会を再構成"
+                >
+                  <RotateCcw size={12} /> 再構築
+                </button>
+              </div>
+
+              <div className="bf-form-grid">
+                <label className="bf-field">
+                  <span>対戦ルール</span>
+                  <select
+                    value={config.ruleId}
+                    onChange={(e) => handleRuleChange(e.target.value as BattlefieldRuleId)}
+                  >
+                    {Object.values(BATTLEFIELD_RULE_REGISTRY).map((r) => (
+                      <option key={r.id} value={r.id} disabled={!r.ready}>
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>CPU 要件（レギュレーション）</span>
+                  <select
+                    value={config.cpuRegulation}
+                    onChange={(e) =>
+                      handleCpuRegulationChange(e.target.value as CpuRegulationId)
+                    }
+                  >
+                    {Object.values(CPU_REGULATION_SPECS).map((reg) => (
+                      <option key={reg.id} value={reg.id}>
+                        {reg.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <p className="bf-hint-text">
+                {currentRuleSpec?.description} / {CPU_REGULATION_SPECS[config.cpuRegulation].description}
+              </p>
+
+              <div className="bf-weapon-locks">
+                <label
+                  className={`bf-check-pill ${config.disableWeapons ? 'is-active' : ''}`}
+                  title="主砲・副武装すべて発射不可"
+                >
+                  <input
+                    type="checkbox"
+                    checked={config.disableWeapons}
+                    onChange={(e) => updateConfigField('disableWeapons', e.target.checked)}
+                  />
+                  <span>全武装禁止</span>
+                </label>
+
+                <label
+                  className={`bf-check-pill ${
+                    config.disableWeapons || config.disableSubWeapons ? 'is-active' : ''
+                  }`}
+                  title="副武装 (SP) のみ発射不可"
+                >
+                  <input
+                    type="checkbox"
+                    checked={config.disableWeapons || config.disableSubWeapons}
+                    disabled={config.disableWeapons}
+                    onChange={(e) => updateConfigField('disableSubWeapons', e.target.checked)}
+                  />
+                  <span>SP禁止</span>
+                </label>
+              </div>
+
+              <div className="bf-form-grid bf-form-grid-4">
+                {(config.format === 'tournament' || config.format === 'league') && (
+                  <label className="bf-field">
+                    <span>1組の構成</span>
+                    <select
+                      value={config.teamUnitSize}
+                      disabled={config.cpuRegulation === 'pair_6x6_4x4'}
+                      onChange={(e) =>
+                        updateConfigField('teamUnitSize', Number(e.target.value) as 1 | 2)
+                      }
+                    >
+                      <option value={1}>1機シングル</option>
+                      <option value={2}>2機ペア</option>
+                    </select>
+                  </label>
+                )}
+
+                <label className="bf-field">
+                  <span>戦場広さ</span>
+                  <select
+                    value={config.arenaSize}
+                    onChange={(e) => updateConfigField('arenaSize', e.target.value as ArenaSizeId)}
+                  >
+                    {(['tiny', 'small', 'medium', 'large'] as ArenaSizeId[]).map((sz) => (
+                      <option key={sz} value={sz}>
+                        {ARENA_SIZE_SPECS[sz].label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>障害物</span>
+                  <select
+                    value={config.obstacleMode}
+                    onChange={(e) =>
+                      updateConfigField('obstacleMode', e.target.value as ObstacleMode)
+                    }
+                  >
+                    <option value="none">なし</option>
+                    <option value="few">少なめ</option>
+                    <option value="many">多め</option>
+                    <option value="maze">迷路</option>
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>外周壁ギミック</span>
+                  <select
+                    value={config.outerWallMode}
+                    onChange={(e) =>
+                      updateConfigField('outerWallMode', e.target.value as OuterWallMode)
+                    }
+                  >
+                    {Object.values(OUTER_WALL_MODE_SPECS).map((wm) => (
+                      <option key={wm.id} value={wm.id}>
+                        {wm.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>特殊エリア</span>
+                  <select
+                    value={config.zoneMode}
+                    onChange={(e) =>
+                      updateConfigField('zoneMode', e.target.value as ArenaZoneMode)
+                    }
+                  >
+                    {Object.values(ARENA_ZONE_MODE_SPECS).map((zm) => (
+                      <option key={zm.id} value={zm.id}>
+                        {zm.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>重力</span>
+                  <select
+                    value={config.gravityPreset}
+                    onChange={(e) =>
+                      updateConfigField('gravityPreset', e.target.value as GravityPresetId)
+                    }
+                  >
+                    {Object.values(GRAVITY_PRESET_SPECS).map((gp) => (
+                      <option key={gp.id} value={gp.id}>
+                        {gp.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>砂塵（レーダー射程）</span>
+                  <select
+                    value={config.sandstormPreset}
+                    onChange={(e) =>
+                      updateConfigField('sandstormPreset', e.target.value as SandstormPresetId)
+                    }
+                  >
+                    {Object.values(SANDSTORM_PRESET_SPECS).map((sp) => (
+                      <option key={sp.id} value={sp.id}>
+                        {sp.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>制限時間</span>
+                  <select
+                    value={config.maxSeconds}
+                    onChange={(e) => updateConfigField('maxSeconds', Number(e.target.value))}
+                  >
+                    <option value={60}>60秒</option>
+                    <option value={120}>120秒</option>
+                    <option value={180}>180秒</option>
+                    <option value={300}>300秒</option>
+                  </select>
+                </label>
+
+                <label className="bf-field">
+                  <span>マップシード</span>
+                  <div className="bf-seed-row">
+                    <input
+                      type="number"
+                      value={config.obstacleSeed}
+                      onChange={(e) =>
+                        updateConfigField('obstacleSeed', Number(e.target.value) || -1)
+                      }
+                    />
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={() =>
+                        updateConfigField('obstacleSeed', Math.floor(Math.random() * 9000) + 1)
+                      }
+                      title="ランダムシード生成"
+                    >
+                      <Shuffle size={12} />
+                    </button>
+                  </div>
+                </label>
+              </div>
+            </section>
+
+            {/* Roster Import & Player Assignment Card */}
+            <section className="bf-card bf-roster-card">
+              <div className="bf-card-header">
+                <h2>🚩 戦車エントリー＆Player割当 ({roster.length}機)</h2>
+                <button
+                  type="button"
+                  className="mini-btn danger"
+                  onClick={() => {
+                    setRoster([]);
+                    rebuildFormatAndMatch([], config);
+                  }}
+                >
+                  <Trash2 size={12} /> 全クリア
+                </button>
+              </div>
+
+              <div
+                className={`bf-dropzone ${isDragOver ? 'is-over' : ''}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDragOver(true);
+                }}
+                onDragLeave={() => setIsDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragOver(false);
+                  void handleFilesSelected(e.dataTransfer.files);
+                }}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload size={16} />
+                <span>
+                  <code>.vstank.json</code> / <code>.py</code> ファイルをここに複数ドロップ、またはクリックして選択
+                </span>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".json,.vstank.json,.py,.txt"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    void handleFilesSelected(e.target.files);
+                    e.target.value = '';
+                  }}
+                />
+              </div>
+
+              <div className="bf-share-row">
+                <input
+                  type="text"
+                  placeholder="VST1-... シェアコードを貼り付けて追加"
+                  value={shareCodeInput}
+                  onChange={(e) => setShareCodeInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleImportShareCode();
+                  }}
+                />
+                <button type="button" className="mini-btn active" onClick={handleImportShareCode}>
+                  <Plus size={13} /> 追加
+                </button>
+              </div>
+
+              <div className="bf-preset-quick">
+                <select
+                  value={presetPickerId}
+                  onChange={(e) => setPresetPickerId(e.target.value)}
+                >
+                  {savedPickerItems.length > 0 && (
+                    <optgroup label="ユーザー戦車（保存済）">
+                      {savedPickerItems.map((item) => (
+                        <option key={item.key} value={item.key}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="規定（プリセット）戦車">
+                    {presetPickerItems.map((item) => (
+                      <option key={item.key} value={item.key}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={handleAddPresetSingle}
+                >
+                  追加
+                </button>
+              </div>
+
+              {importNotice && (
+                <div className={`bf-notice ${importNotice.type}`}>{importNotice.text}</div>
+              )}
+
+              <div className="bf-roster-list">
+                {roster.length === 0 ? (
+                  <div className="bf-empty-msg">
+                    戦車が登録されていません。ファイル読込またはプリセットから追加してください。
+                  </div>
+                ) : (
+                  roster.map((entry) => {
+                    const regCheck = validateEntryForRegulation(
+                      entry,
+                      config.cpuRegulation
+                    );
+                    const displayLabel = formatTankListLabel(
+                      entry.machineName,
+                      entry.playerName || 'Player',
+                      entry.blueprint.program.gridSize
+                    );
+                    return (
+                      <div
+                        key={entry.entryId}
+                        className={`bf-roster-item ${!entry.enabled ? 'is-disabled' : ''} ${
+                          !regCheck.valid ? 'is-invalid' : ''
+                        }`}
+                      >
+                        <div className="bf-roster-item-top">
+                          <label className="bf-entry-enable">
+                            <input
+                              type="checkbox"
+                              checked={entry.enabled}
+                              onChange={(e) =>
+                                handleUpdateEntry(entry.entryId, { enabled: e.target.checked })
+                              }
+                            />
+                            <strong className="bf-roster-title" title={displayLabel}>
+                              {displayLabel}
+                            </strong>
+                          </label>
+
+                          <span
+                            className={`bf-origin-badge ${entry.isPreset ? 'preset' : 'user'}`}
+                          >
+                            {entry.isPreset ? '規定' : 'ユーザー'}
+                          </span>
+
+                          <span
+                            className={`bf-reg-badge ${regCheck.valid ? 'ok' : 'warn'}`}
+                            title={regCheck.reason ?? 'レギュレーション適合'}
+                          >
+                            {regCheck.valid ? '✓ 適合' : `⚠ ${regCheck.reason}`}
+                          </span>
+
+                          {config.format === 'team_match' && (
+                            <select
+                              className="bf-team-select"
+                              value={entry.teamSlot ?? 0}
+                              onChange={(e) =>
+                                handleUpdateEntry(entry.entryId, {
+                                  teamSlot: Number(e.target.value),
+                                })
+                              }
+                            >
+                              {TEAM_LABELS.map((lbl, sIdx) => (
+                                <option key={lbl} value={sIdx}>
+                                  {lbl}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+
+                          <button
+                            type="button"
+                            className="mini-btn danger"
+                            onClick={() => handleRemoveEntry(entry.entryId)}
+                            title="エントリーから削除"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+
+                        <div className="bf-roster-inputs">
+                          <label>
+                            <span>Player名</span>
+                            <input
+                              type="text"
+                              maxLength={16}
+                              value={entry.playerName}
+                              onChange={(e) =>
+                                handleUpdateEntry(entry.entryId, { playerName: e.target.value })
+                              }
+                              onBlur={handleCommitRosterSort}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleCommitRosterSort();
+                              }}
+                            />
+                          </label>
+                          <label>
+                            <span>マシーン名</span>
+                            <input
+                              type="text"
+                              maxLength={20}
+                              value={entry.machineName}
+                              onChange={(e) =>
+                                handleUpdateEntry(entry.entryId, { machineName: e.target.value })
+                              }
+                              onBlur={handleCommitRosterSort}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') handleCommitRosterSort();
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          </aside>
+        )}
+
+        {/* Right Arena & Tournament / League Area */}
+        <section className="bf-right-panel">
+          <div className="bf-match-banner">
+            <div className="bf-match-banner-left">
+              <strong>{currentActiveTeamLabel}</strong>
+              <span className="bf-tag">{currentRuleSpec?.shortLabel}</span>
+              <span className="bf-tag">{CPU_REGULATION_SPECS[config.cpuRegulation].label}</span>
+              {config.outerWallMode !== 'normal' && (
+                <span className="bf-tag is-warn">
+                  {OUTER_WALL_MODE_SPECS[config.outerWallMode].shortLabel}
+                </span>
+              )}
+              {config.zoneMode !== 'none' && (
+                <span className="bf-tag is-warn">
+                  {ARENA_ZONE_MODE_SPECS[config.zoneMode].shortLabel}
+                </span>
+              )}
+              {config.gravityPreset !== 'normal' && (
+                <span className="bf-tag is-warn">
+                  {GRAVITY_PRESET_SPECS[config.gravityPreset].shortLabel}
+                </span>
+              )}
+              {config.sandstormPreset !== 'none' && (
+                <span className="bf-tag is-warn">
+                  {SANDSTORM_PRESET_SPECS[config.sandstormPreset].shortLabel}
+                </span>
+              )}
+              {config.disableWeapons && (
+                <span className="bf-tag is-danger">🚫 射撃禁止 (SP含む)</span>
+              )}
+              {!config.disableWeapons && config.disableSubWeapons && (
+                <span className="bf-tag is-warn">🚫 副武装禁止</span>
+              )}
+            </div>
+            <div className="bf-clock-pill">
+              経過: <strong>{(battleState.tick / BASE_TPS).toFixed(1)}s</strong> /{' '}
+              {(battleState.arena.maxTicks / BASE_TPS).toFixed(0)}s
+            </div>
+          </div>
+
+          {matchNotice && <div className="bf-notice warn">{matchNotice}</div>}
+
+          {/* Rule-specific Live Scoreboard */}
+          {battleState.football && (
+            <div className="bf-rule-scoreboard bf-football-board">
+              <div className="bf-fb-team is-west">
+                <span
+                  className="bf-color-dot"
+                  style={{ backgroundColor: battleState.football.westTeamColor }}
+                />
+                <strong>{battleState.football.westTeamLabel}</strong>
+                <span className="bf-fb-dir">西→東攻め</span>
+              </div>
+              <div className="bf-football-score">
+                <span>{battleState.ruleTeamScores?.[battleState.football.westTeamId] ?? 0}</span>
+                <em>-</em>
+                <span>{battleState.ruleTeamScores?.[battleState.football.eastTeamId] ?? 0}</span>
+              </div>
+              <div className="bf-fb-team is-east">
+                <span className="bf-fb-dir">東→西攻め</span>
+                <strong>{battleState.football.eastTeamLabel}</strong>
+                <span
+                  className="bf-color-dot"
+                  style={{ backgroundColor: battleState.football.eastTeamColor }}
+                />
+              </div>
+              {battleState.football.lastGoalBanner &&
+                battleState.tick - battleState.football.lastGoalBanner.tick <= 35 && (
+                  <span
+                    className="bf-goal-flash"
+                    style={{ borderColor: battleState.football.lastGoalBanner.color }}
+                  >
+                    GOAL! {battleState.football.lastGoalBanner.teamLabel}
+                  </span>
+                )}
+            </div>
+          )}
+
+          {battleState.territoryGrid && (() => {
+            const tg = battleState.territoryGrid;
+            let playable = 0;
+            const counts: Record<string, number> = {};
+            for (let i = 0; i < tg.owners.length; i++) {
+              if (tg.blocked[i]) continue;
+              playable += 1;
+              const owner = tg.owners[i];
+              if (owner) counts[owner] = (counts[owner] ?? 0) + 1;
+            }
+            const totalOwned = Object.values(counts).reduce((a, b) => a + b, 0);
+            const neutral = Math.max(0, playable - totalOwned);
+            const entries = Object.keys(tg.teamLabels).map((tid) => ({
+              tid,
+              label: tg.teamLabels[tid],
+              color: tg.teamColors[tid] ?? '#94a3b8',
+              count: counts[tid] ?? 0,
+            }));
+            return (
+              <div className="bf-rule-scoreboard bf-territory-board">
+                <div className="bf-territory-bar">
+                  {entries.map((en) => (
+                    <div
+                      key={en.tid}
+                      className="bf-territory-seg"
+                      style={{
+                        width: `${playable > 0 ? (en.count / playable) * 100 : 0}%`,
+                        backgroundColor: en.color,
+                      }}
+                    />
+                  ))}
+                  {neutral > 0 && (
+                    <div
+                      className="bf-territory-seg is-neutral"
+                      style={{ width: `${playable > 0 ? (neutral / playable) * 100 : 0}%` }}
+                    />
+                  )}
+                </div>
+                <div className="bf-territory-legend">
+                  {entries.map((en) => (
+                    <span key={en.tid} className="bf-score-pill">
+                      <span className="bf-color-dot" style={{ backgroundColor: en.color }} />
+                      {en.label}: <strong>{en.count}</strong>マス
+                    </span>
+                  ))}
+                  <span className="bf-score-pill is-muted">中立: {neutral}マス</span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {config.ruleId === 'balloon_hunt' && battleState.ruleTeamScores && (
+            <div className="bf-rule-scoreboard">
+              <div className="bf-territory-legend">
+                {Object.entries(battleState.ruleTeamScores)
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([tid, score]) => (
+                    <span key={tid} className="bf-score-pill">
+                      <span
+                        className="bf-color-dot"
+                        style={{
+                          backgroundColor: battleState.ruleTeamColors?.[tid] ?? '#38bdf8',
+                        }}
+                      />
+                      {battleState.ruleTeamLabels?.[tid] ?? tid}: <strong>{score}pt</strong>
+                    </span>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* Multi-Tank Live HUD */}
+          <div className="bf-hud-grid">
+            {battleState.tanks.map((t) => {
+              const meta = activeParticipants.find((_, i) => `bf_tank_${i}` === t.id);
+              const hpPct = Math.max(0, Math.round((t.hp / Math.max(1, t.maxHp)) * 100));
+              const isFocused = cameraMode !== 'tactical' && cameraMode !== 'orbit' && focusTankId === t.id;
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  className={`bf-hud-card ${t.hp <= 0 ? 'is-dead' : ''} ${
+                    isFocused ? 'is-focused' : ''
+                  }`}
+                  style={{ borderLeftColor: t.blueprint.color }}
+                  onClick={() => {
+                    if (isFocused) {
+                      setFocusTankId(null);
+                      setCameraMode('tactical');
+                    } else {
+                      setFocusTankId(t.id);
+                      setCameraMode('chase_p1');
+                    }
+                  }}
+                  title={isFocused ? 'クリックして俯瞰視点に戻す' : 'クリックしてカメラ追跡'}
+                >
+                  <div className="bf-hud-card-top">
+                    <span className="bf-hud-team" style={{ color: t.blueprint.color }}>
+                      {meta?.teamLabel ?? t.teamId}
+                    </span>
+                    <span className="bf-hud-cpu">
+                      {t.blueprint.program.gridSize}×{t.blueprint.program.gridSize}
+                    </span>
+                  </div>
+                  <div className="bf-hud-names">
+                    <strong>{t.blueprint.name}</strong>
+                    <span>{t.playerName || t.blueprint.author || 'Player'}</span>
+                  </div>
+                  <div className="bf-hp-track">
+                    <div
+                      className="bf-hp-fill"
+                      style={{ width: `${hpPct}%`, backgroundColor: t.blueprint.color }}
+                    />
+                  </div>
+                  <div className="bf-hud-stats">
+                    <span>HP {Math.max(0, Math.round(t.hp))}/{t.maxHp}</span>
+                    {config.ruleId === 'elimination' ? (
+                      <>
+                        <span>撃破:{t.stats.kills ?? 0}</span>
+                        <span>与:{Math.round(t.stats.damageDealt)}</span>
+                      </>
+                    ) : (
+                      <>
+                        {!battleState.arena.disableTankDamage && (
+                          <span>撃破:{t.stats.kills ?? 0}</span>
+                        )}
+                        <span>{currentRuleSpec?.computeContributionLabel?.(t)}</span>
+                      </>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* 3D Viewport */}
+          <div className="viewport-frame bf-viewport-frame">
+            <BattleCanvas3D
+              battleState={battleState}
+              cameraMode={cameraMode}
+              showDebugOverlay={showDebugOverlay}
+              zoomLevel={zoomLevel}
+              onChangeZoom={setZoomLevel}
+              focusTankId={focusTankId}
+            />
+
+            <div className="viewport-overlay-top">
+              <div className="cam-switcher">
+                <Camera size={13} />
+                <button
+                  type="button"
+                  className={`cam-btn ${cameraMode === 'tactical' ? 'active' : ''}`}
+                  onClick={() => {
+                    setFocusTankId(null);
+                    setCameraMode('tactical');
+                  }}
+                >
+                  俯瞰
+                </button>
+                <button
+                  type="button"
+                  className={`cam-btn ${cameraMode === 'chase_p1' ? 'active' : ''}`}
+                  onClick={() => {
+                    if (!focusTankId && battleState.tanks.length > 0) {
+                      setFocusTankId(battleState.tanks[0].id);
+                    }
+                    setCameraMode('chase_p1');
+                  }}
+                >
+                  追従視点
+                </button>
+                <button
+                  type="button"
+                  className={`cam-btn ${cameraMode === 'orbit' ? 'active' : ''}`}
+                  onClick={() => {
+                    setFocusTankId(null);
+                    setCameraMode('orbit');
+                  }}
+                >
+                  フリー視点
+                </button>
+              </div>
+
+              <div className="viewport-right-controls">
+                {cameraMode === 'tactical' && (
+                  <div className="zoom-controls" title="バトルマップの表示倍率">
+                    <button
+                      type="button"
+                      className="cam-btn"
+                      onClick={() =>
+                        setZoomLevel((z) => Math.max(0.55, Number((z - 0.15).toFixed(2))))
+                      }
+                      title="縮小"
+                    >
+                      <ZoomOut size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      className="cam-btn"
+                      onClick={() => setZoomLevel(1.0)}
+                      title="全体表示に戻す"
+                    >
+                      {Math.round(zoomLevel * 100)}%
+                    </button>
+                    <button
+                      type="button"
+                      className="cam-btn"
+                      onClick={() =>
+                        setZoomLevel((z) => Math.min(2.2, Number((z + 0.15).toFixed(2))))
+                      }
+                      title="拡大"
+                    >
+                      <ZoomIn size={13} />
+                    </button>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className={`cam-btn overlay-pill-btn ${showDebugOverlay ? 'active' : ''}`}
+                  onClick={() => setShowDebugOverlay((v) => !v)}
+                  title="レーダー扇形・照準線の表示切替"
+                >
+                  {showDebugOverlay ? <Eye size={13} /> : <EyeOff size={13} />}
+                  レーダー可視化
+                </button>
+              </div>
+            </div>
+
+            {cameraMode === 'orbit' && (
+              <div className="orbit-hint">
+                マウスドラッグで視点回転 / ホイールでズーム
+              </div>
+            )}
+
+            {battleState.football?.pendingKickoffReset &&
+              battleState.football.lastGoalBanner && (
+                <div
+                  className="bf-goal-viewport-overlay"
+                  style={{ borderColor: battleState.football.lastGoalBanner.color }}
+                >
+                  <span
+                    className="bf-color-dot"
+                    style={{ backgroundColor: battleState.football.lastGoalBanner.color }}
+                  />
+                  <strong>GOAL!</strong>
+                  <span>{battleState.football.lastGoalBanner.teamLabel}</span>
+                </div>
+              )}
+          </div>
+
+          {/* Playback Controls */}
+          <div className="playback-bar bf-playback-bar">
+            <div className="playback-left">
+              <button
+                type="button"
+                className="btn-play"
+                disabled={activeParticipants.length < 2}
+                onClick={() => {
+                  clearAutoTimer();
+                  clearResultModalTimer();
+                  goalPauseUntilRef.current = 0;
+                  if (battleState.status === 'finished') {
+                    recordedFinishRef.current = false;
+                    setLatestReport(null);
+                    setShowResultModal(false);
+                    setBattleState(createBattlefieldMatchState(activeParticipants, config));
+                    setIsPlaying(true);
+                  } else {
+                    setIsPlaying((v) => !v);
+                  }
+                }}
+              >
+                {isPlaying ? <Pause size={15} /> : <Play size={15} />}
+                {isPlaying ? '一時停止' : battleState.status === 'finished' ? '再戦' : '試合開始'}
+              </button>
+
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={battleState.status === 'finished' || activeParticipants.length < 2}
+                onClick={() => {
+                  setIsPlaying(false);
+                  setBattleState((prev) =>
+                    stepBattlefieldTick(cloneBattleStateForStep(prev), config)
+                  );
+                }}
+              >
+                1Tick
+              </button>
+
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={activeParticipants.length < 2}
+                onClick={handleReplayCurrentMatch}
+              >
+                <RotateCcw size={13} /> リセット
+              </button>
+
+              <button
+                type="button"
+                className="mini-btn"
+                disabled={activeParticipants.length < 2 || battleState.status === 'finished'}
+                onClick={handleInstantFinishCurrentMatch}
+                title="現在の試合を瞬時に最後までシミュレート"
+              >
+                <Zap size={13} /> 瞬時決着
+              </button>
+            </div>
+
+            <div className="speed-controls">
+              <Cpu size={14} />
+              <span>再生速度:</span>
+              {[
+                { value: 0.25, label: 'slow' },
+                { value: 0.5, label: 'normal' },
+                { value: 1.0, label: 'high' },
+                { value: 2.0, label: 'rapid' },
+                { value: 4.0, label: 'express' },
+              ].map((spd) => (
+                <button
+                  key={spd.value}
+                  type="button"
+                  className={`spd-btn ${speedMultiplier === spd.value ? 'active' : ''}`}
+                  onClick={() => setSpeedMultiplier(spd.value)}
+                >
+                  {spd.label}
+                </button>
+              ))}
+              {latestReport && (
+                <button
+                  type="button"
+                  className="mini-btn active"
+                  onClick={() => {
+                    clearResultModalTimer();
+                    setShowResultModal(true);
+                  }}
+                >
+                  <Award size={13} /> リザルト表示
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Competition Panel: Tournament & League */}
+          {config.format === 'tournament' && tournamentBracket && (
+            <div className="bf-competition-panel">
+              <div className="bf-comp-toolbar">
+                <div className="bf-comp-title">
+                  <Trophy size={16} /> <strong>トーナメント進行表</strong>
+                  {tournamentBracket.championUnitId && (
+                    <span className="bf-champion-badge">
+                      🏆 優勝:{' '}
+                      {tournamentBracket.units.find(
+                        (u) => u.unitId === tournamentBracket.championUnitId
+                      )?.unitName ?? '-'}
+                    </span>
+                  )}
+                </div>
+
+                <div className="bf-comp-actions">
+                  <label className="bf-check-inline">
+                    <input
+                      type="checkbox"
+                      checked={autoAdvance}
+                      onChange={(e) => setAutoAdvance(e.target.checked)}
+                    />
+                    <span>自動進行 (次の試合へ)</span>
+                  </label>
+                  {hasMoreCompetitionMatches && (
+                    <>
+                      <button
+                        type="button"
+                        className="mini-btn active"
+                        onClick={() => handleLoadNextPendingMatch(true)}
+                      >
+                        <FastForward size={13} /> 次の未消化試合を開始
+                      </button>
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        onClick={handleSimulateAllRemainingCompetition}
+                      >
+                        <Zap size={13} /> 全試合を一括高速シミュレート
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={() =>
+                      void handleCopyText(
+                        formatTournamentSummaryText(tournamentBracket, config),
+                        'トーナメント結果'
+                      )
+                    }
+                  >
+                    <Copy size={13} /> トーナメント結果コピー
+                  </button>
+                </div>
+              </div>
+
+              <div className="bf-bracket-rounds">
+                {tournamentBracket.rounds.map((round) => (
+                  <div key={round[0]?.roundLabel} className="bf-bracket-col">
+                    <h4>{round[0]?.roundLabel}</h4>
+                    {round.map((m) => {
+                      const uA = m.unitAId
+                        ? tournamentBracket.units.find((u) => u.unitId === m.unitAId)
+                        : null;
+                      const uB = m.unitBId
+                        ? tournamentBracket.units.find((u) => u.unitId === m.unitBId)
+                        : null;
+                      const isCur = activeMatchId === m.matchId;
+                      return (
+                        <div
+                          key={m.matchId}
+                          className={`bf-bracket-match ${isCur ? 'is-current' : ''} ${
+                            m.winnerUnitId ? 'is-done' : ''
+                          }`}
+                        >
+                          <div
+                            className={`bf-match-slot ${
+                              m.winnerUnitId && m.winnerUnitId === m.unitAId ? 'is-winner' : ''
+                            }`}
+                          >
+                            <span>{uA ? uA.unitName : m.isBye ? '(BYE)' : '未定'}</span>
+                          </div>
+                          <div
+                            className={`bf-match-slot ${
+                              m.winnerUnitId && m.winnerUnitId === m.unitBId ? 'is-winner' : ''
+                            }`}
+                          >
+                            <span>{uB ? uB.unitName : m.isBye ? '(BYE)' : '未定'}</span>
+                          </div>
+                          {uA && uB && !m.isBye && (
+                            <button
+                              type="button"
+                              className="mini-btn bf-watch-btn"
+                              onClick={() =>
+                                loadCompetitionMatchIntoArena(m.matchId, uA, uB, config, false)
+                              }
+                            >
+                              {m.winnerUnitId ? '再戦 / 観戦' : 'この試合をセット'}
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {config.format === 'league' && leagueData && (
+            <div className="bf-competition-panel">
+              <div className="bf-comp-toolbar">
+                <div className="bf-comp-title">
+                  <Award size={16} /> <strong>リーグ総当たり戦 順位表</strong>
+                </div>
+
+                <div className="bf-comp-actions">
+                  <label className="bf-check-inline">
+                    <input
+                      type="checkbox"
+                      checked={autoAdvance}
+                      onChange={(e) => setAutoAdvance(e.target.checked)}
+                    />
+                    <span>自動進行 (次の試合へ)</span>
+                  </label>
+                  {hasMoreCompetitionMatches && (
+                    <>
+                      <button
+                        type="button"
+                        className="mini-btn active"
+                        onClick={() => handleLoadNextPendingMatch(true)}
+                      >
+                        <FastForward size={13} /> 次の試合を開始
+                      </button>
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        onClick={handleSimulateAllRemainingCompetition}
+                      >
+                        <Zap size={13} /> 全試合を一括高速シミュレート
+                      </button>
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={() =>
+                      void handleCopyText(
+                        formatLeagueStandingsText(leagueStandings, config),
+                        'リーグ順位表'
+                      )
+                    }
+                  >
+                    <Copy size={13} /> 順位表をコピー
+                  </button>
+                </div>
+              </div>
+
+              <div className="bf-table-scroll">
+                <table className="bf-stats-table">
+                  <thead>
+                    <tr>
+                      <th>順位</th>
+                      <th>Player名</th>
+                      <th>マシーン名</th>
+                      <th>CPU</th>
+                      <th>試合</th>
+                      <th>勝/分/負</th>
+                      <th>勝点</th>
+                      <th>撃破</th>
+                      <th>与ダメ</th>
+                      <th>被ダメ</th>
+                      <th>命中率</th>
+                      <th>平均生存</th>
+                      <th>総貢献</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {leagueStandings.map((row) => (
+                      <tr key={row.unitId} className={row.rank === 1 && row.played > 0 ? 'is-top' : ''}>
+                        <td>{row.rank}位</td>
+                        <td>{row.playerSummary}</td>
+                        <td>
+                          <span className="bf-color-dot" style={{ backgroundColor: row.color }} />
+                          {row.machineSummary}
+                        </td>
+                        <td>{row.cpuSummary}</td>
+                        <td>{row.played}</td>
+                        <td>
+                          {row.wins}/{row.draws}/{row.losses}
+                        </td>
+                        <td>
+                          <strong>{row.points}</strong>
+                        </td>
+                        <td>{row.totalKills}</td>
+                        <td>{row.totalDamageDealt.toFixed(1)}</td>
+                        <td>{row.totalDamageTaken.toFixed(1)}</td>
+                        <td>
+                          {row.hitRatePercent !== null
+                            ? `${row.hitRatePercent.toFixed(1)}% (${row.totalShotsHit}/${row.totalShotsFired})`
+                            : '-'}
+                        </td>
+                        <td>{row.avgSurvivedSeconds.toFixed(1)}s</td>
+                        <td>{row.totalContribution}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="bf-league-schedule">
+                {leagueData.matches.map((m) => {
+                  const uA = leagueData.units.find((u) => u.unitId === m.unitAId);
+                  const uB = leagueData.units.find((u) => u.unitId === m.unitBId);
+                  if (!uA || !uB) return null;
+                  const winName = m.winnerUnitId
+                    ? leagueData.units.find((u) => u.unitId === m.winnerUnitId)?.unitName
+                    : null;
+                  return (
+                    <button
+                      key={m.matchId}
+                      type="button"
+                      className={`bf-schedule-chip ${activeMatchId === m.matchId ? 'is-current' : ''} ${
+                        m.report ? 'is-done' : ''
+                      }`}
+                      onClick={() =>
+                        loadCompetitionMatchIntoArena(m.matchId, uA, uB, config, false)
+                      }
+                    >
+                      <span>第{m.roundNumber}節</span>
+                      <strong>
+                        {uA.unitName} vs {uB.unitName}
+                      </strong>
+                      <em>
+                        {m.report
+                          ? m.isDraw
+                            ? '引分'
+                            : `勝: ${winName}`
+                          : '未対戦'}
+                      </em>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </section>
+      </main>
+
+      {/* Post-Match Result Modal */}
+      {showResultModal && latestReport && (
+        <div className="modal-backdrop" onClick={() => setShowResultModal(false)}>
+          <div className="result-card bf-result-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="bf-result-header">
+              <div>
+                <span className="bf-result-kicker">
+                  {BATTLEFIELD_RULE_REGISTRY[latestReport.configSnapshot.ruleId]?.name} /{' '}
+                  {CPU_REGULATION_SPECS[latestReport.configSnapshot.cpuRegulation].label}
+                  {formatConfigConditionSuffix(latestReport.configSnapshot)}
+                </span>
+                <h2>{latestReport.endReason}</h2>
+                <p>経過時間: {latestReport.durationSeconds.toFixed(1)}秒</p>
+              </div>
+              <div className="bf-result-actions">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  onClick={() =>
+                    void handleCopyText(formatMatchReportText(latestReport), '試合結果テキスト')
+                  }
+                >
+                  <Copy size={14} /> 結果をテキストでコピー
+                </button>
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() =>
+                    void handleCopyText(formatMatchReportTsv(latestReport), 'Excel用TSVデータ')
+                  }
+                >
+                  <Copy size={14} /> Excel用 (TSV) コピー
+                </button>
+                {hasMoreCompetitionMatches && (
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={() => handleLoadNextPendingMatch(true)}
+                  >
+                    <FastForward size={14} /> 次の試合へ
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="mini-btn"
+                  onClick={() => setShowResultModal(false)}
+                >
+                  閉じる
+                </button>
+              </div>
+            </div>
+
+            <div className="bf-table-scroll">
+              <table className="bf-stats-table">
+                <thead>
+                  <tr>
+                    <th>順位</th>
+                    <th>チーム</th>
+                    <th>Player名</th>
+                    <th>マシーン名</th>
+                    <th>CPU</th>
+                    <th>撃破</th>
+                    <th>与ダメ</th>
+                    <th>被ダメ</th>
+                    <th>命中率</th>
+                    <th>生存時間</th>
+                    <th>貢献度</th>
+                    <th>賞</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {latestReport.tankRows.map((row) => (
+                    <tr key={row.tankId} className={row.rank === 1 ? 'is-top' : ''}>
+                      <td>
+                        <strong>{row.rank}位</strong>
+                      </td>
+                      <td>
+                        <span className="bf-color-dot" style={{ backgroundColor: row.teamColor }} />
+                        {row.teamLabel}
+                      </td>
+                      <td>
+                        <strong>{row.playerName}</strong>
+                      </td>
+                      <td>{row.machineName}</td>
+                      <td>
+                        {row.gridSize}×{row.gridSize}
+                      </td>
+                      <td>{row.kills}</td>
+                      <td>{row.damageDealt.toFixed(1)}</td>
+                      <td>{row.damageTaken.toFixed(1)}</td>
+                      <td>
+                        {row.hitRatePercent !== null
+                          ? `${row.hitRatePercent.toFixed(1)}% (${row.shotsHit}/${row.shotsFired})`
+                          : '- (0/0)'}
+                      </td>
+                      <td>
+                        {row.survivedSeconds.toFixed(1)}s{' '}
+                        <span className="bf-sub-note">
+                          {row.isAlive ? '(生存)' : `(${row.killedByLabel})`}
+                        </span>
+                      </td>
+                      <td>
+                        <strong>{row.contributionScore}</strong>{' '}
+                        <span className="bf-sub-note">({row.ruleMetricText})</span>
+                      </td>
+                      <td>{row.awards.join(' ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {copyToast && (
+        <div className="copy-toast" role="status">
+          <Check size={14} /> {copyToast}
+        </div>
+      )}
+    </div>
+  );
+};

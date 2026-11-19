@@ -13,6 +13,7 @@ import {
   ArenaTile,
   ExecutionEdge,
   ExecutionTrace,
+  FloorTileKind,
   GridCell,
   GridCoord,
   Projectile,
@@ -70,6 +71,16 @@ function isTankInsideTile(tank: TankRuntime, tile: ArenaTile): boolean {
     tank.y >= tile.y &&
     tank.y <= tile.y + tile.height
   );
+}
+
+export function isTankInTileKind(
+  tank: TankRuntime,
+  arena: ArenaConfig,
+  kind: FloorTileKind
+): boolean {
+  const tiles = arena.tiles;
+  if (!tiles || tiles.length === 0) return false;
+  return tiles.some((tile) => tile.kind === kind && isTankInsideTile(tank, tile));
 }
 
 function isValidOrthoTransition(
@@ -239,6 +250,10 @@ export function runTankChipProgram(
     const fireCell = program.cells[fs.coord.y]?.[fs.coord.x];
     if (!fireCell || fireCell.type !== 'act_fire') {
       tank.fireState = null;
+    } else if (arena.disableWeapons || isTankInTileKind(tank, arena, 'no_weapon')) {
+      const savedCallStack = fs.callStack;
+      tank.fireState = null;
+      current = resumeTimedNext(fs.coord, fireCell, savedCallStack);
     } else {
       visited.push({ x: fs.coord.x, y: fs.coord.y });
       steps += 1;
@@ -420,7 +435,12 @@ export function runTankChipProgram(
           pushPrintOutput(formatChipDebugPrint(cell, tank));
         }
         break;
-      } else if (cell.type === 'act_fire' && Number(cell.params.wait ?? 0) === 1) {
+      } else if (
+        !arena.disableWeapons &&
+        !isTankInTileKind(tank, arena, 'no_weapon') &&
+        cell.type === 'act_fire' &&
+        Number(cell.params.wait ?? 0) === 1
+      ) {
         if (tank.gunHeat > 0.0001) {
           const firePower = resolveFirePower(
             cell.params.power,
@@ -1018,9 +1038,15 @@ function evaluateCondition(
       const maxDist = Number(p.maxDist ?? 220);
       for (const proj of projectiles) {
         if (proj.ownerId === tank.id) continue;
-        if (arena.teamBattle) {
+        if (arena.teamBattle || arena.multiTeamMode) {
           const owner = tanks.find((t) => t.id === proj.ownerId);
-          if (owner && owner.team === tank.team) continue;
+          if (owner) {
+            if (arena.multiTeamMode && owner.teamId && tank.teamId) {
+              if (owner.teamId === tank.teamId) continue;
+            } else if (arena.teamBattle && owner.team === tank.team) {
+              continue;
+            }
+          }
         }
         const d = distanceBetween(proj.x, proj.y, tank.x, tank.y);
         if (d > maxDist) continue;
@@ -1372,11 +1398,19 @@ function executeActionCell(
       break;
     }
     case 'act_fire': {
-      commands.firePower = resolveFirePower(p.power, tank.blueprint.assembly.mainGun).power;
+      if (!arena.disableWeapons && !isTankInTileKind(tank, arena, 'no_weapon')) {
+        commands.firePower = resolveFirePower(p.power, tank.blueprint.assembly.mainGun).power;
+      }
       break;
     }
     case 'act_sub_weapon': {
-      commands.useSubWeapon = true;
+      if (
+        !arena.disableWeapons &&
+        !arena.disableSubWeapons &&
+        !isTankInTileKind(tank, arena, 'no_weapon')
+      ) {
+        commands.useSubWeapon = true;
+      }
       break;
     }
   }

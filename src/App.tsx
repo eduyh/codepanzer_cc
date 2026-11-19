@@ -22,6 +22,7 @@ import {
   SkipForward,
   Swords,
   Upload,
+  Wrench,
   X,
   ZoomIn,
   ZoomOut,
@@ -46,6 +47,7 @@ import {
 } from './data/presets';
 import {
   ARENA_SIZE_SPECS,
+  cloneBattleStateForStep,
   createBattleState,
   generateArenaObstacles,
   stepBattleTick,
@@ -158,88 +160,6 @@ function loadUiFontScale(): UiFontScale {
 
 function cloneBlueprint(bp: TankBlueprint): TankBlueprint {
   return validateAndRepairBlueprint(bp).blueprint;
-}
-
-function cloneCallStack(
-  stack?: Array<{
-    returnCoord: { x: number; y: number } | null;
-    callerCoord: { x: number; y: number };
-    subKey: string;
-  }>
-) {
-  return stack?.map((f) => ({
-    returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
-    callerCoord: { ...f.callerCoord },
-    subKey: f.subKey,
-  }));
-}
-
-function cloneBattleStateForStep(prev: BattleState): BattleState {
-  return {
-    ...prev,
-    arena: {
-      ...prev.arena,
-      ...(prev.arena.tiles ? { tiles: prev.arena.tiles.map((tl) => ({ ...tl })) } : {}),
-      ...(prev.arena.targets
-        ? {
-            targets: prev.arena.targets.map((tg) => ({
-              ...tg,
-              ...(tg.patrol ? { patrol: { ...tg.patrol } } : {}),
-            })),
-          }
-        : {}),
-      ...(prev.arena.learningRule ? { learningRule: { ...prev.arena.learningRule } } : {}),
-    },
-    tanks: prev.tanks.map((t) => ({
-      ...t,
-      stats: { ...t.stats },
-      counters: { ...t.counters },
-      loopCounters: { ...t.loopCounters },
-      loopStack: t.loopStack?.map((f) => ({
-        coord: { ...f.coord },
-        callStack: cloneCallStack(f.callStack),
-      })),
-      detectedEnemy: t.detectedEnemy ? { ...t.detectedEnemy } : null,
-      moveState: t.moveState
-        ? {
-            coord: { ...t.moveState.coord },
-            speedRatio: t.moveState.speedRatio,
-            remainingTicks: t.moveState.remainingTicks,
-            callStack: cloneCallStack(t.moveState.callStack),
-          }
-        : null,
-      sleepState: t.sleepState
-        ? {
-            coord: { ...t.sleepState.coord },
-            remainingTicks: t.sleepState.remainingTicks,
-            callStack: cloneCallStack(t.sleepState.callStack),
-          }
-        : null,
-      turnState: t.turnState
-        ? {
-            ...t.turnState,
-            coord: { ...t.turnState.coord },
-            callStack: cloneCallStack(t.turnState.callStack),
-          }
-        : null,
-      fireState: t.fireState
-        ? {
-            ...t.fireState,
-            coord: { ...t.fireState.coord },
-            callStack: cloneCallStack(t.fireState.callStack),
-          }
-        : null,
-      tileEdgeState: t.tileEdgeState ? { ...t.tileEdgeState } : undefined,
-      activePrintSpeech: t.activePrintSpeech
-        ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
-        : null,
-    })),
-    projectiles: prev.projectiles.map((p) => ({ ...p })),
-    mines: prev.mines.map((m) => ({ ...m })),
-    ...(prev.smokes ? { smokes: prev.smokes.map((s) => ({ ...s })) } : {}),
-    ...(prev.decoys ? { decoys: prev.decoys.map((d) => ({ ...d })) } : {}),
-    explosions: prev.explosions.map((e) => ({ ...e })),
-  };
 }
 
 function createBlankTutorialBlueprint(stageBp: TankBlueprint): TankBlueprint {
@@ -731,6 +651,7 @@ export function App() {
   };
 
   const [showShareModal, setShowShareModal] = useState(false);
+  const [showResultOverlay, setShowResultOverlay] = useState(false);
   const [mobileBattleDetailsOpen, setMobileBattleDetailsOpen] = useState(false);
   const [requestedSidebarTab, setRequestedSidebarTab] = useState<{
     mode: 'palette' | 'code';
@@ -1231,7 +1152,7 @@ export function App() {
                   buildMissionBattle(activeLearningMission, learningPlayerBp, nextVarIdx)
                 );
                 setIsPlaying(true);
-              }, 900);
+              }, 1900);
             }
           }
         }
@@ -1297,6 +1218,18 @@ export function App() {
     clearVariantTimer,
     activeStage,
   ]);
+
+  // Delay showing result overlay by 1 second so the finishing moment is clear
+  useEffect(() => {
+    if (battleState.status !== 'finished') {
+      setShowResultOverlay(false);
+      return;
+    }
+    const timerId = window.setTimeout(() => {
+      setShowResultOverlay(true);
+    }, 1000);
+    return () => window.clearTimeout(timerId);
+  }, [battleState.status]);
 
   useEffect(
     () => () => {
@@ -1383,15 +1316,15 @@ export function App() {
               className={`nav-tab ${gameMode === 'free' ? 'active' : ''}`}
               onClick={handleSwitchToFree}
             >
-              <Swords size={15} /> 機体開発
+              <Wrench size={15} /> 機体開発
             </button>
-            <button
-              type="button"
+            <a
+              href="./battlefield.html"
               className="nav-tab"
-              onClick={() => {}}
+              title="バトルフィールドへ移動"
             >
-              （未定）
-            </button>
+              <Swords size={15} /> バトル
+            </a>
           </div>
         )}
 
@@ -2583,7 +2516,7 @@ export function App() {
             )}
 
             {/* Match Result Overlay */}
-            {battleState.status === 'finished' && (() => {
+            {battleState.status === 'finished' && showResultOverlay && (() => {
               const isLearning = gameMode === 'learning';
               const variants = activeLearningMission.variants;
               const hasVariants = isLearning && Boolean(variants && variants.length > 1);

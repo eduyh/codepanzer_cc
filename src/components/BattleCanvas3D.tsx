@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { CHASSIS_SPECS, RADAR_SPECS } from '../data/parts';
 import { angleToVector, degToRad } from '../engine/math';
-import { ArenaTile, BattleState, CameraMode, TankRuntime } from '../types/game';
+import { ArenaTile, BattleState, CameraMode, OuterWallMode, TankRuntime } from '../types/game';
 
 function resolveTileColors(tile: ArenaTile): { fill: number; border: number; hex: string; label?: string } {
   if (tile.kind === 'goal') {
@@ -16,6 +16,12 @@ function resolveTileColors(tile: ArenaTile): { fill: number; border: number; hex
   if (tile.kind === 'hazard') {
     return { fill: 0xdc2626, border: 0xf97316, hex: '#ef4444', label: '!' };
   }
+  if (tile.kind === 'slow') {
+    return { fill: 0xb45309, border: 0xfbbf24, hex: '#b45309', label: 'SLOW' };
+  }
+  if (tile.kind === 'no_weapon') {
+    return { fill: 0x6d28d9, border: 0xc084fc, hex: '#7c3aed', label: 'NO FIRE' };
+  }
   switch (tile.color) {
     case 'blue':
       return { fill: 0x1d4ed8, border: 0x60a5fa, hex: '#1d4ed8' };
@@ -26,6 +32,56 @@ function resolveTileColors(tile: ArenaTile): { fill: number; border: number; hex
     default:
       return { fill: 0xef4444, border: 0xf87171, hex: '#ef4444' };
   }
+}
+
+/** Build a diagonal-striped zone texture with a bold center label for special Battlefield tiles. */
+function createZoneTileTexture(
+  label: string,
+  bgRgba: string,
+  stripeRgba: string,
+  borderRgba: string
+): THREE.CanvasTexture | null {
+  if (typeof document === 'undefined') return null;
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = bgRgba;
+  ctx.fillRect(0, 0, size, size);
+
+  ctx.save();
+  ctx.strokeStyle = stripeRgba;
+  ctx.lineWidth = 14;
+  for (let offset = -size; offset < size * 2; offset += 36) {
+    ctx.beginPath();
+    ctx.moveTo(offset, 0);
+    ctx.lineTo(offset + size, size);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  ctx.strokeStyle = borderRgba;
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, size - 8, size - 8);
+
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.78)';
+  ctx.fillRect(36, 98, size - 72, 60);
+  ctx.strokeStyle = borderRgba;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(36, 98, size - 72, 60);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'bold 34px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, size / 2, size / 2 + 1);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
 }
 
 /** Build a high-contrast cyan & white checkerboard GOAL texture for colorblind-safe visibility. */
@@ -77,6 +133,7 @@ interface BattleCanvas3DProps {
   showDebugOverlay: boolean;
   zoomLevel?: number;
   onChangeZoom?: (next: number) => void;
+  focusTankId?: string | null;
 }
 
 interface TankVisual {
@@ -320,7 +377,7 @@ function buildTankVisual(tank: TankRuntime): TankVisual {
   const radarConeMat = new THREE.MeshBasicMaterial({
     color: baseColor,
     transparent: true,
-    opacity: 0.14,
+    opacity: 0.07,
     side: THREE.DoubleSide,
     depthWrite: false,
   });
@@ -387,6 +444,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
   showDebugOverlay,
   zoomLevel = 1.0,
   onChangeZoom,
+  focusTankId = null,
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stateRef = useRef<BattleState>(battleState);
@@ -394,6 +452,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
   const debugRef = useRef<boolean>(showDebugOverlay);
   const zoomRef = useRef<number>(zoomLevel);
   const onChangeZoomRef = useRef(onChangeZoom);
+  const focusTankIdRef = useRef<string | null>(focusTankId);
   const [webglError, setWebglError] = useState(false);
 
   stateRef.current = battleState;
@@ -401,6 +460,7 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
   debugRef.current = showDebugOverlay;
   zoomRef.current = zoomLevel;
   onChangeZoomRef.current = onChangeZoom;
+  focusTankIdRef.current = focusTankId;
 
   useEffect(() => {
     const domEl = containerRef.current?.querySelector('canvas');
@@ -469,7 +529,11 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     scene.add(arenaStageGroup);
     let lastArenaDimsKey = '';
 
-    const rebuildArenaStage = (W: number, H: number) => {
+    const rebuildArenaStage = (
+      W: number,
+      H: number,
+      outerWallMode: OuterWallMode = 'normal'
+    ) => {
       const disposedGeos = new Set<THREE.BufferGeometry>();
       const disposedMats = new Set<THREE.Material>();
       while (arenaStageGroup.children.length > 0) {
@@ -519,12 +583,19 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       arenaStageGroup.add(new THREE.LineSegments(gridGeo, gridMat));
 
       // Arena Perimeter Walls
+      const wallPalette: Record<OuterWallMode, { wall: number; trim: number }> = {
+        normal: { wall: 0x1e293b, trim: 0x0ea5e9 },
+        bounce: { wall: 0x292524, trim: 0xfacc15 },
+        damage: { wall: 0x3b1219, trim: 0xef4444 },
+        damage_bounce: { wall: 0x431407, trim: 0xf97316 },
+      };
+      const palette = wallPalette[outerWallMode] ?? wallPalette.normal;
       const wallMat = new THREE.MeshStandardMaterial({
-        color: 0x1e293b,
+        color: palette.wall,
         roughness: 0.5,
         metalness: 0.5,
       });
-      const wallTrimMat = new THREE.MeshBasicMaterial({ color: 0x0ea5e9 });
+      const wallTrimMat = new THREE.MeshBasicMaterial({ color: palette.trim });
       const wallThick = 16;
       const wallHeight = 28;
 
@@ -557,8 +628,9 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       arenaStageGroup.add(northSprite, eastSprite, southSprite, westSprite);
     };
 
-    lastArenaDimsKey = `${stateRef.current.arena.width}x${stateRef.current.arena.height}`;
-    rebuildArenaStage(stateRef.current.arena.width, stateRef.current.arena.height);
+    const initOuterMode = stateRef.current.arena.outerWallMode ?? 'normal';
+    lastArenaDimsKey = `${stateRef.current.arena.width}x${stateRef.current.arena.height}:${initOuterMode}`;
+    rebuildArenaStage(stateRef.current.arena.width, stateRef.current.arena.height, initOuterMode);
 
     // Dynamic entity pools
     const tileGroup = new THREE.Group();
@@ -582,6 +654,94 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     missileGeo.rotateX(-Math.PI / 2);
     const mineGeo = new THREE.CylinderGeometry(9, 10, 4, 12);
     const expGeo = new THREE.SphereGeometry(1, 14, 12);
+
+    // Lightweight Territory Grid Overlay (1 single CanvasTexture mesh)
+    const territoryCanvas = document.createElement('canvas');
+    territoryCanvas.width = 512;
+    territoryCanvas.height = 384;
+    const territoryCtx = territoryCanvas.getContext('2d');
+    const territoryTexture = new THREE.CanvasTexture(territoryCanvas);
+    const territoryGeo = new THREE.PlaneGeometry(1, 1);
+    territoryGeo.rotateX(-Math.PI / 2);
+    const territoryMat = new THREE.MeshBasicMaterial({
+      map: territoryTexture,
+      transparent: true,
+      depthWrite: false,
+    });
+    const territoryMesh = new THREE.Mesh(territoryGeo, territoryMat);
+    territoryMesh.position.set(0, 0.55, 0);
+    territoryMesh.visible = false;
+    scene.add(territoryMesh);
+    let lastTerritoryKey = '';
+
+    // Combat Football Mesh & Endzone Strips
+    const footballGroup = new THREE.Group();
+    const ballGroup = new THREE.Group();
+    const ballSphereGeo = new THREE.SphereGeometry(20, 20, 16);
+    const ballSphereMat = new THREE.MeshStandardMaterial({
+      color: 0xf8fafc,
+      roughness: 0.35,
+      metalness: 0.08,
+    });
+    const ballSphere = new THREE.Mesh(ballSphereGeo, ballSphereMat);
+    ballSphere.position.y = 20;
+    ballSphere.castShadow = true;
+    const ballBandGeo = new THREE.TorusGeometry(19.4, 2.2, 8, 24);
+    const ballBandMat = new THREE.MeshBasicMaterial({ color: 0x0f172a });
+    const ballBandA = new THREE.Mesh(ballBandGeo, ballBandMat);
+    ballBandA.position.y = 20;
+    const ballBandB = new THREE.Mesh(ballBandGeo, ballBandMat);
+    ballBandB.position.y = 20;
+    ballBandB.rotation.y = Math.PI / 2;
+    ballGroup.add(ballSphere, ballBandA, ballBandB);
+    const ballShadowGeo = new THREE.RingGeometry(15, 22, 24);
+    ballShadowGeo.rotateX(-Math.PI / 2);
+    const ballShadowMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.55,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ballShadow = new THREE.Mesh(ballShadowGeo, ballShadowMat);
+    ballShadow.position.y = 1.05;
+    footballGroup.add(ballGroup, ballShadow);
+
+    const endzoneGeo = new THREE.PlaneGeometry(24, 1);
+    endzoneGeo.rotateX(-Math.PI / 2);
+    const westEndzoneMat = new THREE.MeshBasicMaterial({
+      color: 0x56b4e9,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+    });
+    const eastEndzoneMat = new THREE.MeshBasicMaterial({
+      color: 0xe69f00,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false,
+    });
+    const westEndzoneMesh = new THREE.Mesh(endzoneGeo, westEndzoneMat);
+    const eastEndzoneMesh = new THREE.Mesh(endzoneGeo, eastEndzoneMat);
+    westEndzoneMesh.position.y = 0.7;
+    eastEndzoneMesh.position.y = 0.7;
+    const midfieldGeo = new THREE.PlaneGeometry(4, 1);
+    midfieldGeo.rotateX(-Math.PI / 2);
+    const midfieldMat = new THREE.MeshBasicMaterial({
+      color: 0xe2e8f0,
+      transparent: true,
+      opacity: 0.28,
+      depthWrite: false,
+    });
+    const midfieldMesh = new THREE.Mesh(midfieldGeo, midfieldMat);
+    midfieldMesh.position.set(0, 0.65, 0);
+
+    const fieldMarkersGroup = new THREE.Group();
+    fieldMarkersGroup.add(westEndzoneMesh, eastEndzoneMesh, midfieldMesh);
+    fieldMarkersGroup.visible = false;
+    footballGroup.visible = false;
+    scene.add(fieldMarkersGroup);
+    scene.add(footballGroup);
 
     // Mouse & touch interaction for Orbit camera (1-finger rotate, 2-finger pinch zoom)
     const activePointers = new Map<number, { x: number; y: number }>();
@@ -665,6 +825,18 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
     const smoothCamPos = new THREE.Vector3(0, 820, 460);
     const smoothLookAt = new THREE.Vector3(0, 0, 0);
     const goalTileTexture = createGoalTileTexture();
+    const slowTileTexture = createZoneTileTexture(
+      'SLOW',
+      'rgba(180, 83, 9, 0.34)',
+      'rgba(251, 191, 36, 0.25)',
+      'rgba(251, 191, 36, 0.92)'
+    );
+    const noWeaponTileTexture = createZoneTileTexture(
+      'NO FIRE',
+      'rgba(109, 40, 217, 0.34)',
+      'rgba(192, 132, 252, 0.26)',
+      'rgba(192, 132, 252, 0.92)'
+    );
 
     let animFrameId = 0;
     const renderLoop = () => {
@@ -672,15 +844,94 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       const st = stateRef.current;
       const arenaW = st.arena.width;
       const arenaH = st.arena.height;
-      const dimsKey = `${arenaW}x${arenaH}`;
+      const outerWallMode = st.arena.outerWallMode ?? 'normal';
+      const dimsKey = `${arenaW}x${arenaH}:${outerWallMode}`;
       if (dimsKey !== lastArenaDimsKey) {
         lastArenaDimsKey = dimsKey;
-        rebuildArenaStage(arenaW, arenaH);
+        rebuildArenaStage(arenaW, arenaH, outerWallMode);
       }
       const halfW = arenaW / 2;
       const halfH = arenaH / 2;
 
-      // Sync Floor Tiles (goal, checkpoint, color, hazard)
+      // Sync Territory Grid CanvasTexture (Domination Mode)
+      if (st.territoryGrid && territoryCtx) {
+        const tg = st.territoryGrid;
+        territoryMesh.visible = true;
+        territoryMesh.scale.set(arenaW, 1, arenaH);
+        const tKey = `${tg.cols}x${tg.rows}:${tg.version}:${arenaW}x${arenaH}`;
+        if (tKey !== lastTerritoryKey) {
+          lastTerritoryKey = tKey;
+          const cw = territoryCanvas.width / tg.cols;
+          const ch = territoryCanvas.height / tg.rows;
+          territoryCtx.clearRect(0, 0, territoryCanvas.width, territoryCanvas.height);
+          for (let r = 0; r < tg.rows; r++) {
+            for (let c = 0; c < tg.cols; c++) {
+              const idx = r * tg.cols + c;
+              const px = c * cw;
+              const py = r * ch;
+              if (tg.blocked[idx]) {
+                territoryCtx.fillStyle = 'rgba(15, 23, 42, 0.55)';
+                territoryCtx.fillRect(px, py, cw, ch);
+              } else {
+                const owner = tg.owners[idx];
+                if (owner && tg.teamColors[owner]) {
+                  territoryCtx.save();
+                  territoryCtx.globalAlpha = 0.44;
+                  territoryCtx.fillStyle = tg.teamColors[owner];
+                  territoryCtx.fillRect(px + 1, py + 1, cw - 2, ch - 2);
+                  territoryCtx.globalAlpha = 0.85;
+                  territoryCtx.strokeStyle = tg.teamColors[owner];
+                  territoryCtx.lineWidth = 2;
+                  territoryCtx.strokeRect(px + 1.5, py + 1.5, cw - 3, ch - 3);
+                  territoryCtx.restore();
+                } else {
+                  territoryCtx.fillStyle = 'rgba(30, 41, 59, 0.14)';
+                  territoryCtx.fillRect(px + 1, py + 1, cw - 2, ch - 2);
+                }
+              }
+              territoryCtx.strokeStyle = 'rgba(148, 163, 184, 0.25)';
+              territoryCtx.lineWidth = 1;
+              territoryCtx.strokeRect(px, py, cw, ch);
+            }
+          }
+          territoryTexture.needsUpdate = true;
+        }
+      } else {
+        territoryMesh.visible = false;
+        lastTerritoryKey = '';
+      }
+
+      // Sync Combat Football Ball & Endzones
+      if (st.football) {
+        const fb = st.football;
+        footballGroup.visible = true;
+        fieldMarkersGroup.visible = true;
+        westEndzoneMat.color.set(fb.westTeamColor || '#56b4e9');
+        eastEndzoneMat.color.set(fb.eastTeamColor || '#e69f00');
+        westEndzoneMesh.position.set(-halfW + 12, 0.7, 0);
+        eastEndzoneMesh.position.set(halfW - 12, 0.7, 0);
+        westEndzoneMesh.scale.set(1, 1, arenaH);
+        eastEndzoneMesh.scale.set(1, 1, arenaH);
+        midfieldMesh.scale.set(1, 1, arenaH);
+
+        const targetBallX = fb.x - halfW;
+        const targetBallZ = fb.y - halfH;
+        const bdx = targetBallX - footballGroup.position.x;
+        const bdz = targetBallZ - footballGroup.position.z;
+        if (fb.kickoffFreezeTicks > 0 || st.tick <= 1 || bdx * bdx + bdz * bdz > 120 * 120) {
+          footballGroup.position.set(targetBallX, 0, targetBallZ);
+        } else {
+          footballGroup.position.x += bdx * 0.45;
+          footballGroup.position.z += bdz * 0.45;
+        }
+        ballGroup.rotation.z -= fb.vx * 0.04;
+        ballGroup.rotation.x += fb.vy * 0.04;
+      } else {
+        footballGroup.visible = false;
+        fieldMarkersGroup.visible = false;
+      }
+
+      // Sync Floor Tiles (goal, checkpoint, color, hazard, slow, no_weapon)
       const tiles = st.arena.tiles ?? [];
       const tileSig = `${dimsKey}:${JSON.stringify(
         tiles.map((t) => [t.id, t.kind, t.color, t.visited, t.x, t.y, t.width, t.height])
@@ -704,6 +955,12 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
           const padGeo = new THREE.PlaneGeometry(tile.width, tile.height);
           padGeo.rotateX(-Math.PI / 2);
           const isGoal = tile.kind === 'goal';
+          const zoneTex =
+            tile.kind === 'slow'
+              ? slowTileTexture
+              : tile.kind === 'no_weapon'
+                ? noWeaponTileTexture
+                : null;
           const padMat = isGoal && goalTileTexture
             ? new THREE.MeshBasicMaterial({
                 map: goalTileTexture,
@@ -711,12 +968,19 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
                 opacity: 0.92,
                 depthWrite: false,
               })
-            : new THREE.MeshBasicMaterial({
-                color: fill,
-                transparent: true,
-                opacity: tile.kind === 'checkpoint' && tile.visited ? 0.22 : 0.44,
-                depthWrite: false,
-              });
+            : zoneTex
+              ? new THREE.MeshBasicMaterial({
+                  map: zoneTex,
+                  transparent: true,
+                  opacity: 0.88,
+                  depthWrite: false,
+                })
+              : new THREE.MeshBasicMaterial({
+                  color: fill,
+                  transparent: true,
+                  opacity: tile.kind === 'checkpoint' && tile.visited ? 0.22 : 0.44,
+                  depthWrite: false,
+                });
           const pad = new THREE.Mesh(padGeo, padMat);
           pad.position.set(
             tile.x + tile.width / 2 - halfW,
@@ -892,15 +1156,12 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
           vis.barrelGroup.position.z += (targetRecoilZ - vis.barrelGroup.position.z) * 0.45;
         }
 
+        const radarRangeMult = Math.max(0.2, Math.min(1.0, st.arena.radarRangeMult ?? 1.0));
         vis.radarConeMesh.visible = debugRef.current;
+        vis.radarConeMesh.scale.set(radarRangeMult, 1, radarRangeMult);
         vis.aimLine.visible = debugRef.current;
-        if (tank.radarLock) {
-          vis.radarConeMat.color.setHex(0xfacc15);
-          vis.radarConeMat.opacity = 0.28;
-        } else {
-          vis.radarConeMat.color.set(tank.blueprint.color || '#56b4e9');
-          vis.radarConeMat.opacity = 0.13;
-        }
+        vis.radarConeMat.color.set(tank.blueprint.color || '#56b4e9');
+        vis.radarConeMat.opacity = tank.radarLock ? 0.15 : 0.07;
 
         vis.shieldMesh.visible = tank.shieldTicks > 0;
         if (tank.shieldTicks > 0) {
@@ -1170,10 +1431,12 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
         );
         targetLook.set(0, 0, 0);
       } else {
+        const focusId = focusTankIdRef.current;
         const targetTank =
-          mode === 'chase_p1'
+          (focusId ? st.tanks.find((t) => t.id === focusId) : null) ??
+          (mode === 'chase_p1'
             ? st.tanks.find((t) => t.team === 'player')
-            : st.tanks.find((t) => t.team === 'enemy');
+            : st.tanks.find((t) => t.team === 'enemy'));
         if (targetTank) {
           const tx = targetTank.x - halfW;
           const tz = targetTank.y - halfH;
@@ -1205,6 +1468,22 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       window.removeEventListener('pointercancel', onPointerUp);
       domEl.removeEventListener('wheel', onWheel);
       goalTileTexture?.dispose();
+      slowTileTexture?.dispose();
+      noWeaponTileTexture?.dispose();
+      territoryTexture.dispose();
+      territoryGeo.dispose();
+      territoryMat.dispose();
+      ballSphereGeo.dispose();
+      ballSphereMat.dispose();
+      ballBandGeo.dispose();
+      ballBandMat.dispose();
+      ballShadowGeo.dispose();
+      ballShadowMat.dispose();
+      endzoneGeo.dispose();
+      westEndzoneMat.dispose();
+      eastEndzoneMat.dispose();
+      midfieldGeo.dispose();
+      midfieldMat.dispose();
       renderer.dispose();
     };
   }, []);
@@ -1260,6 +1539,62 @@ const BattleCanvas2DFallback: React.FC<{
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
+    }
+
+    // Domination Territory Grid (2D fallback)
+    if (battleState.territoryGrid) {
+      const tg = battleState.territoryGrid;
+      const cw = w / tg.cols;
+      const ch = h / tg.rows;
+      for (let r = 0; r < tg.rows; r++) {
+        for (let c = 0; c < tg.cols; c++) {
+          const idx = r * tg.cols + c;
+          if (tg.blocked[idx]) continue;
+          const owner = tg.owners[idx];
+          if (owner && tg.teamColors[owner]) {
+            ctx.save();
+            ctx.globalAlpha = 0.36;
+            ctx.fillStyle = tg.teamColors[owner];
+            ctx.fillRect(c * cw + 1, r * ch + 1, cw - 2, ch - 2);
+            ctx.restore();
+          }
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.28)';
+          ctx.strokeRect(c * cw, r * ch, cw, ch);
+        }
+      }
+    }
+
+    // Combat Football Endzones (2D fallback)
+    if (battleState.football) {
+      const fb = battleState.football;
+      ctx.save();
+      ctx.globalAlpha = 0.38;
+      ctx.fillStyle = fb.westTeamColor || '#56b4e9';
+      ctx.fillRect(0, 0, 22, h);
+      ctx.fillStyle = fb.eastTeamColor || '#e69f00';
+      ctx.fillRect(w - 22, 0, 22, h);
+      ctx.strokeStyle = 'rgba(226, 232, 240, 0.35)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(w / 2, 0);
+      ctx.lineTo(w / 2, h);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Outer Perimeter Gimmick Border
+    const outerMode = battleState.arena.outerWallMode ?? 'normal';
+    if (outerMode !== 'normal') {
+      ctx.save();
+      ctx.strokeStyle =
+        outerMode === 'bounce'
+          ? '#facc15'
+          : outerMode === 'damage'
+            ? '#ef4444'
+            : '#f97316';
+      ctx.lineWidth = 8;
+      ctx.strokeRect(4, 4, w - 8, h - 8);
+      ctx.restore();
     }
 
     // Floor Tiles
@@ -1332,8 +1667,22 @@ const BattleCanvas2DFallback: React.FC<{
       ctx.beginPath();
       ctx.arc(tgt.x, tgt.y, tgt.radius * 0.85, 0, Math.PI * 2);
       ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = (tgt.points ?? 1) > 1 ? '#fef08a' : '#ffffff';
+      ctx.lineWidth = (tgt.points ?? 1) > 1 ? 3 : 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Combat Football (2D fallback)
+    if (battleState.football) {
+      const fb = battleState.football;
+      ctx.save();
+      ctx.fillStyle = '#f8fafc';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(fb.x, fb.y, fb.radius, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
       ctx.restore();
     }
@@ -1343,14 +1692,15 @@ const BattleCanvas2DFallback: React.FC<{
       if (tank.hp <= 0) continue;
       if (showDebugOverlay) {
         const radar = RADAR_SPECS[tank.blueprint.assembly.radar];
+        const radarRangeMult = Math.max(0.2, Math.min(1.0, battleState.arena.radarRangeMult ?? 1.0));
         const startRad = degToRad(tank.radarAngle - 90 - radar.fovDeg / 2);
         const endRad = degToRad(tank.radarAngle - 90 + radar.fovDeg / 2);
         ctx.save();
-        ctx.globalAlpha = tank.radarLock ? 0.25 : 0.15;
-        ctx.fillStyle = tank.radarLock ? '#facc15' : tank.blueprint.color || '#56b4e9';
+        ctx.globalAlpha = tank.radarLock ? 0.15 : 0.07;
+        ctx.fillStyle = tank.blueprint.color || '#56b4e9';
         ctx.beginPath();
         ctx.moveTo(tank.x, tank.y);
-        ctx.arc(tank.x, tank.y, radar.range, startRad, endRad);
+        ctx.arc(tank.x, tank.y, radar.range * radarRangeMult, startRad, endRad);
         ctx.closePath();
         ctx.fill();
         ctx.restore();

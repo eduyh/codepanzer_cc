@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { transpileProgramToLines } from '../../components/GridEditor';
 import { CHIP_DEFINITIONS } from '../../data/chips';
 import { LEARNING_MISSIONS, resolveMissionVariant } from '../../data/learningMissions';
-import { CHASSIS_SPECS, CPU_SPECS, cpuIdForGridSize } from '../../data/parts';
+import { CHASSIS_SPECS, computeShellMetrics, CPU_SPECS, cpuIdForGridSize, MAIN_GUN_SPECS, RADAR_SPECS } from '../../data/parts';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
@@ -67,6 +67,32 @@ import {
   normalizeAngle180,
   vectorToAngle,
 } from '../math';
+import {
+  applyTournamentMatchResult,
+  buildMatchReport,
+  buildParticipantsFromUnitPair,
+  CompetitionUnit,
+  computeLeagueStandings,
+  computeRammingDamage,
+  createBattlefieldMatchState,
+  createLeagueSchedule,
+  createRosterEntryFromBlueprint,
+  createTournamentBracket,
+  DEFAULT_BATTLEFIELD_CONFIG,
+  formatLeagueStandingsText,
+  formatMatchReportText,
+  formatMatchReportTsv,
+  formatTankListLabel,
+  formatTournamentSummaryText,
+  generateBattlefieldZones,
+  GRAVITY_PRESET_SPECS,
+  RAMMING_DAMAGE_MULTIPLIER,
+  SANDSTORM_PRESET_SPECS,
+  sortRosterEntries,
+  stepBattlefieldTick,
+  validateEntryForRegulation,
+  validateTeamForRegulation,
+} from '../battlefield';
 import {
   ARENA_SIZE_SPECS,
   createBattleState,
@@ -3452,6 +3478,1075 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
     }
   });
 });
+
+describe('Battlefield framework, weapon ban, regulations & tournament/league runner', () => {
+  it('blocks act_fire (including wait=1) and act_sub_weapon when disableWeapons is enabled while movement still runs', () => {
+    const shooterBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'bf_shooter',
+      name: '砲撃テスト号',
+      author: 'ALICE',
+      assembly: {
+        chassis: 'standard',
+        mainGun: 'standard',
+        radar: 'long',
+        cpu: 'mini_4x4',
+        subWeapon: 'missile',
+      },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        {
+          x: 1,
+          y: 0,
+          type: 'act_fire',
+          params: { power: 'heavy', wait: 1 },
+          next: { x: 2, y: 0 },
+        },
+        { x: 2, y: 0, type: 'act_sub_weapon', params: {}, next: { x: 3, y: 0 } },
+        {
+          x: 3,
+          y: 0,
+          type: 'act_move',
+          params: { speedPercent: 100, duration: 0 },
+          next: null,
+        },
+      ]),
+    };
+
+    const entryA = createRosterEntryFromBlueprint(shooterBp, 'test');
+    entryA.playerName = 'ALICE';
+    entryA.machineName = 'シューター改';
+    const entryB = createRosterEntryFromBlueprint(ENEMY_DUMMY, 'test');
+    entryB.playerName = 'BOB';
+    entryB.machineName = 'ダミー標的';
+
+    const participants = [
+      { entry: entryA, teamId: 'ffa_0', teamLabel: 'ALICE', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: entryB, teamId: 'ffa_1', teamLabel: 'BOB', teamColor: '#f59e0b', slotIndex: 1 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      disableWeapons: true,
+      maxSeconds: 60,
+    };
+
+    const state = createBattlefieldMatchState(participants, cfg);
+    const startX = state.tanks[0].x;
+    const startY = state.tanks[0].y;
+    const initAmmo = state.tanks[0].subAmmo;
+
+    for (let t = 0; t < 40; t++) {
+      stepBattlefieldTick(state, cfg);
+    }
+
+    expect(state.projectiles.length).toBe(0);
+    expect(state.mines.length).toBe(0);
+    expect(state.tanks[0].stats.shotsFired).toBe(0);
+    expect(state.tanks[0].gunHeat).toBe(0);
+    expect(state.tanks[0].subAmmo).toBe(initAmmo);
+    expect(state.tanks[0].fireState).toBeNull();
+    // Tank still advances and moves normally after act_fire & act_sub_weapon were blocked
+    const movedDist = Math.hypot(state.tanks[0].x - startX, state.tanks[0].y - startY);
+    expect(movedDist).toBeGreaterThan(20);
+  });
+
+  it('prevents friendly fire & radar lock across multi-team alliances and tracks kills/survival/hit rate in reports', () => {
+    // Two teammates facing east; an attacker firing directly toward teammate at same angle should not hit ally
+    const allyShooter: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'ally_1',
+      name: 'ブルー1号',
+      author: 'P1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', subWeapon: 'none' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 'fast', wait: 0 }, next: null },
+      ]),
+    };
+    const allyWing: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'ally_2',
+      name: 'ブルー2号',
+      author: 'P2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', subWeapon: 'none' },
+      program: buildProgram(4, 'relative', [{ x: 0, y: 0, type: 'start', next: null }]),
+    };
+    const enemyC: TankBlueprint = {
+      ...ENEMY_DUMMY,
+      id: 'red_1',
+      name: 'レッド1号',
+      author: 'P3',
+    };
+
+    const eA1 = createRosterEntryFromBlueprint(allyShooter, 'test');
+    const eA2 = createRosterEntryFromBlueprint(allyWing, 'test');
+    const eB1 = createRosterEntryFromBlueprint(enemyC, 'test');
+
+    const participants = [
+      { entry: eA1, teamId: 'team_0', teamLabel: 'Team A', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eB1, teamId: 'team_1', teamLabel: 'Team B', teamColor: '#e69f00', slotIndex: 0 },
+      { entry: eA2, teamId: 'team_0', teamLabel: 'Team A', teamColor: '#38bdf8', slotIndex: 1 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      format: 'team_match' as const,
+      obstacleMode: 'none' as const,
+      maxSeconds: 60,
+    };
+
+    const state = createBattlefieldMatchState(participants, cfg);
+    // Position allyWing directly in line of fire between allyShooter and enemyC
+    state.tanks[0].x = 200;
+    state.tanks[0].y = 500;
+    state.tanks[0].turretAngle = 90; // east
+    state.tanks[0].radarAngle = 90;
+    state.tanks[2].x = 320;
+    state.tanks[2].y = 500; // directly east of allyShooter
+    state.tanks[1].x = 450;
+    state.tanks[1].y = 500; // enemy beyond allyWing
+    state.tanks[1].hp = 12; // low HP so shot eliminates enemy
+
+    for (let i = 0; i < 60 && state.status !== 'finished'; i++) {
+      stepBattlefieldTick(state, cfg);
+    }
+
+    // AllyWing was never locked on radar nor damaged by allyShooter's shell passing through
+    expect(state.tanks[2].hp).toBe(state.tanks[2].maxHp);
+    expect(state.tanks[0].detectedEnemy?.id).not.toBe(state.tanks[2].id);
+    // EnemyC was eliminated by allyShooter, match finished with Team A victory
+    expect(state.status).toBe('finished');
+    expect(state.tanks[1].hp).toBe(0);
+    expect(state.tanks[1].stats.eliminatedAtTick).not.toBeNull();
+    expect(state.tanks[0].stats.kills).toBe(1);
+
+    const report = buildMatchReport(state, participants, cfg);
+    expect(report.winnerTeamId).toBe('team_0');
+    expect(report.tankRows[0].playerName).toBe('P1');
+    expect(report.tankRows[0].machineName).toBe('ブルー1号');
+    expect(report.tankRows[0].kills).toBe(1);
+    expect(report.tankRows[0].hitRatePercent).not.toBeNull();
+
+    const loserRow = report.tankRows.find((r) => r.playerName === 'P3');
+    expect(loserRow?.isAlive).toBe(false);
+    expect(loserRow?.survivedSeconds).toBeGreaterThan(0);
+
+    const text = formatMatchReportText(report);
+    expect(text).toContain('P1');
+    expect(text).toContain('ブルー1号');
+    expect(text).toContain('レッド1号');
+    const tsv = formatMatchReportTsv(report);
+    expect(tsv.split('\n').length).toBe(4);
+  });
+
+  it('validates CPU regulations (including 6x6 + 4x4 pairs) and manages tournament & league runs', () => {
+    const bp4 = createRosterEntryFromBlueprint(
+      PRESET_ENEMIES.find((p) => p.program.gridSize === 4)!,
+      'preset'
+    );
+    bp4.playerName = 'U4';
+    const bp6 = createRosterEntryFromBlueprint(
+      PRESET_ENEMIES.find((p) => p.program.gridSize === 6)!,
+      'preset'
+    );
+    bp6.playerName = 'U6';
+    const bp8 = createRosterEntryFromBlueprint(
+      PRESET_ENEMIES.find((p) => p.program.gridSize === 8)!,
+      'preset'
+    );
+    bp8.playerName = 'U8';
+
+    expect(validateEntryForRegulation(bp4, 'only_4x4').valid).toBe(true);
+    expect(validateEntryForRegulation(bp6, 'only_4x4').valid).toBe(false);
+    expect(validateTeamForRegulation([bp6, bp4], 'pair_6x6_4x4').valid).toBe(true);
+    expect(validateTeamForRegulation([bp4, bp4], 'pair_6x6_4x4').valid).toBe(true);
+    expect(validateTeamForRegulation([bp6, bp6], 'pair_6x6_4x4').valid).toBe(false);
+    expect(validateTeamForRegulation([bp8, bp4], 'pair_6x6_4x4').valid).toBe(false);
+
+    const units: CompetitionUnit[] = [
+      { unitId: 'u1', unitName: 'Unit1', entries: [bp4], color: '#38bdf8' },
+      { unitId: 'u2', unitName: 'Unit2', entries: [bp6], color: '#e69f00' },
+      { unitId: 'u3', unitName: 'Unit3', entries: [bp8], color: '#009e73' },
+    ];
+
+    // Tournament with 3 units (auto BYE for top seed)
+    let bracket = createTournamentBracket(units);
+    expect(bracket.rounds.length).toBe(2);
+    expect(bracket.rounds[0][0].isBye).toBe(true);
+    expect(bracket.rounds[0][0].winnerUnitId).toBe('u1');
+    const semi = bracket.rounds[0][1];
+    expect(semi.unitAId).not.toBeNull();
+    expect(semi.unitBId).not.toBeNull();
+    const semiWinnerId = semi.unitAId!;
+    bracket = applyTournamentMatchResult(bracket, semi.matchId, semiWinnerId);
+    const finalM = bracket.rounds[1][0];
+    expect(finalM.unitAId).toBe('u1');
+    expect(finalM.unitBId).toBe(semiWinnerId);
+    bracket = applyTournamentMatchResult(bracket, finalM.matchId, 'u1');
+    expect(bracket.championUnitId).toBe('u1');
+
+    // League round-robin for 3 units -> 3 matches, all pairs represented
+    const leagueMatches = createLeagueSchedule(units);
+    expect(leagueMatches.length).toBe(3);
+    const parts = buildParticipantsFromUnitPair(units[0], units[1]);
+    expect(parts.length).toBe(2);
+    expect(parts[0].teamId).toBe('unit_A');
+    expect(parts[1].teamId).toBe('unit_B');
+
+    const dummyState = createBattlefieldMatchState(parts, DEFAULT_BATTLEFIELD_CONFIG);
+    dummyState.winnerId = 'bf_tank_0';
+    dummyState.winType = 'elimination';
+    dummyState.tanks[1].hp = 0;
+    dummyState.tanks[1].stats.eliminatedAtTick = 100;
+    dummyState.tanks[0].stats.kills = 1;
+    dummyState.tanks[0].stats.damageDealt = 90;
+    const dummyReport = buildMatchReport(dummyState, parts, DEFAULT_BATTLEFIELD_CONFIG);
+    leagueMatches[0].winnerUnitId = leagueMatches[0].unitAId;
+    leagueMatches[0].report = dummyReport;
+
+    const standings = computeLeagueStandings(units, leagueMatches);
+    expect(standings[0].unitId).toBe(leagueMatches[0].unitAId);
+    expect(standings[0].points).toBe(3);
+
+    // Roster sorting: user tanks on top (by Player name -> CPU ascending), preset tanks below (by Player -> CPU ascending)
+    const preset4 = createRosterEntryFromBlueprint(bp4.blueprint, '規定戦車', true);
+    const preset8 = createRosterEntryFromBlueprint(bp8.blueprint, '規定戦車', true);
+    const userA6 = createRosterEntryFromBlueprint(bp6.blueprint, 'ユーザー', false);
+    userA6.playerName = 'Alice';
+    const userA4 = createRosterEntryFromBlueprint(bp4.blueprint, 'ユーザー', false);
+    userA4.playerName = 'Alice';
+    const userB6 = createRosterEntryFromBlueprint(bp6.blueprint, 'ユーザー', false);
+    userB6.playerName = 'Bob';
+
+    const sortedRoster = sortRosterEntries([preset8, userB6, preset4, userA6, userA4]);
+    expect(sortedRoster.map((e) => `${e.isPreset ? 'P' : 'U'}:${e.playerName}:${e.blueprint.program.gridSize}`)).toEqual([
+      'U:Alice:4',
+      'U:Alice:6',
+      'U:Bob:6',
+      'P:CPU:4',
+      'P:CPU:8',
+    ]);
+    expect(formatTankListLabel('突撃一番★', 'Alice', 4)).toBe('突撃一番★（Alice）（4x4）');
+  });
+
+  it('supports outerWallMode bounce reflection and lethal outer wall damage with pusher kill credit', () => {
+    const runnerBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'wall_runner',
+      name: '壁突進号',
+      author: 'R1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', subWeapon: 'none' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+      ]),
+    };
+
+    const eA = createRosterEntryFromBlueprint(runnerBp, 'test');
+    const eB = createRosterEntryFromBlueprint(ENEMY_DUMMY, 'test');
+    const parts = [
+      { entry: eA, teamId: 'ffa_0', teamLabel: 'R1', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eB, teamId: 'ffa_1', teamLabel: 'D1', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+
+    // 1. Bounce wall pushes tank inward & reflects heading toward west when hitting East wall at angle 60
+    const bounceCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      obstacleMode: 'none' as const,
+      outerWallMode: 'bounce' as const,
+      maxSeconds: 60,
+    };
+    const bounceState = createBattlefieldMatchState(parts, bounceCfg);
+    bounceState.tanks[0].x = bounceState.arena.width - 10;
+    bounceState.tanks[0].y = 500;
+    bounceState.tanks[0].bodyAngle = 60;
+    bounceState.tanks[0].speed = 3.5;
+
+    stepBattlefieldTick(bounceState, bounceCfg);
+    expect(bounceState.tanks[0].x).toBeLessThan(bounceState.arena.width - 35);
+    // Heading reflected across East wall into western hemisphere (> 180 deg)
+    expect(bounceState.tanks[0].bodyAngle).toBeGreaterThan(180);
+    expect(bounceState.tanks[0].bodyAngle).toBeLessThan(360);
+    expect(bounceState.tanks[0].hp).toBe(bounceState.tanks[0].maxHp);
+
+    // 2. Electric damage wall deals 24 damage, can eliminate to HP 0, and credits pusher kill
+    const dmgCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      obstacleMode: 'none' as const,
+      outerWallMode: 'damage' as const,
+      maxSeconds: 60,
+    };
+    const dmgState = createBattlefieldMatchState(parts, dmgCfg);
+    const victim = dmgState.tanks[0];
+    const pusher = dmgState.tanks[1];
+    victim.hp = 20;
+    victim.x = dmgState.arena.width - 5;
+    victim.y = 500;
+    victim.bodyAngle = 90;
+    // Simulate prior enemy tank collision 5 ticks ago
+    victim.lastCollidedTankId = pusher.id;
+    victim.lastTankCollisionTick = 1;
+    dmgState.tick = 5;
+
+    stepBattlefieldTick(dmgState, dmgCfg);
+    expect(victim.hp).toBe(0);
+    expect(victim.killedById).toBe(pusher.id);
+    expect(pusher.stats.kills).toBe(1);
+    expect(pusher.stats.damageDealt).toBe(24);
+    expect(dmgState.status).toBe('finished');
+    expect(dmgState.winnerId).toBe(pusher.id);
+  });
+
+  it('enforces slow and no_weapon arena floor zones and generates non-overlapping zones clear of spawns', () => {
+    const walkerBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'zone_walker',
+      name: 'ゾーン歩行号',
+      author: 'Z1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', subWeapon: 'missile' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        {
+          x: 1,
+          y: 0,
+          type: 'act_fire',
+          params: { power: 'fast', wait: 1 },
+          next: { x: 2, y: 0 },
+        },
+        { x: 2, y: 0, type: 'act_sub_weapon', params: {}, next: { x: 3, y: 0 } },
+        { x: 3, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+      ]),
+    };
+
+    const eInside = createRosterEntryFromBlueprint(walkerBp, 'test');
+    const eOutside = createRosterEntryFromBlueprint(walkerBp, 'test');
+    const parts = [
+      { entry: eInside, teamId: 'ffa_0', teamLabel: 'Z1', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eOutside, teamId: 'ffa_1', teamLabel: 'Z2', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+
+    // A. Slow zone slows speed vs open ground
+    const baseCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      obstacleMode: 'none' as const,
+      zoneMode: 'none' as const,
+      disableWeapons: true,
+    };
+    const sZones = createBattlefieldMatchState(parts, baseCfg);
+    sZones.arena.tiles = [
+      { id: 'z_slow', kind: 'slow', x: 150, y: 400, width: 250, height: 200 },
+    ];
+    sZones.tanks[0].x = 250;
+    sZones.tanks[0].y = 500;
+    sZones.tanks[0].bodyAngle = 90;
+    sZones.tanks[1].x = 700;
+    sZones.tanks[1].y = 500;
+    sZones.tanks[1].bodyAngle = 90;
+
+    for (let i = 0; i < 15; i++) {
+      stepBattlefieldTick(sZones, baseCfg);
+    }
+    const slowDist = sZones.tanks[0].x - 250;
+    const normalDist = sZones.tanks[1].x - 700;
+    expect(slowDist).toBeGreaterThan(5);
+    expect(slowDist).toBeLessThan(normalDist * 0.65);
+
+    // B. No-weapon zone blocks act_fire (wait=1) + act_sub_weapon ONLY for tank inside zone
+    const nwCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      obstacleMode: 'none' as const,
+      zoneMode: 'none' as const,
+      disableWeapons: false,
+    };
+    const sNoWep = createBattlefieldMatchState(parts, nwCfg);
+    sNoWep.arena.tiles = [
+      { id: 'z_nw', kind: 'no_weapon', x: 150, y: 400, width: 220, height: 200 },
+    ];
+    sNoWep.tanks[0].x = 220;
+    sNoWep.tanks[0].y = 500;
+    sNoWep.tanks[0].bodyAngle = 90;
+    const initAmmo0 = sNoWep.tanks[0].subAmmo;
+
+    sNoWep.tanks[1].x = 800;
+    sNoWep.tanks[1].y = 500;
+    sNoWep.tanks[1].bodyAngle = 270;
+
+    for (let i = 0; i < 10; i++) {
+      stepBattlefieldTick(sNoWep, nwCfg);
+    }
+
+    // Tank 0 inside no_weapon never fired nor lost subAmmo, yet still moved forward
+    expect(sNoWep.tanks[0].stats.shotsFired).toBe(0);
+    expect(sNoWep.tanks[0].subAmmo).toBe(initAmmo0);
+    expect(sNoWep.tanks[0].fireState).toBeNull();
+    expect(sNoWep.tanks[0].x).toBeGreaterThan(225);
+    // Tank 1 outside no_weapon fired normally
+    expect(sNoWep.tanks[1].stats.shotsFired).toBeGreaterThan(0);
+
+    // C. generateBattlefieldZones places clear zones avoiding spawns & obstacles
+    for (const sz of ['small', 'medium', 'large'] as ArenaSizeId[]) {
+      const obs = generateArenaObstacles('many', 77, sz);
+      const zones = generateBattlefieldZones('mixed', 77, sz, obs);
+      expect(zones.length).toBeGreaterThanOrEqual(2);
+      expect(zones.some((z) => z.kind === 'slow')).toBe(true);
+      expect(zones.some((z) => z.kind === 'no_weapon')).toBe(true);
+      const spec = ARENA_SIZE_SPECS[sz];
+      const spawns = getSpawnsForArena(spec.width, spec.height);
+      for (const z of zones) {
+        for (const sp of spawns) {
+          expect(circleIntersectsRect(sp.x, sp.y, 45, z)).toBe(false);
+        }
+        for (const o of obs) {
+          const overlapsObs =
+            z.x < o.x + o.width &&
+            z.x + z.width > o.x &&
+            z.y < o.y + o.height &&
+            z.y + z.height > o.y;
+          expect(overlapsObs).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('applies gravity presets (half-effect on turret, unaffected radar, slow-zone floor) and sandstorm radar scaling + reporting', () => {
+    const moverBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'grav_mover',
+      name: '重力テスト機',
+      author: 'G1',
+      assembly: {
+        ...DEFAULT_PLAYER_BLUEPRINT.assembly,
+        cpu: 'mini_4x4',
+        chassis: 'standard',
+        mainGun: 'standard',
+        radar: 'balanced',
+      },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_turn_turret', params: { mode: 'delta', angle: 90, wait: 0 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_turn_radar', params: { mode: 'delta', angle: 90 }, next: { x: 3, y: 0 } },
+        { x: 3, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+      ]),
+    };
+    const dummyBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'grav_dummy',
+      name: 'カカシ機',
+      author: 'G2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', radar: 'balanced' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: null },
+      ]),
+    };
+
+    const eA = createRosterEntryFromBlueprint(moverBp, 'test');
+    const eB = createRosterEntryFromBlueprint(dummyBp, 'test');
+    const parts = [
+      { entry: eA, teamId: 'ffa_0', teamLabel: 'G1', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eB, teamId: 'ffa_1', teamLabel: 'G2', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+
+    const runGravityTrial = (gravityPreset: 'high_2' | 'normal' | 'low_2', inSlow = false) => {
+      const cfg = {
+        ...DEFAULT_BATTLEFIELD_CONFIG,
+        obstacleMode: 'none' as const,
+        zoneMode: 'none' as const,
+        disableWeapons: true,
+        gravityPreset,
+      };
+      const st = createBattlefieldMatchState(parts, cfg);
+      if (inSlow) {
+        st.arena.tiles = [
+          { id: 'z_slow_g', kind: 'slow', x: 50, y: 400, width: 500, height: 200 },
+        ];
+      }
+      st.tanks[0].x = 200;
+      st.tanks[0].y = 500;
+      st.tanks[0].bodyAngle = 90;
+      st.tanks[0].turretAngle = 0;
+      st.tanks[0].radarAngle = 0;
+      st.tanks[1].x = 1200;
+      st.tanks[1].y = 500;
+
+      for (let i = 0; i < 10; i++) {
+        stepBattlefieldTick(st, cfg);
+      }
+      return {
+        distMoved: st.tanks[0].x - 200,
+        finalSpeed: st.tanks[0].speed,
+        turretDeg: st.tanks[0].turretAngle,
+        radarDeg: st.tanks[0].radarAngle,
+      };
+    };
+
+    const gHigh = runGravityTrial('high_2');
+    const gNorm = runGravityTrial('normal');
+    const gLow = runGravityTrial('low_2');
+    const gHighSlow = runGravityTrial('high_2', true);
+
+    const gunSpec = MAIN_GUN_SPECS.standard;
+    const radarSpec = RADAR_SPECS.balanced;
+
+    // Speed scales 0.5x / 1.0x / 1.5x
+    expect(gHigh.distMoved).toBeCloseTo(gNorm.distMoved * 0.5, 4);
+    expect(gLow.distMoved).toBeCloseTo(gNorm.distMoved * 1.5, 4);
+    expect(gHigh.finalSpeed).toBeCloseTo(gNorm.finalSpeed * 0.5, 4);
+    expect(gLow.finalSpeed).toBeCloseTo(gNorm.finalSpeed * 1.5, 4);
+
+    // Turret turn scales by half-gravity: 0.75x / 1.0x / 1.25x over 10 ticks
+    expect(gHigh.turretDeg).toBeCloseTo(gunSpec.turretTurnRate * 0.75 * 10, 4);
+    expect(gNorm.turretDeg).toBeCloseTo(gunSpec.turretTurnRate * 1.0 * 10, 4);
+    expect(gLow.turretDeg).toBeCloseTo(gunSpec.turretTurnRate * 1.25 * 10, 4);
+
+    // Radar turn stays unaffected (1.0x)
+    expect(gHigh.radarDeg).toBeCloseTo(radarSpec.turnRate * 10, 4);
+    expect(gLow.radarDeg).toBeCloseTo(radarSpec.turnRate * 10, 4);
+
+    // High gravity + slow zone clamps at 0.25x instead of 0.5 * 0.45 = 0.225x
+    expect(gHighSlow.distMoved).toBeCloseTo(gNorm.distMoved * 0.25, 4);
+
+    // Sandstorm radar range scaling: balanced base = 820px -> extreme (0.2x) = 164px
+    const runSandstormCheck = (sandstormPreset: 'none' | 'extreme', enemyDist: number) => {
+      const cfg = {
+        ...DEFAULT_BATTLEFIELD_CONFIG,
+        obstacleMode: 'none' as const,
+        zoneMode: 'none' as const,
+        sandstormPreset,
+      };
+      const scanner = createBattlefieldMatchState(parts, cfg);
+      scanner.tanks[0].x = 300;
+      scanner.tanks[0].y = 500;
+      scanner.tanks[0].radarAngle = 90;
+      scanner.tanks[1].x = 300 + enemyDist;
+      scanner.tanks[1].y = 500;
+      stepBattlefieldTick(scanner, cfg);
+      return scanner.tanks[0].radarLock;
+    };
+
+    expect(runSandstormCheck('none', 220)).toBe(true);
+    expect(runSandstormCheck('extreme', 220)).toBe(false);
+    expect(runSandstormCheck('extreme', 140)).toBe(true);
+
+    // Result formatting includes non-default Gravity & Sandstorm short labels
+    const modCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      gravityPreset: 'low_2' as const,
+      sandstormPreset: 'heavy' as const,
+    };
+    const modState = createBattlefieldMatchState(parts, modCfg);
+    stepBattlefieldTick(modState, modCfg);
+    const report = buildMatchReport(modState, parts, modCfg);
+    const matchText = formatMatchReportText(report);
+    expect(matchText).toContain(GRAVITY_PRESET_SPECS.low_2.shortLabel);
+    expect(matchText).toContain(SANDSTORM_PRESET_SPECS.heavy.shortLabel);
+
+    const units: CompetitionUnit[] = [
+      { unitId: 'u1', unitName: 'Unit1', entries: [eA], color: '#38bdf8' },
+      { unitId: 'u2', unitName: 'Unit2', entries: [eB], color: '#e69f00' },
+    ];
+    const leagueMatches = createLeagueSchedule(units);
+    const standings = computeLeagueStandings(units, leagueMatches);
+    const leagueText = formatLeagueStandingsText(standings, modCfg);
+    expect(leagueText).toContain(GRAVITY_PRESET_SPECS.low_2.shortLabel);
+    expect(leagueText).toContain(SANDSTORM_PRESET_SPECS.heavy.shortLabel);
+
+    const bracket = createTournamentBracket(units);
+    const tourneyText = formatTournamentSummaryText(bracket, modCfg);
+    expect(tourneyText).toContain(GRAVITY_PRESET_SPECS.low_2.shortLabel);
+    expect(tourneyText).toContain(SANDSTORM_PRESET_SPECS.heavy.shortLabel);
+
+    // Default normal/none omits gravity & sandstorm labels
+    const defReport = buildMatchReport(createBattlefieldMatchState(parts, DEFAULT_BATTLEFIELD_CONFIG), parts, DEFAULT_BATTLEFIELD_CONFIG);
+    const defText = formatMatchReportText(defReport);
+    expect(defText).not.toContain('標準重力');
+    expect(defText).not.toContain('砂塵なし');
+  });
+
+  it('computes ramming_derby damage as mainGunMaxFirepower * 3 * speedFactor using pre-impact speed', () => {
+    const baseCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'ramming_derby' as const,
+      disableWeapons: true,
+      obstacleMode: 'none' as const,
+      zoneMode: 'none' as const,
+    };
+
+    const chargerBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'ram_charger',
+      name: '突撃スタンダード',
+      author: 'R1',
+      assembly: {
+        ...DEFAULT_PLAYER_BLUEPRINT.assembly,
+        cpu: 'mini_4x4',
+        chassis: 'standard',
+        mainGun: 'standard',
+      },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+      ]),
+    };
+    const cannonSentryBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'ram_sentry',
+      name: '固定キャノン',
+      author: 'R2',
+      assembly: {
+        ...DEFAULT_PLAYER_BLUEPRINT.assembly,
+        cpu: 'mini_4x4',
+        chassis: 'heavy',
+        mainGun: 'cannon',
+      },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: null },
+      ]),
+    };
+
+    const eCharger = createRosterEntryFromBlueprint(chargerBp, 'test');
+    const eSentry = createRosterEntryFromBlueprint(cannonSentryBp, 'test');
+    const parts = [
+      { entry: eCharger, teamId: 'ffa_0', teamLabel: 'R1', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eSentry, teamId: 'ffa_1', teamLabel: 'R2', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+
+    const probeState = createBattlefieldMatchState(parts, baseCfg);
+    const probe = probeState.tanks[0];
+
+    // 1. Direct formula verification across guns and speed tiers
+    for (const gunId of ['rapid', 'standard', 'cannon'] as const) {
+      probe.blueprint.assembly.mainGun = gunId;
+      const gunMax = computeShellMetrics(
+        gunId,
+        MAIN_GUN_SPECS[gunId].maxPower,
+        probe.blueprint.assembly.chassis
+      ).damage;
+
+      probe.lastCollisionImpactSpeed = 0;
+      probe.boostTicks = 0;
+      expect(computeRammingDamage(probe)).toBeCloseTo(
+        gunMax * RAMMING_DAMAGE_MULTIPLIER * 0.3,
+        4
+      );
+
+      probe.lastCollisionImpactSpeed = 3.5;
+      probe.boostTicks = 0;
+      expect(computeRammingDamage(probe)).toBeCloseTo(
+        gunMax * RAMMING_DAMAGE_MULTIPLIER * 1.0,
+        4
+      );
+
+      probe.lastCollisionImpactSpeed = 6.0;
+      probe.boostTicks = 10;
+      expect(computeRammingDamage(probe)).toBeCloseTo(
+        gunMax * RAMMING_DAMAGE_MULTIPLIER * 1.5,
+        4
+      );
+    }
+
+    // 2. Live collision: charging standard tank vs stationary heavy cannon tank
+    const st = createBattlefieldMatchState(parts, baseCfg);
+    const charger = st.tanks[0];
+    const sentry = st.tanks[1];
+    charger.x = 400;
+    charger.y = 400;
+    charger.bodyAngle = 90;
+    charger.speed = 3.5;
+    sentry.x = 438;
+    sentry.y = 400;
+    sentry.bodyAngle = 270;
+    sentry.speed = 0;
+    sentry.hp = 35;
+
+    stepBattlefieldTick(st, baseCfg);
+
+    // Pre-impact speed preserved on runtime state
+    expect(charger.lastCollisionImpactSpeed).toBeGreaterThanOrEqual(3.5);
+    expect(sentry.lastCollisionImpactSpeed).toBe(0);
+
+    // Stationary cannon target deals only 0.3x recoil (~20.6) instead of full 1.0x (~68.7)
+    const expectedRecoil =
+      computeShellMetrics('cannon', MAIN_GUN_SPECS.cannon.maxPower, 'heavy').damage * 3 * 0.3;
+    expect(sentry.stats.damageDealt).toBeCloseTo(expectedRecoil, 3);
+    expect(sentry.stats.ruleScore).toBe(Math.round(expectedRecoil));
+
+    // Charging standard tank deals > 1.0x (>39.3), higher than sentry's recoil, and finishes sentry
+    expect(charger.stats.damageDealt).toBeGreaterThan(expectedRecoil);
+    expect(charger.stats.ruleScore).toBe(Math.round(charger.stats.damageDealt));
+    expect(sentry.hp).toBe(0);
+    expect(sentry.killedById).toBe(charger.id);
+    expect(charger.stats.kills).toBe(1);
+    expect(st.status).toBe('finished');
+    expect(st.winnerId).toBe(charger.id);
+  });
+
+  it('runs balloon_hunt: targets only balloons, blocks tank damage with amplified bounce, scores shoot/ram + respawns', () => {
+    const shooterBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'bh_shooter',
+      name: '風船ハンター',
+      author: 'B1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', radar: 'balanced' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_aim_enemy', params: { lead: 'direct', offsetDeg: 0 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_fire', params: { power: 'fast', wait: 0 }, next: { x: 3, y: 0 } },
+        { x: 3, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0 }, next: null },
+      ]),
+    };
+    const idleBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'bh_idle',
+      name: '風船待機機',
+      author: 'B2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', radar: 'balanced' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: null },
+      ]),
+    };
+
+    const e1 = createRosterEntryFromBlueprint(shooterBp, 'test');
+    const e2 = createRosterEntryFromBlueprint(idleBp, 'test');
+    const parts = [
+      { entry: e1, teamId: 'team_0', teamLabel: 'Blue', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: e2, teamId: 'team_1', teamLabel: 'Orange', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'balloon_hunt' as const,
+      arenaSize: 'medium' as const,
+      obstacleMode: 'none' as const,
+      outerWallMode: 'damage' as const,
+      maxSeconds: 20,
+    };
+    const st = createBattlefieldMatchState(parts, cfg);
+    expect(st.arena.targets?.length).toBe(6);
+
+    // Override targets with controlled red (1pt) and gold (3pt) balloons; place enemy closer than red balloon
+    st.arena.targets = [
+      { id: 'b_red', kind: 'shoot_balloon', x: 520, y: 400, radius: 20, hp: 1, maxHp: 1, points: 1, color: '#f43f5e' },
+      { id: 'b_gold', kind: 'shoot_balloon', x: 315, y: 600, radius: 17, hp: 1, maxHp: 1, points: 3, color: '#facc15' },
+    ];
+    const hunter = st.tanks[0];
+    const enemy = st.tanks[1];
+    hunter.x = 200;
+    hunter.y = 400;
+    hunter.bodyAngle = 90;
+    hunter.turretAngle = 90;
+    hunter.radarAngle = 90;
+    enemy.x = 310;
+    enemy.y = 400;
+
+    // 1. Radar ignores closer enemy at 310 and locks onto b_red at 520; shell hits enemy without dealing damage
+    for (let i = 0; i < 6; i++) {
+      stepBattlefieldTick(st, cfg);
+    }
+    expect(hunter.radarLock).toBe(true);
+    expect(hunter.detectedEnemy?.id).toBe('b_red');
+    expect(enemy.hp).toBe(enemy.maxHp);
+    expect(enemy.stats.damageTaken).toBe(0);
+
+    // 2. Electric wall & tank-to-tank collision deal 0 damage; ramming gold balloon awards 3pt; respawns fill up to 6
+    enemy.x = st.arena.width - 5;
+    hunter.x = 305;
+    hunter.y = 600;
+    stepBattlefieldTick(st, cfg);
+    expect(enemy.hp).toBe(enemy.maxHp);
+    expect(hunter.hp).toBe(hunter.maxHp);
+    expect(hunter.stats.ruleScore).toBeGreaterThanOrEqual(3);
+    expect(st.arena.targets.length).toBe(6);
+
+    // 3. Timeout decides winner strictly by balloon points
+    st.tick = st.arena.maxTicks - 1;
+    stepBattlefieldTick(st, cfg);
+    expect(st.status).toBe('finished');
+    expect(st.winType).toBe('decision');
+    expect(st.winnerId).toBe(hunter.id);
+    expect(st.endReason).toContain('風船');
+  });
+
+  it('runs domination: solo claim, contested neutralize, continues after wipeout, and awards majority tiles even if wiped out', () => {
+    const stationaryBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'dom_idle',
+      name: '陣取り機',
+      author: 'D',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: null },
+      ]),
+    };
+
+    const eA = createRosterEntryFromBlueprint(stationaryBp, 'test');
+    const eB = createRosterEntryFromBlueprint(stationaryBp, 'test');
+    const parts = [
+      { entry: eA, teamId: 'team_0', teamLabel: 'Team A', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eB, teamId: 'team_1', teamLabel: 'Team B', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'domination' as const,
+      arenaSize: 'small' as const,
+      obstacleMode: 'none' as const,
+      maxSeconds: 20,
+    };
+    const st = createBattlefieldMatchState(parts, cfg);
+    expect(st.territoryGrid).toBeDefined();
+    const grid = st.territoryGrid!;
+    expect(grid.cols).toBe(6);
+    expect(grid.rows).toBe(5);
+
+    const cellW = st.arena.width / grid.cols;
+    const cellH = st.arena.height / grid.rows;
+
+    // 1. Place Team A alone in cell (2,2), Team B in (4,4) -> both claim their cells
+    st.tanks[0].x = cellW * 2.5;
+    st.tanks[0].y = cellH * 2.5;
+    st.tanks[1].x = cellW * 4.5;
+    st.tanks[1].y = cellH * 4.5;
+    stepBattlefieldTick(st, cfg);
+    expect(grid.owners[2 * grid.cols + 2]).toBe('team_0');
+    expect(grid.owners[4 * grid.cols + 4]).toBe('team_1');
+
+    // 2. Team B enters cell (2,2) too -> contested cell becomes neutral (null)
+    st.tanks[1].x = cellW * 2.4;
+    st.tanks[1].y = cellH * 2.4;
+    stepBattlefieldTick(st, cfg);
+    expect(grid.owners[2 * grid.cols + 2]).toBeNull();
+
+    // 3. Team A claims 3 cells, then gets wiped out -> match does NOT end early while Team B is alive,
+    //    and at timeout wiped-out Team A still wins because it holds more tiles (3 > 1)
+    for (let c = 0; c < 3; c++) {
+      grid.owners[c] = 'team_0';
+    }
+    st.tanks[0].hp = 0;
+    st.tanks[1].x = cellW * 5.5;
+    st.tanks[1].y = cellH * 4.5;
+    stepBattlefieldTick(st, cfg);
+    expect(st.status).toBe('running');
+
+    st.tick = st.arena.maxTicks - 1;
+    stepBattlefieldTick(st, cfg);
+    expect(st.status).toBe('finished');
+    expect(st.winType).toBe('decision');
+    expect(st.winnerId).toBe(st.tanks[0].id);
+    expect(st.endReason).toContain('Team A');
+
+    // 4. All teams wiped out (Double KO / delayed mine) ends early and awards tile leader
+    const stAllDead = createBattlefieldMatchState(parts, cfg);
+    stAllDead.territoryGrid!.owners[0] = 'team_1';
+    stAllDead.territoryGrid!.owners[1] = 'team_1';
+    stAllDead.territoryGrid!.owners[2] = 'team_0';
+    stAllDead.tanks[0].hp = 0;
+    stAllDead.tanks[1].hp = 0;
+    stepBattlefieldTick(stAllDead, cfg);
+    expect(stAllDead.status).toBe('finished');
+    expect(stAllDead.winnerId).toBe(stAllDead.tanks[1].id);
+  });
+
+  it('runs tank_soccer (Combat Football): radar locks ball only, shell kicks ball, endline scores & resets kickoff, reports result', () => {
+    const kickerBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'fb_kicker',
+      name: 'ストライカー',
+      author: 'F1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', radar: 'balanced' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_aim_enemy', params: { lead: 'direct', offsetDeg: 0 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_fire', params: { power: 'heavy', wait: 0 }, next: null },
+      ]),
+    };
+    const keeperBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'fb_keeper',
+      name: 'キーパー',
+      author: 'F2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', radar: 'balanced' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: null },
+      ]),
+    };
+
+    const eW = createRosterEntryFromBlueprint(kickerBp, 'test');
+    const eE = createRosterEntryFromBlueprint(keeperBp, 'test');
+    const parts = [
+      { entry: eW, teamId: 'team_0', teamLabel: 'Team A', teamColor: '#56b4e9', slotIndex: 0 },
+      { entry: eE, teamId: 'team_1', teamLabel: 'Team B', teamColor: '#e69f00', slotIndex: 0 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      format: 'team_match' as const,
+      ruleId: 'tank_soccer' as const,
+      arenaSize: 'medium' as const,
+      obstacleMode: 'none' as const,
+      maxSeconds: 20,
+    };
+
+    const st = createBattlefieldMatchState(parts, cfg);
+    expect(st.football).toBeDefined();
+    const fb = st.football!;
+    const west = st.tanks[0];
+    const east = st.tanks[1];
+
+    // 0. Initial kickoff uses randomized placements inside each team's half
+    expect(fb.kickoffCount).toBe(1);
+    const firstWestSpawn = { ...fb.kickoffSpawns[west.id] };
+    const firstEastSpawn = { ...fb.kickoffSpawns[east.id] };
+    expect(firstWestSpawn.x).toBeGreaterThanOrEqual(st.arena.width * 0.1);
+    expect(firstWestSpawn.x).toBeLessThanOrEqual(st.arena.width * 0.42);
+    expect(firstEastSpawn.x).toBeGreaterThanOrEqual(st.arena.width * 0.58);
+    expect(firstEastSpawn.x).toBeLessThanOrEqual(st.arena.width * 0.9);
+
+    // 1. Place West striker inline with ball and East keeper between them; striker still locks onto football only & kicks ball East on shot
+    west.x = 240;
+    west.y = fb.y;
+    west.bodyAngle = 90;
+    west.turretAngle = 90;
+    west.radarAngle = 90;
+    east.x = 340;
+    east.y = fb.y;
+    stepBattlefieldTick(st, cfg);
+    expect(west.radarLock).toBe(true);
+    expect(west.detectedEnemy?.id).toBe('football');
+
+    // Move keeper out of shot line and test shell kicking ball + zero tank damage when keeper intercepts
+    east.x = st.arena.width - 120;
+    west.gunHeat = 0;
+    west.fireState = null;
+    for (let i = 0; i < 40; i++) {
+      stepBattlefieldTick(st, cfg);
+    }
+    expect(fb.vx).toBeGreaterThan(1.0);
+    expect(east.hp).toBe(east.maxHp);
+    expect(west.hp).toBe(west.maxHp);
+
+    // 2. Move ball across East endline -> Team A (West) scores 1 and holds ball at endline for UI 1s beat;
+    //    subsequent tick resets ball to center and generates new randomized kickoff positions
+    west.x = 600;
+    west.y = 200;
+    st.projectiles.push({
+      id: 'pre_goal_shell',
+      ownerId: west.id,
+      kind: 'shell',
+      x: 500,
+      y: 250,
+      vx: 4,
+      vy: 0,
+      angle: 90,
+      speed: 4,
+      power: 1,
+      damage: 5,
+      color: '#38bdf8',
+      ttl: 100,
+    });
+    fb.x = st.arena.width - fb.radius + 1;
+    fb.vx = 4;
+    stepBattlefieldTick(st, cfg);
+    expect(st.ruleTeamScores?.[fb.westTeamId]).toBe(1);
+    expect(st.ruleTeamScores?.[fb.eastTeamId]).toBe(0);
+    expect(fb.pendingKickoffReset).toBe(true);
+    expect(fb.x).toBeCloseTo(st.arena.width - fb.radius, 1);
+    expect(fb.vx).toBe(0);
+    expect(fb.lastGoalBanner?.teamId).toBe(fb.westTeamId);
+    expect(st.projectiles.length).toBe(0);
+
+    stepBattlefieldTick(st, cfg);
+    expect(fb.pendingKickoffReset).toBe(false);
+    expect(fb.x).toBeCloseTo(st.arena.width / 2, 1);
+    expect(fb.y).toBeCloseTo(st.arena.height / 2, 1);
+    expect(fb.kickoffCount).toBe(2);
+    const secondWestSpawn = fb.kickoffSpawns[west.id];
+    const secondEastSpawn = fb.kickoffSpawns[east.id];
+    expect(
+      secondWestSpawn.x !== firstWestSpawn.x ||
+        secondWestSpawn.y !== firstWestSpawn.y ||
+        secondEastSpawn.x !== firstEastSpawn.x ||
+        secondEastSpawn.y !== firstEastSpawn.y
+    ).toBe(true);
+    expect(west.x).toBeCloseTo(secondWestSpawn.x, 1);
+    expect(west.y).toBeCloseTo(secondWestSpawn.y, 1);
+    expect(secondWestSpawn.x).toBeLessThanOrEqual(st.arena.width * 0.42);
+    expect(secondEastSpawn.x).toBeGreaterThanOrEqual(st.arena.width * 0.58);
+    expect(st.projectiles.some((p) => p.id === 'pre_goal_shell')).toBe(false);
+
+    // 3. Finish at timeout -> Team A wins 1 - 0; report ranks winner correctly
+    st.tick = st.arena.maxTicks - 1;
+    stepBattlefieldTick(st, cfg);
+    expect(st.status).toBe('finished');
+    expect(st.winType).toBe('decision');
+    expect(st.winnerId).toBe(west.id);
+    expect(st.endReason).toContain('Team A 1 - 0 Team B');
+
+    const report = buildMatchReport(st, parts, cfg);
+    expect(report.winnerTeamId).toBe('team_0');
+    expect(report.teamRows[0].teamId).toBe('team_0');
+    const txt = formatMatchReportText(report);
+    expect(txt).toContain('コンバットフットボール');
+    expect(txt).toContain('Team A 1 - 0 Team B');
+
+    // 4. Own-goal firing override blocks shells & missiles aimed past North-South line toward own goal
+    const shooterBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'fb_fixed_gun',
+      name: '固定角度砲手',
+      author: 'F3',
+      assembly: {
+        ...DEFAULT_PLAYER_BLUEPRINT.assembly,
+        cpu: 'mini_4x4',
+        subWeapon: 'missile',
+      },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 'normal', wait: 0 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_sub_weapon', params: {}, next: null },
+      ]),
+    };
+    const eFireW = createRosterEntryFromBlueprint(shooterBp, 'test');
+    const eFireE = createRosterEntryFromBlueprint(shooterBp, 'test');
+    const fireParts = [
+      { entry: eFireW, teamId: 'team_0', teamLabel: 'Team A', teamColor: '#56b4e9', slotIndex: 0 },
+      { entry: eFireE, teamId: 'team_1', teamLabel: 'Team B', teamColor: '#e69f00', slotIndex: 0 },
+    ];
+    const checkOwnGoalBlock = (teamSide: 'west' | 'east', angle: number, expectBlocked: boolean) => {
+      const fSt = createBattlefieldMatchState(fireParts, { ...cfg, obstacleSeed: 7 });
+      fSt.tanks[0].x = 250;
+      fSt.tanks[0].y = 400;
+      fSt.tanks[1].x = 750;
+      fSt.tanks[1].y = 400;
+      const actor = teamSide === 'west' ? fSt.tanks[0] : fSt.tanks[1];
+      const idleOther = teamSide === 'west' ? fSt.tanks[1] : fSt.tanks[0];
+      actor.turretAngle = angle;
+      // Aim idle tank toward its own goal so it never fires and never interferes
+      idleOther.turretAngle = teamSide === 'west' ? 90 : 270;
+      const initSubAmmo = actor.subAmmo;
+      stepBattlefieldTick(fSt, cfg);
+      if (expectBlocked) {
+        expect(actor.stats.shotsFired).toBe(0);
+        expect(actor.subAmmo).toBe(initSubAmmo);
+        expect(fSt.projectiles.length).toBe(0);
+      } else {
+        expect(actor.stats.shotsFired).toBe(2); // main shell + missile
+        expect(actor.subAmmo).toBe(initSubAmmo - 1);
+      }
+    };
+
+    // West team: blocked when aiming West (225, 270, 315); allowed when North (0), South (180), or East (90)
+    checkOwnGoalBlock('west', 270, true);
+    checkOwnGoalBlock('west', 225, true);
+    checkOwnGoalBlock('west', 315, true);
+    checkOwnGoalBlock('west', 0, false);
+    checkOwnGoalBlock('west', 180, false);
+    checkOwnGoalBlock('west', 90, false);
+
+    // East team: blocked when aiming East (45, 90, 135); allowed when North (0) or West (270)
+    checkOwnGoalBlock('east', 90, true);
+    checkOwnGoalBlock('east', 45, true);
+    checkOwnGoalBlock('east', 135, true);
+    checkOwnGoalBlock('east', 0, false);
+    checkOwnGoalBlock('east', 270, false);
+  });
+});
+
 
 
 

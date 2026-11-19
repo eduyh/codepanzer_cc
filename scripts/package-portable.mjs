@@ -8,6 +8,7 @@ const rootDir = process.cwd();
 const distDir = path.join(rootDir, 'dist');
 const assetsDir = path.join(distDir, 'assets');
 const indexPath = path.join(distDir, 'index.html');
+const battlefieldPath = path.join(distDir, 'battlefield.html');
 const readmePath = path.join(distDir, 'README.txt');
 const distTanksDir = path.join(distDir, 'tanks');
 const workspaceTanksDir = path.join(rootDir, 'tanks');
@@ -61,6 +62,18 @@ if (jsScriptRegex.test(html)) {
 
 fs.writeFileSync(indexPath, html, 'utf8');
 
+let battlefieldHtml = html.replace(/<html([^>]*)>/i, (_full, attrs) =>
+  /data-app-mode/i.test(attrs) ? `<html${attrs}>` : `<html${attrs} data-app-mode="battlefield">`
+);
+battlefieldHtml = battlefieldHtml
+  .replace(
+    /<title>[^<]*<\/title>/i,
+    '<title>CodePanzer.py - BATTLEFIELD | 大会・観戦アリーナ</title>'
+  )
+  .replace(/%2306b6d4/gi, '%23f59e0b')
+  .replace(/%233b82f6/gi, '%23ef4444');
+fs.writeFileSync(battlefieldPath, battlefieldHtml, 'utf8');
+
 const readmeContent = `==================================================
   CodePanzer.py - Code Your Tank, Command the Arena. (配布用)
 ==================================================
@@ -73,8 +86,10 @@ const readmeContent = `==================================================
 
 ■ 起動方法
   1. この ZIP ファイルをフォルダに解凍（展開）してください。
-  2. 解凍したフォルダ内の「index.html」をダブルクリックしてください。
-     （自動的にブラウザが開き、ゲームが起動します）
+  2. 用途に応じて解凍したフォルダ内のファイルを開いてください：
+     ・index.html       … 課題学習・開発訓練・機体プログラミング画面
+     ・battlefield.html … 複数機体読込・大会（バトロワ/チーム/トーナメント/リーグ）専用バトルフィールド画面
+     （ダブルクリックすると自動的にブラウザが開き、ゲームが起動します）
 
 ■ 機体の保存と対戦相手の共有方法
   ・画面右上の「共有・読込」ボタン、またはエディタ・テストグラウンド上部の「読込」ボタンから操作できます。
@@ -147,13 +162,15 @@ if (fs.existsSync(zipPath)) {
   fs.unlinkSync(zipPath);
 }
 
-execFileSync('zip', ['-r', zipPath, 'index.html', 'README.txt', 'tanks'], {
+execFileSync('zip', ['-r', zipPath, 'index.html', 'battlefield.html', 'README.txt', 'tanks'], {
   cwd: distDir,
   stdio: 'inherit',
 });
 
 const htmlSizeKb = (fs.statSync(indexPath).size / 1024).toFixed(1);
+const bfSizeKb = (fs.statSync(battlefieldPath).size / 1024).toFixed(1);
 const zipSizeKb = (fs.statSync(zipPath).size / 1024).toFixed(1);
 console.log(`Portable index.html: ${htmlSizeKb} KB`);
+console.log(`Portable battlefield.html: ${bfSizeKb} KB`);
 console.log(`Exported ${exportedTankCount} tank files to tanks/ and dist/tanks/`);
 console.log(`Created archive: ${zipPath} (${zipSizeKb} KB)`);

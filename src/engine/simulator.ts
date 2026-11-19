@@ -25,7 +25,7 @@ import {
 } from '../types/game';
 import { validateAndRepairBlueprint } from '../utils/blueprintGatekeeper';
 import { getAutoTankColor, MAX_BATTLE_TANKS } from '../utils/codeParser';
-import { runTankChipProgram } from './chipRunner';
+import { isTankInTileKind, runTankChipProgram } from './chipRunner';
 import {
   angleToVector,
   circleIntersectsRect,
@@ -241,6 +241,17 @@ function makeEntityId(prefix: string): string {
   return `${prefix}_${nextEntitySeq}`;
 }
 
+function areAllied(
+  a: { team: 'player' | 'enemy'; teamId?: string },
+  b: { team: 'player' | 'enemy'; teamId?: string },
+  arena: ArenaConfig
+): boolean {
+  if (arena.multiTeamMode && a.teamId && b.teamId) {
+    return a.teamId === b.teamId;
+  }
+  return Boolean(arena.teamBattle && a.team === b.team);
+}
+
 export function createTankRuntime(
   id: string,
   team: 'player' | 'enemy',
@@ -314,6 +325,9 @@ export function createTankRuntime(
       damageDealt: 0,
       damageTaken: 0,
       wallHits: 0,
+      kills: 0,
+      eliminatedAtTick: null,
+      ruleScore: 0,
     },
   };
 }
@@ -412,6 +426,9 @@ function updateRadarScan(
   state: BattleState
 ): void {
   const radar = RADAR_SPECS[tank.blueprint.assembly.radar];
+  const radarRangeMult = clamp(state.arena.radarRangeMult ?? 1.0, 0.2, 1.0);
+  const effectiveRange = radar.range * radarRangeMult;
+  const targetMode = state.arena.radarTargetMode ?? 'default';
   const smokes = state.smokes ?? [];
   const decoys = state.decoys ?? [];
   interface RadarCandidate {
@@ -430,7 +447,7 @@ function updateRadarScan(
 
   const considerCandidate = (candidate: RadarCandidate): void => {
     const dist = distanceBetween(tank.x, tank.y, candidate.x, candidate.y);
-    if (dist > radar.range || dist >= bestDist) return;
+    if (dist > effectiveRange || dist >= bestDist) return;
 
     const absBearing = vectorToAngle(candidate.x - tank.x, candidate.y - tank.y);
     const diff = Math.abs(normalizeAngle180(absBearing - tank.radarAngle));
@@ -445,39 +462,60 @@ function updateRadarScan(
     bestBearing = absBearing;
   };
 
-  for (const other of candidates) {
-    if (other.id === tank.id || other.hp <= 0) continue;
-    if (state.arena.teamBattle && other.team === tank.team) continue;
-    considerCandidate({
-      id: other.id,
-      x: other.x,
-      y: other.y,
-      vx: other.vx,
-      vy: other.vy,
-      speed: other.speed,
-      heading: other.bodyAngle,
-      hp: other.hp,
-    });
+  if (targetMode === 'default') {
+    for (const other of candidates) {
+      if (other.id === tank.id || other.hp <= 0) continue;
+      if (areAllied(other, tank, state.arena)) continue;
+      considerCandidate({
+        id: other.id,
+        x: other.x,
+        y: other.y,
+        vx: other.vx,
+        vy: other.vy,
+        speed: other.speed,
+        heading: other.bodyAngle,
+        hp: other.hp,
+      });
+    }
+
+    for (const decoy of decoys) {
+      if (decoy.ownerId === tank.id || decoy.hp <= 0 || decoy.ttl <= 0) continue;
+      if (areAllied(decoy, tank, state.arena)) continue;
+      considerCandidate({
+        id: decoy.id,
+        x: decoy.x,
+        y: decoy.y,
+        vx: 0,
+        vy: 0,
+        speed: 0,
+        heading: 0,
+        hp: decoy.hp,
+      });
+    }
   }
 
-  for (const decoy of decoys) {
-    if (decoy.ownerId === tank.id || decoy.hp <= 0 || decoy.ttl <= 0) continue;
-    if (state.arena.teamBattle && decoy.team === tank.team) continue;
-    considerCandidate({
-      id: decoy.id,
-      x: decoy.x,
-      y: decoy.y,
-      vx: 0,
-      vy: 0,
-      speed: 0,
-      heading: 0,
-      hp: decoy.hp,
-    });
-  }
-
-  if (tank.team === 'player' && state.arena.targets) {
+  if (targetMode === 'ball_only') {
+    const ball = state.football;
+    if (ball) {
+      const speed = Math.hypot(ball.vx, ball.vy);
+      considerCandidate({
+        id: 'football',
+        x: ball.x,
+        y: ball.y,
+        vx: ball.vx,
+        vy: ball.vy,
+        speed,
+        heading: speed > 1e-4 ? vectorToAngle(ball.vx, ball.vy) : 0,
+        hp: 100,
+      });
+    }
+  } else if (
+    state.arena.targets &&
+    (targetMode === 'targets_only' || tank.team === 'player')
+  ) {
     for (const tgt of state.arena.targets) {
-      if (tgt.popped || tgt.kind !== 'shoot_balloon') continue;
+      if (tgt.popped) continue;
+      if (targetMode === 'default' && tgt.kind !== 'shoot_balloon') continue;
       const vx = tgt.vx ?? 0;
       const vy = tgt.vy ?? 0;
       const speed = Math.hypot(vx, vy);
@@ -533,8 +571,8 @@ function updateRadarScan(
   };
 }
 
-function resolveObstaclePush(
-  tank: TankRuntime,
+export function resolveObstaclePush(
+  tank: { x: number; y: number },
   radius: number,
   obstacles: ArenaObstacle[]
 ): { hit: boolean; nx: number; ny: number } {
@@ -621,14 +659,16 @@ function applyTankImpactPhysics(
   otherBoosted: boolean,
   streak: number,
   rand: () => number,
-  tieSign: 1 | -1
+  tieSign: 1 | -1,
+  gravityMult = 1.0,
+  bounceMult = 1.0
 ): void {
   const chassisId = tank.blueprint.assembly.chassis;
   const chassis = CHASSIS_SPECS[chassisId];
   const profile = CHASSIS_COLLISION_PROFILES[chassisId];
   const { mobilityMultiplier } = calculateAssemblyWeight(tank.blueprint.assembly);
   const boostFactor = tank.boostTicks > 0 ? 1.7 : 1.0;
-  const maxSpd = chassis.maxSpeed * mobilityMultiplier * boostFactor;
+  const maxSpd = chassis.maxSpeed * mobilityMultiplier * boostFactor * gravityMult * Math.max(1, bounceMult);
 
   const h = angleToVector(tank.bodyAngle);
   const dot = h.dx * outNx + h.dy * outNy; // +1 = facing collision, < 0.35 = struck from side/rear
@@ -641,15 +681,15 @@ function applyTankImpactPhysics(
     // Moving into or pressed against the other tank: rebound away along the tank axis
     const baseBounce = streak > 0 ? 1.5 + approachSpeed * 0.5 : 0.95 + approachSpeed * 0.38;
     const rebound = clamp(
-      baseBounce * (0.55 + 0.75 * massShare) * profile.bounceFactor * streakScale,
-      streak > 0 ? 0.85 : 0.55,
+      baseBounce * (0.55 + 0.75 * massShare) * profile.bounceFactor * streakScale * bounceMult,
+      (streak > 0 ? 0.85 : 0.55) * bounceMult,
       maxSpd * 1.15
     );
     tank.speed = awaySign * rebound;
   } else {
     // Moving away from contact normal: shove further away along -outN
     tank.speed = clamp(
-      tank.speed + awaySign * approachSpeed * massShare * 0.45,
+      tank.speed + awaySign * approachSpeed * massShare * 0.45 * bounceMult,
       -maxSpd * 1.1,
       maxSpd * 1.15
     );
@@ -696,7 +736,6 @@ function applyTankImpactPhysics(
 }
 
 function resolveTankCollisions(state: BattleState, tick: number): void {
-  const friendlyFireDisabled = Boolean(state.arena.teamBattle);
   for (let i = 0; i < state.tanks.length; i++) {
     const t1 = state.tanks[i];
     if (t1.hp <= 0) continue;
@@ -745,8 +784,22 @@ function resolveTankCollisions(state: BattleState, tick: number): void {
         t2.lastTankCollisionTick !== undefined && tick - t2.lastTankCollisionTick <= 36
           ? Math.min(4, (t2.tankCollisionStreak ?? 0) + 1)
           : 0;
+      const s1 = Math.abs(t1.speed);
+      const s2 = Math.abs(t2.speed);
+      t1.lastCollisionImpactSpeed =
+        t1.lastTankCollisionTick === tick && t1.lastCollisionImpactSpeed !== undefined
+          ? Math.max(t1.lastCollisionImpactSpeed, s1)
+          : s1;
+      t2.lastCollisionImpactSpeed =
+        t2.lastTankCollisionTick === tick && t2.lastCollisionImpactSpeed !== undefined
+          ? Math.max(t2.lastCollisionImpactSpeed, s2)
+          : s2;
       t1.lastTankCollisionTick = tick;
       t2.lastTankCollisionTick = tick;
+      if (!areAllied(t1, t2, state.arena)) {
+        t1.lastCollidedTankId = t2.id;
+        t2.lastCollidedTankId = t1.id;
+      }
       t1.tankCollisionStreak = s1Streak;
       t2.tankCollisionStreak = s2Streak;
       const maxStreak = Math.max(s1Streak, s2Streak);
@@ -756,22 +809,48 @@ function resolveTankCollisions(state: BattleState, tick: number): void {
       const share1 = w2 / weightSum;
       const share2 = w1 / weightSum;
 
-      const s1 = Math.abs(t1.speed);
-      const s2 = Math.abs(t2.speed);
       const b1 = t1.boostTicks > 0;
       const b2 = t2.boostTicks > 0;
       const windowSeed = ((Math.floor(tick / 45) + 1) * 2654435761) ^ (i * 97 + j * 193);
       const tieSign: 1 | -1 = mulberry32(windowSeed)() < 0.5 ? -1 : 1;
 
-      applyTankImpactPhysics(t1, nx, ny, share1, approachSpeed, s2, b2, s1Streak, rand, tieSign);
-      applyTankImpactPhysics(t2, -nx, -ny, share2, approachSpeed, s1, b1, s2Streak, rand, tieSign);
+      const gravityMult = clamp(state.arena.gravitySpeedMult ?? 1.0, 0.5, 1.5);
+      const bounceMult = Math.max(0.5, state.arena.tankBounceMult ?? 1.0);
+      applyTankImpactPhysics(
+        t1,
+        nx,
+        ny,
+        share1,
+        approachSpeed,
+        s2,
+        b2,
+        s1Streak,
+        rand,
+        tieSign,
+        gravityMult,
+        bounceMult
+      );
+      applyTankImpactPhysics(
+        t2,
+        -nx,
+        -ny,
+        share2,
+        approachSpeed,
+        s1,
+        b1,
+        s2Streak,
+        rand,
+        tieSign,
+        gravityMult,
+        bounceMult
+      );
 
       // Push apart along normal + tangential slip (realistic first impact, strong deadlock break on streak >= 1)
       const overlap = minDist - dist;
       const extraSep =
-        maxStreak > 0
+        (maxStreak > 0
           ? clamp((9.5 + approachSpeed * 2.0) * streakScale, 9.5, 44.0)
-          : clamp(1.8 + approachSpeed * 0.65, 1.8, 12.0);
+          : clamp(1.8 + approachSpeed * 0.65, 1.8, 12.0)) * bounceMult;
       const totalPush = overlap + extraSep;
       const tx = -ny;
       const ty = nx;
@@ -805,7 +884,7 @@ function resolveTankCollisions(state: BattleState, tick: number): void {
         clampTankToArenaAndObstacles(t2, r2, state.arena);
       }
 
-      if (!(friendlyFireDisabled && t1.team === t2.team)) {
+      if (!state.arena.disableTankDamage && !areAllied(t1, t2, state.arena)) {
         const baseImpact = approachSpeed > 0.4 ? 0.35 + approachSpeed * 0.48 : 0.2;
         const d1 = clamp(baseImpact * clamp(w2 / w1, 0.5, 1.9) * (b2 ? 1.25 : 1.0), 0.2, 7.0);
         const d2 = clamp(baseImpact * clamp(w1 / w2, 0.5, 1.9) * (b1 ? 1.25 : 1.0), 0.2, 7.0);
@@ -836,7 +915,7 @@ export function getDirectionalArmorMultiplier(
   return { zone: 'side', multiplier: 1.0 };
 }
 
-function applyDamage(
+export function applyDamage(
   victim: TankRuntime,
   rawDamage: number,
   attacker: TankRuntime | undefined,
@@ -853,11 +932,210 @@ function applyDamage(
   }
   if (wasAlive && victim.hp <= 0) {
     victim.killedById = attacker ? attacker.id : 'environment';
+    victim.stats.eliminatedAtTick = tick;
+    if (attacker && attacker.id !== victim.id) {
+      attacker.stats.kills = (attacker.stats.kills ?? 0) + 1;
+    }
   }
   return actual;
 }
 
-export function stepBattleTick(state: BattleState): BattleState {
+function isFootballOwnGoalAim(tank: TankRuntime, state: BattleState): boolean {
+  const fb = state.football;
+  if (!fb) return false;
+  const dx = angleToVector(tank.turretAngle).dx;
+  const teamKey = tank.teamId ?? tank.id;
+  if (teamKey === fb.westTeamId) {
+    return dx < -0.001;
+  }
+  if (teamKey === fb.eastTeamId) {
+    return dx > 0.001;
+  }
+  return false;
+}
+
+function evaluateMultiTeamBattleState(state: BattleState): void {
+  const aliveTanks = state.tanks.filter((t) => t.hp > 0);
+  const hasLethalOuterWall =
+    state.arena.outerWallMode === 'damage' ||
+    state.arena.outerWallMode === 'damage_bounce';
+  const hasContribution = (t: TankRuntime): boolean =>
+    state.arena.disableWeapons
+      ? t.stats.damageDealt > 0 ||
+        t.stats.damageTaken > 0 ||
+        (t.stats.ruleScore ?? 0) > 0 ||
+        t.stats.wallHits > 0 ||
+        Math.hypot(t.vx, t.vy) > 0.01
+      : (t.stats.shotsFired > 0 && t.stats.damageDealt > 0) ||
+        (t.stats.ruleScore ?? 0) > 0 ||
+        (hasLethalOuterWall && (t.stats.damageTaken > 0 || t.stats.wallHits > 0));
+
+  const getTeamKey = (t: TankRuntime): string => t.teamId ?? t.id;
+  const distinctTeams = Array.from(new Set(state.tanks.map(getTeamKey)));
+  const aliveTeamIds = Array.from(new Set(aliveTanks.map(getTeamKey)));
+
+  const getTeamScore = (teamKey: string): number => {
+    if (state.ruleTeamScores && state.ruleTeamScores[teamKey] !== undefined) {
+      return state.ruleTeamScores[teamKey];
+    }
+    return state.tanks
+      .filter((t) => getTeamKey(t) === teamKey)
+      .reduce((acc, t) => acc + (t.stats.ruleScore ?? 0), 0);
+  };
+
+  const getTeamLabel = (teamKey: string): string => {
+    if (state.ruleTeamLabels?.[teamKey]) return state.ruleTeamLabels[teamKey];
+    const member = state.tanks.find((t) => getTeamKey(t) === teamKey);
+    if (!member) return teamKey;
+    return member.playerName || member.blueprint.name;
+  };
+
+  const pickBestTankInTeam = (teamKey: string): TankRuntime => {
+    const members = state.tanks.filter((t) => getTeamKey(t) === teamKey);
+    return [...members].sort((a, b) => {
+      const aAlive = a.hp > 0 ? 1 : 0;
+      const bAlive = b.hp > 0 ? 1 : 0;
+      if (bAlive !== aAlive) return bAlive - aAlive;
+      const aRule = a.stats.ruleScore ?? 0;
+      const bRule = b.stats.ruleScore ?? 0;
+      if (bRule !== aRule) return bRule - aRule;
+      if (b.stats.damageDealt !== a.stats.damageDealt) {
+        return b.stats.damageDealt - a.stats.damageDealt;
+      }
+      return b.hp / b.maxHp - a.hp / a.maxHp;
+    })[0];
+  };
+
+  if (aliveTeamIds.length === 0 && !state.arena.scoreOnlyVictory) {
+    state.status = 'finished';
+    state.winnerId = 'draw';
+    state.winType = 'draw';
+    state.endReason = '相打ち (Double KO)';
+    return;
+  }
+
+  if (
+    !state.arena.continueUntilTimeout &&
+    distinctTeams.length >= 2 &&
+    aliveTeamIds.length === 1
+  ) {
+    const winTeamId = aliveTeamIds[0];
+    const winner = pickBestTankInTeam(winTeamId);
+    if (!state.arena.disableWeapons && !state.tanks.some(hasContribution)) {
+      state.status = 'finished';
+      state.winnerId = 'draw';
+      state.winType = 'draw';
+      state.endReason = '攻撃なし・有効打なしのため引き分け';
+    } else {
+      state.status = 'finished';
+      state.winnerId = winner.id;
+      state.winType = 'elimination';
+      const ownerTag = winner.playerName || winner.blueprint.author || 'PLAYER';
+      state.endReason = `${winner.blueprint.name} (${ownerTag}) の撃破勝利！`;
+    }
+    return;
+  }
+
+  const allDeadWithScoreRule =
+    aliveTeamIds.length === 0 && Boolean(state.arena.scoreOnlyVictory);
+  if (state.tick < state.arena.maxTicks && !allDeadWithScoreRule) {
+    return;
+  }
+
+  if (state.arena.scoreOnlyVictory) {
+    const teamScores = distinctTeams
+      .map((teamKey) => ({
+        teamKey,
+        ruleScoreSum: getTeamScore(teamKey),
+      }))
+      .sort((a, b) => b.ruleScoreSum - a.ruleScoreSum);
+
+    const tiedTop =
+      teamScores.length < 2 ||
+      Math.abs(teamScores[0].ruleScoreSum - teamScores[1].ruleScoreSum) < 0.001;
+    const topTeam = teamScores[0];
+    const topScore = topTeam ? Math.round(topTeam.ruleScoreSum) : 0;
+    const winLabel = topTeam ? getTeamLabel(topTeam.teamKey) : '';
+
+    state.status = 'finished';
+    if (tiedTop) {
+      state.winnerId = 'draw';
+      state.winType = 'draw';
+    } else {
+      const winner = pickBestTankInTeam(topTeam.teamKey);
+      state.winnerId = winner.id;
+      state.winType = 'decision';
+    }
+
+    if (state.football) {
+      const fb = state.football;
+      const westScore = Math.round(getTeamScore(fb.westTeamId));
+      const eastScore = Math.round(getTeamScore(fb.eastTeamId));
+      const scoreLine = `${fb.westTeamLabel} ${westScore} - ${eastScore} ${fb.eastTeamLabel}`;
+      state.endReason = tiedTop
+        ? `${scoreLine}（引き分け）`
+        : `${scoreLine}（${winLabel} の勝利！）`;
+    } else if (state.arena.ruleId === 'domination') {
+      state.endReason = tiedTop
+        ? `陣取り引き分け（同数 ${topScore}マス）`
+        : `${winLabel} の陣取り勝利！（占領 ${topScore}マス）`;
+    } else if (state.arena.ruleId === 'balloon_hunt') {
+      state.endReason = tiedTop
+        ? `風船割り引き分け（同点 ${topScore}pt）`
+        : `${winLabel} の勝利！（風船 ${topScore}pt）`;
+    } else {
+      state.endReason = tiedTop ? '時間切れ引き分け' : `${winLabel} の勝利！`;
+    }
+    return;
+  }
+
+  const anyContribution = state.tanks.some(hasContribution);
+  const teamScores = distinctTeams
+    .map((teamKey) => {
+      const members = state.tanks.filter((t) => getTeamKey(t) === teamKey);
+      const ruleScoreSum = members.reduce((acc, t) => acc + (t.stats.ruleScore ?? 0), 0);
+      const avgHpRatio =
+        members.reduce((acc, t) => acc + Math.max(0, t.hp) / t.maxHp, 0) /
+        Math.max(1, members.length);
+      const damageSum = members.reduce((acc, t) => acc + t.stats.damageDealt, 0);
+      return { teamKey, ruleScoreSum, avgHpRatio, damageSum };
+    })
+    .sort((a, b) => {
+      if (Math.abs(b.ruleScoreSum - a.ruleScoreSum) >= 0.001) {
+        return b.ruleScoreSum - a.ruleScoreSum;
+      }
+      if (Math.abs(b.avgHpRatio - a.avgHpRatio) >= 0.001) {
+        return b.avgHpRatio - a.avgHpRatio;
+      }
+      return b.damageSum - a.damageSum;
+    });
+
+  const tiedTop =
+    teamScores.length >= 2 &&
+    Math.abs(teamScores[0].ruleScoreSum - teamScores[1].ruleScoreSum) < 0.001 &&
+    Math.abs(teamScores[0].avgHpRatio - teamScores[1].avgHpRatio) < 0.001 &&
+    Math.abs(teamScores[0].damageSum - teamScores[1].damageSum) < 0.1;
+
+  if (!anyContribution || tiedTop || teamScores.length === 0) {
+    state.status = 'finished';
+    state.winnerId = 'draw';
+    state.winType = 'draw';
+    state.endReason = anyContribution
+      ? '時間切れ引き分け'
+      : '時間切れ引き分け（有効打なし）';
+  } else {
+    const winner = pickBestTankInTeam(teamScores[0].teamKey);
+    state.status = 'finished';
+    state.winnerId = winner.id;
+    state.winType = 'decision';
+    state.endReason = `時間切れ判定勝 (${winner.blueprint.name})`;
+  }
+}
+
+export function stepBattleTick(
+  state: BattleState,
+  ruleTickHook?: (state: BattleState) => void
+): BattleState {
   if (state.status === 'finished') return state;
 
   state.tick += 1;
@@ -868,6 +1146,14 @@ export function stepBattleTick(state: BattleState): BattleState {
     ex.age += 1;
     return ex.age < ex.maxAge;
   });
+
+  if (state.football && state.football.kickoffFreezeTicks > 0) {
+    state.football.kickoffFreezeTicks -= 1;
+    if (state.arena.multiTeamMode && state.tick >= state.arena.maxTicks) {
+      evaluateMultiTeamBattleState(state);
+    }
+    return state;
+  }
 
   // 1b. Update moving patrol targets (Learning Mode moving balloons)
   if (state.arena.targets) {
@@ -934,6 +1220,7 @@ export function stepBattleTick(state: BattleState): BattleState {
     tank.boostTicks = Math.max(0, tank.boostTicks - 1);
     tank.recoil = Math.max(0, tank.recoil - 0.12);
     tank.wallHitCooldown = Math.max(0, tank.wallHitCooldown - 1);
+    tank.outerWallBounceCooldown = Math.max(0, (tank.outerWallBounceCooldown ?? 0) - 1);
 
     // Run 2D chip program
     const { commands, trace } = runTankChipProgram(
@@ -951,12 +1238,19 @@ export function stepBattleTick(state: BattleState): BattleState {
       tank.activePrintSpeech = null;
     }
 
-    // 3-Axis Independent Rotations & Weight / Boost Modifiers
+    // 3-Axis Independent Rotations & Weight / Boost / Gravity / Floor-Zone Modifiers
     const { mobilityMultiplier } = calculateAssemblyWeight(tank.blueprint.assembly);
     const boostFactor = tank.boostTicks > 0 ? 1.7 : 1.0;
-    const effectiveMaxSpeed = chassis.maxSpeed * mobilityMultiplier * boostFactor;
-    const effectiveAccel = chassis.accel * mobilityMultiplier * boostFactor;
-    const effectiveTurnRate = chassis.turnRate * mobilityMultiplier * boostFactor;
+    const gravityMult = clamp(state.arena.gravitySpeedMult ?? 1.0, 0.5, 1.5);
+    const gravityTurretMult = 1 + (gravityMult - 1) * 0.5;
+    const inSlowZone = isTankInTileKind(tank, state.arena, 'slow');
+    const zoneMoveMult = inSlowZone ? 0.45 : 1.0;
+    const zoneTurnMult = inSlowZone ? 0.6 : 1.0;
+    const combinedMoveMult = Math.max(0.25, gravityMult * zoneMoveMult);
+    const combinedBodyTurnMult = Math.max(0.35, gravityMult * zoneTurnMult);
+    const effectiveMaxSpeed = chassis.maxSpeed * mobilityMultiplier * boostFactor * combinedMoveMult;
+    const effectiveAccel = chassis.accel * mobilityMultiplier * boostFactor * combinedMoveMult;
+    const effectiveTurnRate = chassis.turnRate * mobilityMultiplier * boostFactor * combinedBodyTurnMult;
 
     const speedFactor = 1 - 0.2 * (Math.abs(tank.speed) / Math.max(0.1, effectiveMaxSpeed));
     const maxBodyTurn = effectiveTurnRate * speedFactor;
@@ -966,10 +1260,11 @@ export function stepBattleTick(state: BattleState): BattleState {
     if (chassis.fixedTurret) {
       tank.turretAngle = tank.bodyAngle;
     } else {
+      const effectiveTurretTurnRate = gun.turretTurnRate * gravityTurretMult;
       const actualTurretTurn = clamp(
         commands.turretTurnDelta,
-        -gun.turretTurnRate,
-        gun.turretTurnRate
+        -effectiveTurretTurnRate,
+        effectiveTurretTurnRate
       );
       tank.turretAngle = normalizeAngle360(tank.turretAngle + actualTurretTurn);
     }
@@ -990,27 +1285,40 @@ export function stepBattleTick(state: BattleState): BattleState {
     tank.y += tank.vy;
 
     // Wall & obstacle collisions
+    const preWallVx = tank.vx;
+    const preWallVy = tank.vy;
     let collidedWall = false;
+    let hitOuterWall = false;
     let wallNx = 0;
     let wallNy = 0;
+    let outerNx = 0;
+    let outerNy = 0;
     const r = chassis.radius;
     if (tank.x < r) {
       tank.x = r;
       collidedWall = true;
+      hitOuterWall = true;
       wallNx += 1;
+      outerNx += 1;
     } else if (tank.x > state.arena.width - r) {
       tank.x = state.arena.width - r;
       collidedWall = true;
+      hitOuterWall = true;
       wallNx -= 1;
+      outerNx -= 1;
     }
     if (tank.y < r) {
       tank.y = r;
       collidedWall = true;
+      hitOuterWall = true;
       wallNy += 1;
+      outerNy += 1;
     } else if (tank.y > state.arena.height - r) {
       tank.y = state.arena.height - r;
       collidedWall = true;
+      hitOuterWall = true;
       wallNy -= 1;
+      outerNy -= 1;
     }
 
     const obsPush = resolveObstaclePush(tank, r, state.arena.obstacles);
@@ -1019,6 +1327,12 @@ export function stepBattleTick(state: BattleState): BattleState {
       wallNx += obsPush.nx;
       wallNy += obsPush.ny;
     }
+
+    const outerMode = state.arena.outerWallMode ?? 'normal';
+    const handleCustomOuterWall =
+      hitOuterWall &&
+      outerMode !== 'normal' &&
+      (tank.outerWallBounceCooldown ?? 0) <= 0;
 
     if (collidedWall) {
       const nLen = Math.hypot(wallNx, wallNy);
@@ -1035,13 +1349,13 @@ export function stepBattleTick(state: BattleState): BattleState {
         tank.vy = slideVy;
         tank.speed = (tank.speed >= 0 ? 1 : -1) * Math.hypot(slideVx, slideVy);
 
-        if (intoWallSpeed > 1.2) {
+        if (intoWallSpeed > 1.2 && !handleCustomOuterWall) {
           const isHeadOn = preImpactSpeed > 0.6 && intoWallSpeed >= preImpactSpeed * 0.75;
           const rand = mulberry32((tick + 1) * 2654435761 ^ Math.round(tank.x * 13 + tank.y * 31));
 
           if (tank.wallHitCooldown <= 0) {
             tank.stats.wallHits += 1;
-            if (tank.hp > 1) {
+            if (!state.arena.disableTankDamage && tank.hp > 1) {
               applyDamage(tank, Math.min(tank.hp - 1, intoWallSpeed * 0.12), undefined, tick);
             }
             tank.wallHitCooldown = 18;
@@ -1058,12 +1372,89 @@ export function stepBattleTick(state: BattleState): BattleState {
       }
     }
 
+    if (handleCustomOuterWall) {
+      const outerLen = Math.hypot(outerNx, outerNy);
+      const onx = outerLen > 1e-6 ? outerNx / outerLen : 0;
+      const ony = outerLen > 1e-6 ? outerNy / outerLen : 0;
+
+      if (outerMode === 'damage' || outerMode === 'damage_bounce') {
+        if (!state.arena.disableTankDamage) {
+          const pusher =
+            tank.lastCollidedTankId &&
+            tank.lastTankCollisionTick !== undefined &&
+            tick - tank.lastTankCollisionTick <= 40
+              ? state.tanks.find((t) => t.id === tank.lastCollidedTankId)
+              : undefined;
+          applyDamage(tank, 24, pusher, tick);
+        }
+        tank.stats.wallHits += 1;
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: tank.x,
+          y: tank.y,
+          radius: 36,
+          color: '#ef4444',
+          age: 0,
+          maxAge: 22,
+        });
+        tank.outerWallBounceCooldown = 16;
+      }
+
+      if ((outerMode === 'bounce' || outerMode === 'damage_bounce') && tank.hp > 0 && outerLen > 1e-6) {
+        tank.x += onx * 36;
+        tank.y += ony * 36;
+        clampTankToArenaAndObstacles(tank, r, state.arena);
+
+        const preLen = Math.hypot(preWallVx, preWallVy);
+        const inDx = preLen > 0.05 ? preWallVx / preLen : -onx;
+        const inDy = preLen > 0.05 ? preWallVy / preLen : -ony;
+        const vn = inDx * onx + inDy * ony;
+        const refDx = inDx - 2 * vn * onx;
+        const refDy = inDy - 2 * vn * ony;
+        const blendDx = refDx + 0.65 * onx;
+        const blendDy = refDy + 0.65 * ony;
+        const bounceAngle =
+          Math.hypot(blendDx, blendDy) > 1e-5
+            ? vectorToAngle(blendDx, blendDy)
+            : vectorToAngle(onx, ony);
+
+        tank.bodyAngle = normalizeAngle360(bounceAngle);
+        if (chassis.fixedTurret) {
+          tank.turretAngle = tank.bodyAngle;
+        }
+        tank.speed = Math.max(Math.abs(preLen) * 1.15, effectiveMaxSpeed * 1.25);
+        const bv = angleToVector(tank.bodyAngle);
+        tank.vx = bv.dx * tank.speed;
+        tank.vy = bv.dy * tank.speed;
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: tank.x,
+          y: tank.y,
+          radius: 30,
+          color: outerMode === 'damage_bounce' ? '#f97316' : '#facc15',
+          age: 0,
+          maxAge: 18,
+        });
+        tank.outerWallBounceCooldown = Math.max(tank.outerWallBounceCooldown ?? 0, 14);
+      }
+    }
+
     if (chassis.fixedTurret) {
       tank.turretAngle = tank.bodyAngle;
     }
 
+    const inNoWeaponZone = isTankInTileKind(tank, state.arena, 'no_weapon');
+    const ownGoalFireBlocked = isFootballOwnGoalAim(tank, state);
+
     // Main gun firing
-    if (commands.firePower !== null && tank.gunHeat <= 0.0001) {
+    if (
+      tank.hp > 0 &&
+      !state.arena.disableWeapons &&
+      !inNoWeaponZone &&
+      !ownGoalFireBlocked &&
+      commands.firePower !== null &&
+      tank.gunHeat <= 0.0001
+    ) {
       const metrics = computeShellMetrics(
         tank.blueprint.assembly.mainGun,
         commands.firePower,
@@ -1097,6 +1488,11 @@ export function stepBattleTick(state: BattleState): BattleState {
 
     // Sub weapon activation
     if (
+      tank.hp > 0 &&
+      !state.arena.disableWeapons &&
+      !state.arena.disableSubWeapons &&
+      !inNoWeaponZone &&
+      !(ownGoalFireBlocked && tank.blueprint.assembly.subWeapon === 'missile') &&
       commands.useSubWeapon &&
       tank.blueprint.assembly.subWeapon !== 'none' &&
       tank.subAmmo > 0 &&
@@ -1127,6 +1523,7 @@ export function stepBattleTick(state: BattleState): BattleState {
           id: makeEntityId('decoy'),
           ownerId: tank.id,
           team: tank.team,
+          ...(tank.teamId ? { teamId: tank.teamId } : {}),
           x: clamp(tank.x + sideDir.dx * (r + 24), r + 10, state.arena.width - r - 10),
           y: clamp(tank.y + sideDir.dy * (r + 24), r + 10, state.arena.height - r - 10),
           radius: r,
@@ -1177,7 +1574,8 @@ export function stepBattleTick(state: BattleState): BattleState {
   // 4b. Learning Arena Tiles & Ram-Balloon Interactions
   if (state.arena.tiles || state.arena.targets) {
     for (const tank of state.tanks) {
-      if (tank.team !== 'player' || tank.hp <= 0) continue;
+      if (tank.hp <= 0) continue;
+      if (!state.arena.multiTeamMode && tank.team !== 'player') continue;
       const r = CHASSIS_SPECS[tank.blueprint.assembly.chassis].radius;
       for (const tile of state.arena.tiles ?? []) {
         const inside =
@@ -1186,7 +1584,7 @@ export function stepBattleTick(state: BattleState): BattleState {
           tank.y >= tile.y &&
           tank.y <= tile.y + tile.height;
         if (!inside) continue;
-        if (tile.kind === 'checkpoint' && !tile.visited) {
+        if (tank.team === 'player' && tile.kind === 'checkpoint' && !tile.visited) {
           tile.visited = true;
           state.explosions.push({
             id: makeEntityId('exp'),
@@ -1199,14 +1597,21 @@ export function stepBattleTick(state: BattleState): BattleState {
           });
         } else if (tile.kind === 'hazard') {
           tank.speed *= 0.65;
-          applyDamage(tank, 1.5, undefined, tick);
+          if (!state.arena.disableTankDamage) {
+            applyDamage(tank, 1.5, undefined, tick);
+          }
         }
       }
+      if (!state.arena.allowBalloonRamPop && tank.team !== 'player') continue;
       for (const tgt of state.arena.targets ?? []) {
-        if (tgt.popped || tgt.kind !== 'ram_balloon') continue;
+        if (tgt.popped) continue;
+        if (!state.arena.allowBalloonRamPop && tgt.kind !== 'ram_balloon') continue;
         if (distanceBetween(tank.x, tank.y, tgt.x, tgt.y) <= r + tgt.radius) {
           tgt.popped = true;
           tgt.hp = 0;
+          if (state.arena.multiTeamMode) {
+            tank.stats.ruleScore = (tank.stats.ruleScore ?? 0) + (tgt.points ?? 1);
+          }
           state.explosions.push({
             id: makeEntityId('exp'),
             x: tgt.x,
@@ -1227,22 +1632,39 @@ export function stepBattleTick(state: BattleState): BattleState {
     proj.ttl -= 1;
     if (proj.ttl <= 0) continue;
 
-    // Gentle homing for missiles (nearest alive opponent)
+    // Gentle homing for missiles (respects radarTargetMode)
     if (proj.kind === 'missile') {
-      const owner = state.tanks.find((t) => t.id === proj.ownerId);
-      let target: TankRuntime | null = null;
-      let minDist = Infinity;
-      for (const candidate of state.tanks) {
-        if (candidate.id === proj.ownerId || candidate.hp <= 0) continue;
-        if (state.arena.teamBattle && owner && candidate.team === owner.team) continue;
-        const d = distanceBetween(candidate.x, candidate.y, proj.x, proj.y);
-        if (d < minDist) {
-          minDist = d;
-          target = candidate;
+      const targetMode = state.arena.radarTargetMode ?? 'default';
+      let targetPoint: { x: number; y: number } | null = null;
+      if (targetMode === 'targets_only') {
+        let minDist = Infinity;
+        for (const tgt of state.arena.targets ?? []) {
+          if (tgt.popped) continue;
+          const d = distanceBetween(tgt.x, tgt.y, proj.x, proj.y);
+          if (d < minDist) {
+            minDist = d;
+            targetPoint = { x: tgt.x, y: tgt.y };
+          }
+        }
+      } else if (targetMode === 'ball_only') {
+        if (state.football) {
+          targetPoint = { x: state.football.x, y: state.football.y };
+        }
+      } else {
+        const owner = state.tanks.find((t) => t.id === proj.ownerId);
+        let minDist = Infinity;
+        for (const candidate of state.tanks) {
+          if (candidate.id === proj.ownerId || candidate.hp <= 0) continue;
+          if (owner && areAllied(candidate, owner, state.arena)) continue;
+          const d = distanceBetween(candidate.x, candidate.y, proj.x, proj.y);
+          if (d < minDist) {
+            minDist = d;
+            targetPoint = { x: candidate.x, y: candidate.y };
+          }
         }
       }
-      if (target) {
-        const desiredAngle = vectorToAngle(target.x - proj.x, target.y - proj.y);
+      if (targetPoint) {
+        const desiredAngle = vectorToAngle(targetPoint.x - proj.x, targetPoint.y - proj.y);
         const turn = clamp(normalizeAngle180(desiredAngle - proj.angle), -2.2, 2.2);
         proj.angle = normalizeAngle360(proj.angle + turn);
         const vec = angleToVector(proj.angle);
@@ -1290,15 +1712,19 @@ export function stepBattleTick(state: BattleState): BattleState {
       continue;
     }
 
-    // Shoot-Balloon hit (Learning Mode target)
+    // Shoot-Balloon hit (Learning Mode & Balloon Hunt target)
     const attacker = state.tanks.find((t) => t.id === proj.ownerId);
     let hitBalloon = false;
     for (const tgt of state.arena.targets ?? []) {
-      if (tgt.popped || tgt.kind !== 'shoot_balloon') continue;
+      if (tgt.popped) continue;
+      if (state.arena.radarTargetMode !== 'targets_only' && tgt.kind !== 'shoot_balloon') continue;
       if (distanceBetween(proj.x, proj.y, tgt.x, tgt.y) <= tgt.radius + 5) {
         tgt.hp = Math.max(0, tgt.hp - proj.damage);
         if (tgt.hp <= 0) {
           tgt.popped = true;
+          if (attacker && state.arena.multiTeamMode) {
+            attacker.stats.ruleScore = (attacker.stats.ruleScore ?? 0) + (tgt.points ?? 1);
+          }
         }
         if (attacker) attacker.stats.shotsHit += 1;
         state.explosions.push({
@@ -1316,11 +1742,48 @@ export function stepBattleTick(state: BattleState): BattleState {
     }
     if (hitBalloon) continue;
 
+    // Football hit (Combat Football)
+    if (state.football) {
+      const ball = state.football;
+      if (distanceBetween(proj.x, proj.y, ball.x, ball.y) <= ball.radius + 5) {
+        const pMag = Math.max(1e-5, Math.hypot(proj.vx, proj.vy));
+        const pvx = proj.vx / pMag;
+        const pvy = proj.vy / pMag;
+        const dx = ball.x - proj.x;
+        const dy = ball.y - proj.y;
+        const dMag = Math.max(1e-5, Math.hypot(dx, dy));
+        const bx = pvx * 0.75 + (dx / dMag) * 0.25;
+        const by = pvy * 0.75 + (dy / dMag) * 0.25;
+        const bLen = Math.max(1e-5, Math.hypot(bx, by));
+        const kick = 4.2 + proj.power * 2.6;
+        ball.vx += (bx / bLen) * kick;
+        ball.vy += (by / bLen) * kick;
+        const speed = Math.hypot(ball.vx, ball.vy);
+        if (speed > 15.5) {
+          ball.vx = (ball.vx / speed) * 15.5;
+          ball.vy = (ball.vy / speed) * 15.5;
+        }
+        ball.lastTouchTankId = proj.ownerId;
+        ball.lastTouchTeamId = attacker?.teamId ?? null;
+        if (attacker) attacker.stats.shotsHit += 1;
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: proj.x,
+          y: proj.y,
+          radius: 24,
+          color: '#facc15',
+          age: 0,
+          maxAge: 18,
+        });
+        continue;
+      }
+    }
+
     // Tank hit
     let hitTank: TankRuntime | null = null;
     for (const tank of state.tanks) {
       if (tank.id === proj.ownerId || tank.hp <= 0) continue;
-      if (state.arena.teamBattle && attacker && tank.team === attacker.team) continue;
+      if (attacker && areAllied(tank, attacker, state.arena)) continue;
       const r = CHASSIS_SPECS[tank.blueprint.assembly.chassis].radius;
       if (distanceBetween(proj.x, proj.y, tank.x, tank.y) <= r + 4) {
         hitTank = tank;
@@ -1329,6 +1792,18 @@ export function stepBattleTick(state: BattleState): BattleState {
     }
 
     if (hitTank) {
+      if (state.arena.disableTankDamage) {
+        state.explosions.push({
+          id: makeEntityId('exp'),
+          x: proj.x,
+          y: proj.y,
+          radius: 14,
+          color: '#38bdf8',
+          age: 0,
+          maxAge: 14,
+        });
+        continue;
+      }
       if (attacker) attacker.stats.shotsHit += 1;
       const incomingBearing = normalizeAngle360(proj.angle + 180);
       const armor = getDirectionalArmorMultiplier(hitTank.bodyAngle, incomingBearing);
@@ -1367,7 +1842,7 @@ export function stepBattleTick(state: BattleState): BattleState {
     let hitDecoy = false;
     for (const decoy of state.decoys ?? []) {
       if (decoy.ownerId === proj.ownerId || decoy.hp <= 0) continue;
-      if (state.arena.teamBattle && attacker && decoy.team === attacker.team) continue;
+      if (attacker && areAllied(decoy, attacker, state.arena)) continue;
       if (distanceBetween(proj.x, proj.y, decoy.x, decoy.y) <= decoy.radius + 4) {
         decoy.hp = Math.max(0, decoy.hp - proj.damage);
         hitDecoy = true;
@@ -1413,11 +1888,13 @@ export function stepBattleTick(state: BattleState): BattleState {
       const owner = state.tanks.find((t) => t.id === mine.ownerId);
       for (const tank of state.tanks) {
         if (tank.id === mine.ownerId || tank.hp <= 0) continue;
-        if (state.arena.teamBattle && owner && tank.team === owner.team) continue;
+        if (owner && areAllied(tank, owner, state.arena)) continue;
         const r = CHASSIS_SPECS[tank.blueprint.assembly.chassis].radius;
         if (distanceBetween(mine.x, mine.y, tank.x, tank.y) <= r + 14) {
-          if (owner) owner.stats.shotsHit += 1;
-          applyDamage(tank, mine.damage, owner, tick);
+          if (!state.arena.disableTankDamage) {
+            if (owner) owner.stats.shotsHit += 1;
+            applyDamage(tank, mine.damage, owner, tick);
+          }
           state.explosions.push({
             id: makeEntityId('exp'),
             x: mine.x,
@@ -1435,6 +1912,13 @@ export function stepBattleTick(state: BattleState): BattleState {
     if (!triggered) survivingMines.push(mine);
   }
   state.mines = survivingMines;
+
+  if (ruleTickHook) {
+    ruleTickHook(state);
+    if ((state.status as BattleState['status']) === 'finished') {
+      return state;
+    }
+  }
 
   const hasActiveCombatContribution = (t: TankRuntime): boolean =>
     t.stats.shotsFired > 0 && t.stats.damageDealt > 0;
@@ -1506,7 +1990,9 @@ export function stepBattleTick(state: BattleState): BattleState {
   }
 
   const aliveTanks = state.tanks.filter((t) => t.hp > 0);
-  if (state.arena.teamBattle) {
+  if (state.arena.multiTeamMode) {
+    evaluateMultiTeamBattleState(state);
+  } else if (state.arena.teamBattle) {
     const alivePlayers = aliveTanks.filter((t) => t.team === 'player');
     const aliveEnemies = aliveTanks.filter((t) => t.team === 'enemy');
     if (alivePlayers.length === 0 && aliveEnemies.length === 0) {
@@ -1664,4 +2150,113 @@ export function stepBattleTick(state: BattleState): BattleState {
   }
 
   return state;
+}
+
+function cloneCallStack(
+  stack?: Array<{
+    returnCoord: { x: number; y: number } | null;
+    callerCoord: { x: number; y: number };
+    subKey: string;
+  }>
+) {
+  return stack?.map((f) => ({
+    returnCoord: f.returnCoord ? { ...f.returnCoord } : null,
+    callerCoord: { ...f.callerCoord },
+    subKey: f.subKey,
+  }));
+}
+
+export function cloneBattleStateForStep(prev: BattleState): BattleState {
+  return {
+    ...prev,
+    arena: {
+      ...prev.arena,
+      ...(prev.arena.tiles ? { tiles: prev.arena.tiles.map((tl) => ({ ...tl })) } : {}),
+      ...(prev.arena.targets
+        ? {
+            targets: prev.arena.targets.map((tg) => ({
+              ...tg,
+              ...(tg.patrol ? { patrol: { ...tg.patrol } } : {}),
+            })),
+          }
+        : {}),
+      ...(prev.arena.learningRule ? { learningRule: { ...prev.arena.learningRule } } : {}),
+    },
+    tanks: prev.tanks.map((t) => ({
+      ...t,
+      stats: { ...t.stats },
+      counters: { ...t.counters },
+      loopCounters: { ...t.loopCounters },
+      loopStack: t.loopStack?.map((f) => ({
+        coord: { ...f.coord },
+        callStack: cloneCallStack(f.callStack),
+      })),
+      detectedEnemy: t.detectedEnemy ? { ...t.detectedEnemy } : null,
+      moveState: t.moveState
+        ? {
+            coord: { ...t.moveState.coord },
+            speedRatio: t.moveState.speedRatio,
+            remainingTicks: t.moveState.remainingTicks,
+            callStack: cloneCallStack(t.moveState.callStack),
+          }
+        : null,
+      sleepState: t.sleepState
+        ? {
+            coord: { ...t.sleepState.coord },
+            remainingTicks: t.sleepState.remainingTicks,
+            callStack: cloneCallStack(t.sleepState.callStack),
+          }
+        : null,
+      turnState: t.turnState
+        ? {
+            ...t.turnState,
+            coord: { ...t.turnState.coord },
+            callStack: cloneCallStack(t.turnState.callStack),
+          }
+        : null,
+      fireState: t.fireState
+        ? {
+            ...t.fireState,
+            coord: { ...t.fireState.coord },
+            callStack: cloneCallStack(t.fireState.callStack),
+          }
+        : null,
+      tileEdgeState: t.tileEdgeState ? { ...t.tileEdgeState } : undefined,
+      activePrintSpeech: t.activePrintSpeech
+        ? { lines: [...t.activePrintSpeech.lines], tick: t.activePrintSpeech.tick }
+        : null,
+    })),
+    projectiles: prev.projectiles.map((p) => ({ ...p })),
+    mines: prev.mines.map((m) => ({ ...m })),
+    ...(prev.smokes ? { smokes: prev.smokes.map((s) => ({ ...s })) } : {}),
+    ...(prev.decoys ? { decoys: prev.decoys.map((d) => ({ ...d })) } : {}),
+    ...(prev.territoryGrid
+      ? {
+          territoryGrid: {
+            ...prev.territoryGrid,
+            owners: [...prev.territoryGrid.owners],
+            blocked: [...prev.territoryGrid.blocked],
+            teamColors: { ...prev.territoryGrid.teamColors },
+            teamLabels: { ...prev.territoryGrid.teamLabels },
+          },
+        }
+      : {}),
+    ...(prev.football
+      ? {
+          football: {
+            ...prev.football,
+            kickoffSpawns: Object.fromEntries(
+              Object.entries(prev.football.kickoffSpawns).map(([k, v]) => [k, { ...v }])
+            ),
+            lastGoalBanner: prev.football.lastGoalBanner
+              ? { ...prev.football.lastGoalBanner }
+              : null,
+          },
+        }
+      : {}),
+    ...(prev.ruleTeamScores ? { ruleTeamScores: { ...prev.ruleTeamScores } } : {}),
+    ...(prev.ruleTeamLabels ? { ruleTeamLabels: { ...prev.ruleTeamLabels } } : {}),
+    ...(prev.ruleTeamColors ? { ruleTeamColors: { ...prev.ruleTeamColors } } : {}),
+    explosions: prev.explosions.map((e) => ({ ...e })),
+  };
 }
