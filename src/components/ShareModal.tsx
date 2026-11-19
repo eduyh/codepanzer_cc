@@ -9,12 +9,13 @@ import {
   Upload,
   X,
 } from 'lucide-react';
+import { cpuIdForGridSize } from '../data/parts';
 import { PRESET_ENEMIES } from '../data/presets';
 import { TankBlueprint } from '../types/game';
 import {
   looksLikePythonSource,
   MAX_BATTLE_TANKS,
-  parsePythonSourceToProgram,
+  parsePythonSourceWithAutoSize,
 } from '../utils/codeParser';
 import {
   decodeShareCode,
@@ -76,7 +77,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
       setImportError(null);
       const targetBase = dest === 'player' ? playerBlueprint : enemyBlueprint;
       if (looksLikePythonSource(importText)) {
-        const parsed = parsePythonSourceToProgram(
+        const parsed = parsePythonSourceWithAutoSize(
           importText,
           targetBase.program.gridSize,
           targetBase.program.coordinateMode
@@ -90,6 +91,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
           name: parsed.tankName ?? targetBase.name,
           assembly: {
             ...targetBase.assembly,
+            cpu: cpuIdForGridSize(parsed.program.gridSize),
             chassis: parsed.chassisId ?? targetBase.assembly.chassis,
             radar: parsed.radarId ?? targetBase.assembly.radar,
             mainGun: parsed.mainGunId ?? targetBase.assembly.mainGun,
@@ -121,7 +123,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
   const parseFileToBlueprint = (text: string, baseBp: TankBlueprint): TankBlueprint => {
     const trimmed = text.trim();
     if (looksLikePythonSource(trimmed)) {
-      const parsed = parsePythonSourceToProgram(
+      const parsed = parsePythonSourceWithAutoSize(
         trimmed,
         baseBp.program.gridSize,
         baseBp.program.coordinateMode
@@ -135,6 +137,7 @@ export const ShareModal: React.FC<ShareModalProps> = ({
         name: parsed.tankName ?? baseBp.name,
         assembly: {
           ...baseBp.assembly,
+          cpu: cpuIdForGridSize(parsed.program.gridSize),
           chassis: parsed.chassisId ?? baseBp.assembly.chassis,
           radar: parsed.radarId ?? baseBp.assembly.radar,
           mainGun: parsed.mainGunId ?? baseBp.assembly.mainGun,

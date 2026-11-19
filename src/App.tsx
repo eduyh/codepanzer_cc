@@ -28,7 +28,7 @@ import { GridEditor } from './components/GridEditor';
 import { ShareModal } from './components/ShareModal';
 import {
   LEARNING_MISSIONS,
-  LESSON_1_TITLES,
+  LESSON_TITLES,
   resolveMissionVariant,
 } from './data/learningMissions';
 import { CHASSIS_SPECS, cpuIdForGridSize, SUB_WEAPON_SPECS } from './data/parts';
@@ -64,7 +64,7 @@ import {
   getAutoTankColor,
   looksLikePythonSource,
   MAX_BATTLE_TANKS,
-  parsePythonSourceToProgram,
+  parsePythonSourceWithAutoSize,
 } from './utils/codeParser';
 import {
   decodeShareCode,
@@ -179,6 +179,8 @@ function cloneBattleStateForStep(prev: BattleState): BattleState {
     })),
     projectiles: prev.projectiles.map((p) => ({ ...p })),
     mines: prev.mines.map((m) => ({ ...m })),
+    ...(prev.smokes ? { smokes: prev.smokes.map((s) => ({ ...s })) } : {}),
+    ...(prev.decoys ? { decoys: prev.decoys.map((d) => ({ ...d })) } : {}),
     explosions: prev.explosions.map((e) => ({ ...e })),
   };
 }
@@ -561,7 +563,7 @@ export function App() {
         if (!text) continue;
         let loaded: TankBlueprint | null = null;
         if (looksLikePythonSource(text)) {
-          const parsed = parsePythonSourceToProgram(
+          const parsed = parsePythonSourceWithAutoSize(
             text,
             baseEnemy.program.gridSize,
             baseEnemy.program.coordinateMode
@@ -573,6 +575,7 @@ export function App() {
               name: parsed.tankName ?? file.name.replace(/\.[^.]+$/, '').slice(0, 32),
               assembly: {
                 ...baseEnemy.assembly,
+                cpu: cpuIdForGridSize(parsed.program.gridSize),
                 chassis: parsed.chassisId ?? baseEnemy.assembly.chassis,
                 radar: parsed.radarId ?? baseEnemy.assembly.radar,
                 mainGun: parsed.mainGunId ?? baseEnemy.assembly.mainGun,
@@ -626,16 +629,14 @@ export function App() {
       clearVariantTimer();
       shouldAutoAdvanceVariantRef.current = false;
       setPassedLearningVariants([]);
-      if (resetMatch) {
-        setLearningVariantIndex(0);
-      }
+      setLearningVariantIndex(0);
       setLearningPlayerBp(nextBp);
     } else if (gameMode === 'tutorial') {
       setTutorialPlayerBp(nextBp);
     } else {
       setFreePlayerBp(nextBp);
     }
-    if (resetMatch) {
+    if (resetMatch || battleState.tick > 0 || battleState.status === 'finished') {
       resetBattleWith(nextBp, currentEnemyList);
     } else {
       // Live update chip program & hardware inside battle state
@@ -752,7 +753,7 @@ export function App() {
       const pct = ((ev.clientX - rect.left) / rect.width) * 100;
       const nextPct = Math.max(30, Math.min(72, Math.round(pct)));
       setSplitRatio(nextPct);
-      setLayoutPreset(nextPct >= 60 ? 'code' : nextPct <= 44 ? 'battle' : 'balanced');
+      setLayoutPreset(nextPct >= 60 ? 'code' : 'balanced');
     };
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
@@ -1189,17 +1190,26 @@ export function App() {
                   value={learningIndex}
                   onChange={(e) => handleSelectLearning(Number(e.target.value))}
                 >
-                  {LEARNING_MISSIONS.map((m, idx) => {
-                    const cleared = clearedLearnings.includes(m.id);
-                    const cleanTitle = m.title.replace(/\s*\(\d+×\d+\)$/, '');
-                    return (
-                      <option key={m.id} value={idx}>
-                        {cleared ? '✓ ' : ''}
-                        {m.missionCode} ({m.playerStarter.program.gridSize}×
-                        {m.playerStarter.program.gridSize}): {cleanTitle}
-                      </option>
-                    );
-                  })}
+                  {([1, 2, 3, 4] as const)
+                    .filter((lesson) =>
+                      LEARNING_MISSIONS.some((m) => m.lessonNumber === lesson)
+                    )
+                    .map((lesson) => (
+                      <optgroup key={lesson} label={LESSON_TITLES[lesson]}>
+                        {LEARNING_MISSIONS.map((m, idx) => {
+                          if (m.lessonNumber !== lesson) return null;
+                          const cleared = clearedLearnings.includes(m.id);
+                          const cleanTitle = m.title.replace(/\s*\(\d+×\d+\)$/, '');
+                          return (
+                            <option key={m.id} value={idx}>
+                              {cleared ? '✓ ' : ''}
+                              {m.missionCode} ({m.playerStarter.program.gridSize}×
+                              {m.playerStarter.program.gridSize}): {cleanTitle}
+                            </option>
+                          );
+                        })}
+                      </optgroup>
+                    ))}
                 </select>
               </label>
 
@@ -1213,12 +1223,13 @@ export function App() {
                 次へ <ChevronRight size={13} />
               </button>
 
-              <span className="arena-size-badge" title={LESSON_1_TITLES[activeLearningMission.lessonNumber]}>
+              <span className="arena-size-badge" title={LESSON_TITLES[activeLearningMission.lessonNumber]}>
                 広さ: {ARENA_SIZE_SPECS[activeLearningMission.arenaSize].label}
               </span>
 
               <span className="tutorial-progress-badge">
-                達成: {clearedLearnings.length} / {LEARNING_MISSIONS.length}
+                達成: {LEARNING_MISSIONS.filter((m) => clearedLearnings.includes(m.id)).length} /{' '}
+                {LEARNING_MISSIONS.length}
               </span>
 
               {activeLearningMission.variants && activeLearningMission.variants.length > 1 && (
@@ -1302,7 +1313,8 @@ export function App() {
               </span>
 
               <span className="tutorial-progress-badge">
-                達成: {clearedTutorials.length} / {TUTORIAL_STAGES.length}
+                達成: {TUTORIAL_STAGES.filter((s) => clearedTutorials.includes(s.id)).length} /{' '}
+                {TUTORIAL_STAGES.length}
               </span>
 
               {currentEnemyList.length > 1 && (
@@ -2011,7 +2023,7 @@ export function App() {
                 { value: 0.25, label: 'slow' },
                 { value: 0.5, label: 'normal' },
                 { value: 1.0, label: 'high' },
-                { value: 2.0, label: 'lapid' },
+                { value: 2.0, label: 'rapid' },
               ].map((spd) => (
                 <button
                   key={spd.value}

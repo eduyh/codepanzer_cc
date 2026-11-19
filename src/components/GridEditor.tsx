@@ -59,6 +59,7 @@ import {
   isAllowedSubWeaponId,
   looksLikePythonSource,
   parsePythonSourceToProgram,
+  parsePythonSourceWithAutoSize,
   STANDARD_SETUP,
   validateFirePowerInCells,
   validateGridBlockFit,
@@ -1165,7 +1166,12 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           return;
         }
         if (looksLikePythonSource(trimmed)) {
-          const parsed = parsePythonSourceToProgram(trimmed, size, program.coordinateMode);
+          const parsed = parsePythonSourceWithAutoSize(
+            trimmed,
+            size,
+            program.coordinateMode,
+            mobileMode ? 8 : 12
+          );
           if (!parsed.ok) {
             setGridSizeNotice({ type: 'error', text: parsed.error });
             return;
@@ -1594,6 +1600,14 @@ export const GridEditor: React.FC<GridEditorProps> = ({
     });
   }, [program.cells, size, activeEdgeSet, inspectFocusCoord]);
 
+  const hasNonOrthoLinks = useMemo(
+    () =>
+      connectors.some(
+        (c) => Math.abs(c.to.x - c.from.x) + Math.abs(c.to.y - c.from.y) !== 1
+      ),
+    [connectors]
+  );
+
   const isFixedTurret = Boolean(CHASSIS_SPECS[safeChassisId]?.fixedTurret);
   const hasChipLimit = Boolean(allowedChips && allowedChips.length > 0);
   const filteredPaletteChips = CHIP_LIST.filter((c) => {
@@ -1800,6 +1814,14 @@ export const GridEditor: React.FC<GridEditorProps> = ({
           <button type="button" className="mini-btn" onClick={() => setGridSizeNotice(null)}>
             閉じる
           </button>
+        </div>
+      )}
+
+      {hasNonOrthoLinks && (
+        <div className="status-banner banner-error">
+          <span>
+            ⚠ 斜めまたは離れたマスへの破線矢印があります（実行時は4方向隣接のみ有効なためスキップされます。中継チップや移動で隣接させてください）。
+          </span>
         </div>
       )}
 

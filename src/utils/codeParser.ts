@@ -1457,6 +1457,76 @@ export function parsePythonSourceToProgram(
     if (node.noId) cell.no = coordMap.get(node.noId) ?? null;
   }
 
+  // Bridge any non-orthogonal (jump/diagonal) links using shortest free-cell BFS with wire cells
+  const findFreeBridgePath = (from: GridCoord, to: GridCoord): GridCoord[] | null => {
+    const queue: GridCoord[] = [];
+    const parent = new Map<string, GridCoord | null>();
+    for (const d of ORTHO_DIRS) {
+      const nx = from.x + d.x;
+      const ny = from.y + d.y;
+      if (nx === to.x && ny === to.y) return [];
+      if (!isCellFree(nx, ny)) continue;
+      const key = `${nx},${ny}`;
+      parent.set(key, null);
+      queue.push({ x: nx, y: ny });
+    }
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (Math.abs(to.x - cur.x) + Math.abs(to.y - cur.y) === 1) {
+        const path: GridCoord[] = [];
+        let trace: GridCoord | null = cur;
+        while (trace) {
+          path.unshift(trace);
+          trace = parent.get(`${trace.x},${trace.y}`) ?? null;
+        }
+        return path;
+      }
+      for (const d of ORTHO_DIRS) {
+        const nx = cur.x + d.x;
+        const ny = cur.y + d.y;
+        if (!isCellFree(nx, ny)) continue;
+        const key = `${nx},${ny}`;
+        if (parent.has(key)) continue;
+        parent.set(key, cur);
+        queue.push({ x: nx, y: ny });
+      }
+    }
+    return null;
+  };
+
+  let bridgedWireCount = 0;
+  for (let y = 0; y < targetSize; y++) {
+    for (let x = 0; x < targetSize; x++) {
+      const cell = cells[y][x];
+      if (!cell || cell.id.startsWith('wire_bridge_')) continue;
+      for (const branchKey of ['next', 'yes', 'no'] as const) {
+        const target = cell[branchKey];
+        if (!target) continue;
+        const manhattan = Math.abs(target.x - x) + Math.abs(target.y - y);
+        if (manhattan <= 1) continue;
+        const bridgePath = findFreeBridgePath({ x, y }, target);
+        if (bridgePath && bridgePath.length > 0) {
+          cell[branchKey] = { ...bridgePath[0] };
+          for (let i = 0; i < bridgePath.length; i++) {
+            const p = bridgePath[i];
+            const nextPt = i + 1 < bridgePath.length ? { ...bridgePath[i + 1] } : { ...target };
+            cells[p.y][p.x] = makeCell(
+              `wire_bridge_${x}_${y}_${branchKey}_${i}`,
+              'wire',
+              { seconds: 0 },
+              { next: nextPt }
+            );
+            bridgedWireCount++;
+          }
+        } else if (!bridgePath) {
+          warnings.push(
+            `座標 (${x},${y})→(${target.x},${target.y}) が隣接していないため破線接続になりました（実行時はスキップされます）。`
+          );
+        }
+      }
+    }
+  }
+
   return {
     ok: true,
     program: {
@@ -1470,8 +1540,33 @@ export function parsePythonSourceToProgram(
     mainGunId: parsedMainGunId,
     subWeaponId: parsedSubWeaponId,
     warnings: warnings.length > 0 ? warnings : undefined,
-    blockCount,
+    blockCount: blockCount + bridgedWireCount,
     maxBlocks,
   };
+}
+
+export function parsePythonSourceWithAutoSize(
+  source: string,
+  preferredSize: GridSize,
+  coordinateMode: CoordinateMode,
+  maxAllowedSize: GridSize = 12
+): ParsePythonResult {
+  const first = parsePythonSourceToProgram(source, preferredSize, coordinateMode);
+  if (first.ok) return first;
+  if (first.suggestedSize && first.suggestedSize > preferredSize) {
+    for (const candidate of ALLOWED_GRID_SIZES) {
+      if (candidate < first.suggestedSize || candidate <= preferredSize) continue;
+      if (candidate > maxAllowedSize) break;
+      const retry = parsePythonSourceToProgram(source, candidate, coordinateMode);
+      if (retry.ok) {
+        const sizeNote = `ブロック数 (${retry.blockCount}) に合わせて CPU を ${preferredSize}×${preferredSize} → ${candidate}×${candidate} に自動拡張しました。`;
+        return {
+          ...retry,
+          warnings: retry.warnings ? [sizeNote, ...retry.warnings] : [sizeNote],
+        };
+      }
+    }
+  }
+  return first;
 }
 

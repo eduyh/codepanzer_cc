@@ -23,7 +23,7 @@ function makeLearningPlayer(
   };
 }
 
-export const LESSON_1_TITLES: Record<1 | 2 | 3 | 4, string> = {
+export const LESSON_TITLES: Record<1 | 2 | 3 | 4, string> = {
   1: '第1回: 順次処理・for文・砲塔操作',
   2: '第2回: センサー・条件分岐 (if/elif/else)',
   3: '第3回: 変数・乱数・状態遷移・while文',

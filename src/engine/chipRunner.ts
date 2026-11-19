@@ -761,7 +761,19 @@ function evaluateCondition(
 
       const centerAngle = Number(p.centerAngle ?? 0);
       const halfWidth = Number(p.halfWidth ?? 20);
-      return Math.abs(normalizeAngle180(measuredAngle - centerAngle)) <= halfWidth;
+      const directMatch = Math.abs(normalizeAngle180(measuredAngle - centerAngle)) <= halfWidth;
+      if (
+        !directMatch &&
+        effectiveRef === 'turret' &&
+        !enemy.id.startsWith('tgt_') &&
+        typeof tank.lastAimAngle === 'number' &&
+        typeof tank.lastAimTick === 'number' &&
+        tick - tank.lastAimTick <= 2
+      ) {
+        const leadMeasured = normalizeAngle180(tank.lastAimAngle - tank.turretAngle);
+        return Math.abs(normalizeAngle180(leadMeasured - centerAngle)) <= halfWidth;
+      }
+      return directMatch;
     }
     // 旧壁センサー (cond_wall_ahead) は近接センサー (cond_proximity) へ移行のため無効化
     // case 'cond_wall_ahead': {

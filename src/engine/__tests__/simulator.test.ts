@@ -15,6 +15,7 @@ import { ALLOWED_GRID_SIZES, ArenaSizeId, TankBlueprint } from '../../types/game
 import {
   AUTO_TANK_COLORS,
   parsePythonSourceToProgram,
+  parsePythonSourceWithAutoSize,
   validateGridBlockFit,
 } from '../../utils/codeParser';
 import {
@@ -2673,6 +2674,90 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
     }
     const heavyState = runMissionSim(m44, heavyBp, 0);
     expect(heavyState.winType).not.toBe('mission');
+  });
+
+  it('matches cond_enemy_sector against recent lead aim angle and bridges/auto-sizes Python imports cleanly', () => {
+    // 1. cond_enemy_sector with narrow halfWidth=6 matches when turret aims at lastAimAngle from aim_enemy(lead)
+    const leadBp: TankBlueprint = {
+      ...JSON.parse(JSON.stringify(DEFAULT_PLAYER_BLUEPRINT)),
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        {
+          x: 1,
+          y: 0,
+          type: 'cond_enemy_sector',
+          params: { ref: 'turret', centerAngle: 0, halfWidth: 6, maxDist: 900 },
+          yes: { x: 2, y: 0 },
+          no: null,
+        },
+        { x: 2, y: 0, type: 'act_fire', params: { power: 'normal' }, next: null },
+      ]),
+    };
+    const stLead = createBattleState({
+      player: leadBp,
+      enemy: ENEMY_DUMMY,
+      playerSpawn: { x: 200, y: 400, bodyAngle: 0, turretAngle: 108, radarAngle: 90 },
+      enemySpawn: { x: 600, y: 400, bodyAngle: 0, turretAngle: 0, radarAngle: 0 },
+    });
+    const playerTank = stLead.tanks[0];
+    // Direct bearing is 90 deg, turret is at 108 deg (18 deg off direct -> normally false for halfWidth=6),
+    // but recent aim_enemy(lead) computed lastAimAngle = 109 deg (1 deg off turret -> true).
+    playerTank.detectedEnemy = {
+      id: stLead.tanks[1].id,
+      x: 600,
+      y: 400,
+      vx: 0,
+      vy: 5,
+      speed: 5,
+      heading: 180,
+      hp: stLead.tanks[1].hp,
+      distance: 400,
+      bearingFromBody: 90,
+      bearingFromTurret: -18,
+      absoluteBearing: 90,
+      lastSeenTick: 1,
+    };
+    playerTank.lastAimAngle = 109;
+    playerTank.lastAimTick = 1;
+    const resLead = runTankChipProgram(playerTank, 1, stLead.arena, stLead.projectiles, stLead.tanks);
+    expect(resLead.commands.firePower).toBe(1.8);
+
+    // 2. If without else followed by sequential statement bridges orthogonally with wire cells
+    const ifContinueSrc = [
+      'def on_tick():',
+      '  if main_cooldown == 0:',
+      '    fire_main(power="normal")',
+      '  move(speed=80)',
+    ].join('\n');
+    const parsedBridge = parsePythonSourceToProgram(ifContinueSrc, 4, 'relative');
+    expect(parsedBridge.ok).toBe(true);
+    if (parsedBridge.ok) {
+      const cells = parsedBridge.program.cells;
+      for (let y = 0; y < cells.length; y++) {
+        for (let x = 0; x < cells[y].length; x++) {
+          const c = cells[y][x];
+          if (!c) continue;
+          for (const target of [c.next, c.yes, c.no]) {
+            if (!target) continue;
+            const dist = Math.abs(target.x - x) + Math.abs(target.y - y);
+            expect(dist, `(${x},${y})->(${target.x},${target.y})`).toBe(1);
+          }
+        }
+      }
+    }
+
+    // 3. Auto-size Python import upgrades 4x4 -> 6x6 when 20 blocks are parsed
+    const twentyBlockSource = [
+      'def on_tick():',
+      ...Array.from({ length: 19 }, () => '  move(speed=50)'),
+    ].join('\n');
+    const autoSized = parsePythonSourceWithAutoSize(twentyBlockSource, 4, 'relative');
+    expect(autoSized.ok).toBe(true);
+    if (autoSized.ok) {
+      expect(autoSized.program.gridSize).toBe(6);
+      expect(autoSized.warnings?.[0]).toContain('4×4 → 6×6');
+    }
   });
 });
 
