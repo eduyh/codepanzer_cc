@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { transpileProgramToLines } from '../../components/GridEditor';
 import { CHIP_DEFINITIONS } from '../../data/chips';
 import { LEARNING_MISSIONS, resolveMissionVariant } from '../../data/learningMissions';
-import { CHASSIS_SPECS, computeShellMetrics, CPU_SPECS, cpuIdForGridSize, MAIN_GUN_SPECS, RADAR_SPECS } from '../../data/parts';
+import { CHASSIS_SPECS, computeShellMetrics, CPU_SPECS, cpuIdForGridSize, MAIN_GUN_SPECS, RADAR_SPECS, SUB_WEAPON_SPECS } from '../../data/parts';
 import {
   buildProgram,
   DEFAULT_PLAYER_BLUEPRINT,
@@ -68,11 +68,16 @@ import {
   vectorToAngle,
 } from '../math';
 import {
+  applyLeagueGameResult,
   applyRecommendedMapPreset,
+  applyTournamentGameResult,
   applyTournamentMatchResult,
+  assignRandomTeams,
   BATTLEFIELD_RECOMMENDED_PRESETS,
+  BOUNTY_TUNING,
   buildMatchReport,
   buildParticipantsFromUnitPair,
+  clearBattlefieldSession,
   CompetitionUnit,
   computeBattlefieldHudLayout,
   computeLeagueStandings,
@@ -89,11 +94,19 @@ import {
   formatTankListLabel,
   formatTournamentSummaryText,
   generateBattlefieldZones,
+  getBountyStreakBuff,
   GRAVITY_PRESET_SPECS,
   isRecommendedMapPresetApplied,
+  loadBattlefieldSession,
+  pickBountyRespawnPoint,
+  pickRandomBattleRoyaleEntries,
   RAMMING_DAMAGE_MULTIPLIER,
+  resolveMatchConfigForGame,
   resolveRecommendedTankTier,
   SANDSTORM_PRESET_SPECS,
+  saveBattlefieldSession,
+  shuffleCompetitionRoster,
+  simulateMatchHeadless,
   sortRosterEntries,
   stepBattlefieldTick,
   validateEntryForRegulation,
@@ -108,6 +121,7 @@ import {
   evaluateCommentaryStep,
 } from '../battleCommentary';
 import {
+  applyDamage,
   ARENA_SIZE_SPECS,
   computeTankBaseContribution,
   createBattleState,
@@ -3075,13 +3089,13 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
   });
 
   it('tracks semantic gameVersion across Python, gatekeeper, share codes, and environment dumps', () => {
-    expect(CURRENT_GAME_VERSION).toBe('1.7.5');
-    expect(compareSemver('1.8.0', '1.7.5')).toBe(1);
-    expect(compareSemver('1.7.5', '1.7.5')).toBe(0);
-    expect(compareSemver('1.7.4', '1.7.5')).toBe(-1);
-    expect(isNewerGameVersion('1.8.0', '1.7.5')).toBe(true);
-    expect(isNewerGameVersion('1.7.5', '1.7.5')).toBe(false);
-    expect(isNewerGameVersion('1.5.19', '1.7.5')).toBe(false);
+    expect(CURRENT_GAME_VERSION).toBe('1.8.2');
+    expect(compareSemver('1.9.0', '1.8.2')).toBe(1);
+    expect(compareSemver('1.8.2', '1.8.2')).toBe(0);
+    expect(compareSemver('1.8.1', '1.8.2')).toBe(-1);
+    expect(isNewerGameVersion('1.9.0', '1.8.2')).toBe(true);
+    expect(isNewerGameVersion('1.8.2', '1.8.2')).toBe(false);
+    expect(isNewerGameVersion('1.5.19', '1.8.2')).toBe(false);
 
     // Future game_version in Python source produces a clear compatibility warning
     const futurePy = [
@@ -5220,6 +5234,618 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
         ['team_3', 2],
       ],
     ]);
+  });
+
+  it('supports Bo3 tournament & league series, per-match random seed resolution, and session persistence', () => {
+    // 1. Per-match seed resolution
+    const fixedCfg: typeof DEFAULT_BATTLEFIELD_CONFIG = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'elimination',
+      obstacleMode: 'few',
+      obstacleSeed: 500,
+      randomizeSeedPerMatch: false,
+    };
+    expect(resolveMatchConfigForGame(fixedCfg, 0).obstacleSeed).toBe(500);
+    expect(resolveMatchConfigForGame(fixedCfg, 1).obstacleSeed).not.toBe(500);
+
+    const randSeedCfg = { ...fixedCfg, randomizeSeedPerMatch: true };
+    expect(resolveMatchConfigForGame(randSeedCfg, 0, () => 0.1).obstacleSeed).toBe(901);
+    expect(resolveMatchConfigForGame(randSeedCfg, 1, () => 0.5).obstacleSeed).toBe(4501);
+
+    // Football and obstacle-less modes preserve config cleanly
+    const fbRandCfg = {
+      ...randSeedCfg,
+      ruleId: 'tank_soccer' as const,
+      obstacleMode: 'none' as const,
+      obstacleSeed: -1,
+    };
+    expect(resolveMatchConfigForGame(fbRandCfg, 0, () => 0.5).obstacleSeed).toBe(-1);
+
+    // 2. Bo3 Tournament (first to 2 wins)
+    const entryA = createRosterEntryFromBlueprint(DEFAULT_PLAYER_BLUEPRINT, 'file');
+    const entryB = createRosterEntryFromBlueprint(PRESET_ENEMIES[1], 'file');
+    const entryC = createRosterEntryFromBlueprint(PRESET_ENEMIES[2], 'file');
+    const unitA: CompetitionUnit = { unitId: 'uA', unitName: 'Unit A', entries: [entryA], color: '#56b4e9' };
+    const unitB: CompetitionUnit = { unitId: 'uB', unitName: 'Unit B', entries: [entryB], color: '#e69f00' };
+    const unitC: CompetitionUnit = { unitId: 'uC', unitName: 'Unit C', entries: [entryC], color: '#009e73' };
+
+    const makeDummyReport = (winnerTeam: 'unit_A' | 'unit_B' | null, contribA: number, contribB: number) => {
+      const st = createBattlefieldMatchState(buildParticipantsFromUnitPair(unitA, unitB), fixedCfg);
+      st.tick = 400;
+      const rep = buildMatchReport(st, buildParticipantsFromUnitPair(unitA, unitB), fixedCfg);
+      rep.winType = winnerTeam ? 'elimination' : 'draw';
+      rep.winnerTeamId = winnerTeam;
+      rep.tankRows.forEach((tr) => {
+        if (tr.teamId === 'unit_A') {
+          tr.kills = winnerTeam === 'unit_A' ? 1 : 0;
+          tr.contributionScore = contribA;
+          tr.damageDealt = contribA;
+        } else {
+          tr.kills = winnerTeam === 'unit_B' ? 1 : 0;
+          tr.contributionScore = contribB;
+          tr.damageDealt = contribB;
+        }
+      });
+      rep.teamRows.forEach((tm) => {
+        tm.isWinner = tm.teamId === winnerTeam;
+        tm.totalContribution = tm.teamId === 'unit_A' ? contribA : contribB;
+      });
+      return rep;
+    };
+
+    let bracket = createTournamentBracket([unitA, unitB, unitC], 3);
+    const semiMatch = bracket.rounds[0].find((m) => !m.isBye && m.unitAId && m.unitBId)!;
+    const semiA = semiMatch.unitAId!;
+    const semiB = semiMatch.unitBId!;
+    expect(semiMatch.seriesBestOf).toBe(3);
+
+    // Game 1: A wins -> stays active (1-0)
+    bracket = applyTournamentGameResult(bracket, semiMatch.matchId, semiA, makeDummyReport('unit_A', 220, 80), false, 3);
+    let updatedSemi = bracket.rounds[0].find((m) => m.matchId === semiMatch.matchId)!;
+    expect(updatedSemi.winnerUnitId).toBeNull();
+    expect(updatedSemi.winsA).toBe(1);
+    expect(updatedSemi.winsB).toBe(0);
+    expect(updatedSemi.gameReports).toHaveLength(1);
+
+    // Game 2: B wins -> stays active (1-1)
+    bracket = applyTournamentGameResult(bracket, semiMatch.matchId, semiB, makeDummyReport('unit_B', 90, 230), false, 3);
+    updatedSemi = bracket.rounds[0].find((m) => m.matchId === semiMatch.matchId)!;
+    expect(updatedSemi.winnerUnitId).toBeNull();
+    expect(updatedSemi.winsA).toBe(1);
+    expect(updatedSemi.winsB).toBe(1);
+
+    // Game 3: B wins -> completes Bo3 (1-2) and advances B to final
+    bracket = applyTournamentGameResult(bracket, semiMatch.matchId, semiB, makeDummyReport('unit_B', 70, 240), false, 3);
+    updatedSemi = bracket.rounds[0].find((m) => m.matchId === semiMatch.matchId)!;
+    expect(updatedSemi.winnerUnitId).toBe(semiB);
+    expect(updatedSemi.winsA).toBe(1);
+    expect(updatedSemi.winsB).toBe(2);
+    expect(updatedSemi.gameReports).toHaveLength(3);
+    expect(bracket.rounds[1][0].unitBId).toBe(semiB);
+
+    // 3. Bo3 League schedule + standing aggregation across all games in series
+    let leagueMatches = createLeagueSchedule([unitA, unitB], 3);
+    expect(leagueMatches).toHaveLength(1);
+    const lmId = leagueMatches[0].matchId;
+    leagueMatches = applyLeagueGameResult(leagueMatches, lmId, unitA.unitId, makeDummyReport('unit_A', 200, 100), false, 3);
+    expect(leagueMatches[0].report).toBeUndefined();
+    leagueMatches = applyLeagueGameResult(leagueMatches, lmId, unitA.unitId, makeDummyReport('unit_A', 210, 90), false, 3);
+    expect(leagueMatches[0].report).toBeDefined();
+    expect(leagueMatches[0].winnerUnitId).toBe(unitA.unitId);
+    expect(leagueMatches[0].winsA).toBe(2);
+    expect(leagueMatches[0].winsB).toBe(0);
+
+    const standings = computeLeagueStandings([unitA, unitB], leagueMatches);
+    expect(standings[0].unitId).toBe(unitA.unitId);
+    expect(standings[0].played).toBe(1);
+    expect(standings[0].wins).toBe(1);
+    expect(standings[0].totalKills).toBe(2);
+    expect(standings[0].totalContribution).toBe(410);
+    expect(standings[0].avgSurvivedSeconds).toBe(20);
+
+    // 4. Session persistence round-trip & corruption handling
+    const store = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        store.set(k, v);
+      },
+      removeItem: (k: string) => {
+        store.delete(k);
+      },
+    });
+    try {
+      const savedOk = saveBattlefieldSession({
+        version: 1,
+        savedAt: 123456,
+        config: { ...fixedCfg, seriesFormat: 'bo3', randomizeSeedPerMatch: true },
+        roster: [entryA, entryB],
+        tournamentBracket: bracket,
+        leagueData: null,
+        activeMatchId: semiMatch.matchId,
+        autoAdvance: true,
+      });
+      expect(savedOk).toBe(true);
+      const loaded = loadBattlefieldSession();
+      expect(loaded).not.toBeNull();
+      expect(loaded!.roster).toHaveLength(2);
+      expect(loaded!.config.seriesFormat).toBe('bo3');
+      expect(loaded!.config.randomizeSeedPerMatch).toBe(true);
+      expect(
+        loaded!.tournamentBracket?.rounds[0].find((m) => m.matchId === semiMatch.matchId)?.winsB
+      ).toBe(2);
+      expect(loaded!.autoAdvance).toBe(true);
+
+      store.set('codepanzer_bf_session_v1', '{broken-json');
+      expect(loadBattlefieldSession()).toBeNull();
+
+      clearBattlefieldSession();
+      expect(loadBattlefieldSession()).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('supports ice drift zones, cooldown 2x heat-dissipation zones, and 4-type mixed generation', () => {
+    // Ice zone: moving north then cutting power + turning East keeps significant northward drift momentum vs normal ground
+    const driftBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'ice_drifter',
+      name: 'アイス検証機',
+      author: 'Z1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', chassis: 'light' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 0.5 }, next: { x: 2, y: 0 } },
+        { x: 2, y: 0, type: 'act_turn_body', params: { mode: 'delta', angle: 90, wait: 1 }, next: { x: 3, y: 0 } },
+        { x: 3, y: 0, type: 'act_move', params: { speedPercent: 100, duration: 1.0 }, next: null },
+      ]),
+    };
+
+    const eA = createRosterEntryFromBlueprint(driftBp, 'test');
+    const eB = createRosterEntryFromBlueprint(driftBp, 'test');
+    const parts = [
+      { entry: eA, teamId: 'ffa_0', teamLabel: 'IceTank', teamColor: '#38bdf8', slotIndex: 0 },
+      { entry: eB, teamId: 'ffa_1', teamLabel: 'GripTank', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+
+    const iceCfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      obstacleMode: 'none' as const,
+      zoneMode: 'none' as const,
+      disableWeapons: true,
+    };
+    const stIce = createBattlefieldMatchState(parts, iceCfg);
+    stIce.arena.tiles = [
+      { id: 'tile_ice', kind: 'ice', x: 50, y: 50, width: 600, height: 800 },
+    ];
+    stIce.tanks[0].x = 300;
+    stIce.tanks[0].y = 500;
+    stIce.tanks[0].bodyAngle = 0;
+    stIce.tanks[1].x = 1000;
+    stIce.tanks[1].y = 500;
+    stIce.tanks[1].bodyAngle = 0;
+
+    for (let i = 0; i < 28; i++) {
+      stepBattlefieldTick(stIce, iceCfg);
+    }
+    // Tank 0 turned East mid-ice and kept drifting noticeably farther North than Tank 1 on normal ground
+    expect(stIce.tanks[0].vy).toBeLessThan(-0.35);
+    expect(Math.abs(stIce.tanks[1].vy)).toBeLessThan(Math.abs(stIce.tanks[0].vy));
+
+    // Cooldown zone: gunHeat cools twice as fast inside 'cooldown' tile
+    const idleBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'cool_idle',
+      name: '冷却待機機',
+      author: 'C',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4' },
+      program: buildProgram(4, 'relative', []),
+    };
+    const coolParts = [
+      { entry: createRosterEntryFromBlueprint(idleBp, 't'), teamId: 'c0', teamLabel: 'Cool', teamColor: '#14b8a6', slotIndex: 0 },
+      { entry: createRosterEntryFromBlueprint(idleBp, 't'), teamId: 'c1', teamLabel: 'Normal', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+    const stCool = createBattlefieldMatchState(coolParts, iceCfg);
+    stCool.arena.tiles = [
+      { id: 'tile_cool', kind: 'cooldown', x: 100, y: 400, width: 300, height: 200 },
+    ];
+    stCool.tanks[0].x = 250;
+    stCool.tanks[0].y = 500;
+    stCool.tanks[0].gunHeat = 30;
+    stCool.tanks[1].x = 900;
+    stCool.tanks[1].y = 500;
+    stCool.tanks[1].gunHeat = 30;
+
+    for (let i = 0; i < 5; i++) {
+      stepBattlefieldTick(stCool, iceCfg);
+    }
+    const coolDrop = 30 - stCool.tanks[0].gunHeat;
+    const normDrop = 30 - stCool.tanks[1].gunHeat;
+    expect(coolDrop).toBeCloseTo(normDrop * 2, 4);
+
+    // generateBattlefieldZones supports ice, cooldown, and 4-kind mixed on large arena without overlap
+    const largeObs = generateArenaObstacles('few', 42, 'large');
+    const iceZones = generateBattlefieldZones('ice', 42, 'large', largeObs);
+    const coolZones = generateBattlefieldZones('cooldown', 42, 'large', largeObs);
+    const mixedLarge = generateBattlefieldZones('mixed', 42, 'large', []);
+    expect(iceZones.length).toBe(4);
+    expect(iceZones.every((z) => z.kind === 'ice')).toBe(true);
+    expect(coolZones.length).toBe(4);
+    expect(coolZones.every((z) => z.kind === 'cooldown')).toBe(true);
+    expect(new Set(mixedLarge.map((z) => z.kind))).toEqual(
+      new Set(['slow', 'no_weapon', 'ice', 'cooldown'])
+    );
+  });
+
+  it('runs bounty_hunt: bounty transfer, HP+SP recovery, streak buffs, respawn w/ invulnerability cancellation, and balanced preset play', () => {
+    const idleBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'bounty_victim',
+      name: '標的戦車',
+      author: 'V',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', subWeapon: 'missile' },
+      program: buildProgram(4, 'relative', []),
+    };
+    const shooterBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'bounty_killer',
+      name: '賞金稼ぎ',
+      author: 'K',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4', mainGun: 'standard', subWeapon: 'missile' },
+      program: buildProgram(4, 'relative', [
+        { x: 0, y: 0, type: 'start', next: { x: 1, y: 0 } },
+        { x: 1, y: 0, type: 'act_fire', params: { power: 5, wait: 1 }, next: { x: 0, y: 0 } },
+      ]),
+    };
+
+    const parts = [
+      { entry: createRosterEntryFromBlueprint(shooterBp, 'test'), teamId: 'k_team', teamLabel: 'Killer', teamColor: '#56b4e9', slotIndex: 0 },
+      { entry: createRosterEntryFromBlueprint(idleBp, 'test'), teamId: 'v_team', teamLabel: 'Victim', teamColor: '#e69f00', slotIndex: 1 },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'bounty_hunt' as const,
+      obstacleMode: 'none' as const,
+      maxSeconds: 60,
+    };
+
+    const st = createBattlefieldMatchState(parts, cfg);
+    const killer = st.tanks[0];
+    const victim = st.tanks[1];
+    expect(st.arena.respawnEnabled).toBe(true);
+    expect(killer.bountyValue).toBe(BOUNTY_TUNING.baseValue);
+
+    // Pre-damage killer & consume SP so we can observe kill heal + SP+1 cleanly
+    killer.hp = 40;
+    killer.subAmmo = 1;
+    killer.x = 400;
+    killer.y = 500;
+    killer.bodyAngle = 90;
+    killer.turretAngle = 90;
+    victim.x = 460;
+    victim.y = 500;
+    victim.hp = 1; // 1 hit kills victim
+
+    const tracker = createCommentaryTracker(st, cfg);
+    let killCommentarySeen = false;
+    // Step until victim dies
+    for (let i = 0; i < 10 && victim.hp > 0; i++) {
+      stepBattlefieldTick(st, cfg);
+      const cm = evaluateCommentaryStep(tracker, st, cfg, DEFAULT_COMMENTARY_SETTINGS, 2000 + i * 100);
+      if (cm && cm.badge.includes('KO')) killCommentarySeen = true;
+    }
+    expect(victim.hp).toBe(0);
+    expect(victim.stats.deaths).toBe(1);
+    expect(victim.respawnTicks).toBe(BOUNTY_TUNING.respawnTicks);
+    expect(victim.bountyValue).toBe(BOUNTY_TUNING.baseValue);
+
+    // Killer got 100pt, +20% HP heal, +1 SP, bounty rose to 200 & streak=1 buff
+    expect(killer.stats.ruleScore).toBe(100);
+    expect(killer.bountyStreak).toBe(1);
+    expect(killer.bountyValue).toBe(200);
+    expect(killer.bountyDamageMult).toBe(getBountyStreakBuff(1).damageMult);
+    expect(killer.hp).toBe(40 + Math.round(killer.maxHp * BOUNTY_TUNING.killHealRatio));
+    expect(killer.subAmmo).toBe(2);
+    expect(st.ruleTeamScores?.['k_team']).toBe(100);
+    expect(killCommentarySeen || tracker.tanks[killer.id].bountyValue === 200).toBe(true);
+
+    // Wait 49 more ticks -> still dead until 50th tick passes
+    for (let i = 0; i < BOUNTY_TUNING.respawnTicks - 1; i++) {
+      stepBattlefieldTick(st, cfg);
+    }
+    expect(victim.hp).toBe(0);
+
+    // 50th tick -> respawns with full HP, full SP, invulnerability=30
+    const subMaxVictim = SUB_WEAPON_SPECS[victim.blueprint.assembly.subWeapon].maxAmmo;
+    victim.subAmmo = 0;
+    stepBattlefieldTick(st, cfg);
+    expect(victim.hp).toBe(victim.maxHp);
+    expect(victim.subAmmo).toBe(subMaxVictim);
+    expect(victim.invulnerableTicks).toBe(BOUNTY_TUNING.invulnerableTicks);
+
+    // Verify invulnerability blocks damage, and shooting immediately cancels invulnerability
+    const preHp = victim.hp;
+    const dealtInvuln = applyDamage(victim, 25, killer, st.tick);
+    expect(dealtInvuln).toBe(0);
+    expect(victim.hp).toBe(preHp);
+
+    // Simulate firing while invulnerable: move idle victim aside and test killer invulnerability cancel on fire
+    killer.invulnerableTicks = 25;
+    killer.gunHeat = 0;
+    stepBattlefieldTick(st, cfg);
+    expect(killer.invulnerableTicks).toBe(0);
+
+    // Empirical balance sweep across 4-tank & 8-tank standard preset brawlers (4 seeds)
+    const presetPool = PRESET_ENEMIES.slice(0, 8).map((bp) => createRosterEntryFromBlueprint(bp, 'CPU', true));
+    let totalKillsObserved = 0;
+    let totalStreaks2Plus = 0;
+    let totalBountyClaims = 0;
+    let totalDeathsObserved = 0;
+
+    for (const seed of [101, 202, 303, 404]) {
+      const p4 = presetPool.slice(0, 4).map((entry, idx) => ({
+        entry,
+        teamId: `ffa_${idx}`,
+        teamLabel: entry.playerName,
+        teamColor: '#38bdf8',
+        slotIndex: idx,
+      }));
+      const sweepCfg = {
+        ...DEFAULT_BATTLEFIELD_CONFIG,
+        ruleId: 'bounty_hunt' as const,
+        arenaSize: 'medium' as const,
+        obstacleMode: 'few' as const,
+        obstacleSeed: seed,
+        maxSeconds: 90,
+      };
+      const sim = simulateMatchHeadless(p4, sweepCfg);
+      expect(sim.state.status).toBe('finished');
+      for (const r of sim.report.tankRows) {
+        totalKillsObserved += r.kills;
+        totalDeathsObserved += r.deaths ?? 0;
+        if ((r.maxBountyStreak ?? 0) >= 2) totalStreaks2Plus += 1;
+        totalBountyClaims += r.bountyClaimedCount ?? 0;
+      }
+    }
+    // Verify active back-and-forth fights, streaks achieved, AND bounty takedowns actually occur (no invincible snowball)
+    expect(totalKillsObserved).toBeGreaterThanOrEqual(4);
+    expect(totalDeathsObserved).toBeGreaterThanOrEqual(4);
+    expect(totalStreaks2Plus).toBeGreaterThanOrEqual(1);
+    expect(totalBountyClaims).toBeGreaterThanOrEqual(1);
+  });
+
+  it('assigns expanded special awards cleanly in buildMatchReport and formats them in text output', () => {
+    const tinyBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'award_tiny',
+      name: '下克上4x4',
+      author: 'A1',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: 'mini_4x4' },
+      program: buildProgram(4, 'relative', []),
+    };
+    const bigBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'award_big',
+      name: '重装8x8',
+      author: 'A2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(8) },
+      program: buildProgram(8, 'relative', []),
+    };
+    const thirdBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'award_mid',
+      name: '精密6x6',
+      author: 'A3',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(6) },
+      program: buildProgram(6, 'relative', []),
+    };
+    const fourthBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'award_fourth',
+      name: '粘り機体',
+      author: 'A4',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(6) },
+      program: buildProgram(6, 'relative', []),
+    };
+
+    const entries = [tinyBp, bigBp, thirdBp, fourthBp].map((bp, i) => ({
+      entry: createRosterEntryFromBlueprint(bp, 'test'),
+      teamId: `t_${i}`,
+      teamLabel: `P${i + 1}`,
+      teamColor: '#38bdf8',
+      slotIndex: i,
+    }));
+    const cfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'bounty_hunt' as const };
+    const st = createBattlefieldMatchState(entries, cfg);
+    st.tick = 1000;
+    st.winnerId = st.tanks[0].id;
+    st.winType = 'decision';
+    st.endReason = 'P1 の賞金王勝利！（獲得 400pt）';
+    st.ruleTeamScores = { t_0: 400, t_1: 100, t_2: 100, t_3: 50 };
+
+    // Tank 0 (4x4): winner, first kill, bounty hunter (200pt claimed), streak 2, tanky survivor (120 taken), outranks 8x8 -> giant killing!
+    st.tanks[0].stats.kills = 2;
+    st.tanks[0].stats.damageDealt = 240;
+    st.tanks[0].stats.damageTaken = 120;
+    st.tanks[0].stats.ruleScore = 400;
+    st.tanks[0].stats.maxBountyStreak = 2;
+    st.tanks[0].stats.bountyClaimedCount = 1;
+    st.tanks[0].stats.maxBountyClaimed = 300;
+    st.tanks[0].stats.firstKillTick = 90;
+
+    // Tank 2 (6x6): sniper accuracy 80%
+    st.tanks[2].stats.shotsFired = 10;
+    st.tanks[2].stats.shotsHit = 8;
+    st.tanks[2].stats.damageDealt = 180;
+    st.tanks[2].stats.ruleScore = 100;
+
+    // Tank 3 (6x6): active non-winner with zero top-stat awards -> gets 敢闘賞
+    st.tanks[3].stats.shotsFired = 10;
+    st.tanks[3].stats.shotsHit = 2;
+    st.tanks[3].stats.damageDealt = 80;
+    st.tanks[3].stats.ruleScore = 50;
+    st.tanks[3].hp = 0;
+
+    const report = buildMatchReport(st, entries, cfg);
+    const row0 = report.tankRows.find((r) => r.tankId === st.tanks[0].id)!;
+    const row2 = report.tankRows.find((r) => r.tankId === st.tanks[2].id)!;
+    const row3 = report.tankRows.find((r) => r.tankId === st.tanks[3].id)!;
+
+    expect(row0.awards).toContain('🏆 MVP');
+    expect(row0.awards).toContain('👑 賞金首ハンター');
+    expect(row0.awards).toContain('🔥 連勝の覇者');
+    expect(row0.awards).toContain('⚡ 電光石火');
+    expect(row0.awards).toContain('💥 最多ダメージ');
+    expect(row0.awards).toContain('🛡️ 鉄壁');
+    expect(row0.awards).toContain('🌟 ジャイアントキリング');
+    expect(row2.awards).toContain('🎯 スナイパー');
+    expect(row3.awards).toContain('💪 敢闘賞');
+
+    const text = formatMatchReportText(report);
+    expect(text).toContain('👑 賞金首ハンター');
+    expect(text).toContain('🎯 スナイパー');
+  });
+
+  it('draws 8 eligible entries fairly with unplayed priority, shuffles roster order, and balances random teams', () => {
+    const bigRoster = Array.from({ length: 12 }, (_, idx) =>
+      createRosterEntryFromBlueprint(
+        {
+          ...DEFAULT_PLAYER_BLUEPRINT,
+          id: `r_${idx}`,
+          name: `戦車_${idx}`,
+          author: `P${idx}`,
+        },
+        'file'
+      )
+    );
+    const cfg = { ...DEFAULT_BATTLEFIELD_CONFIG, cpuRegulation: 'any' as const };
+
+    // Round 1: picks 8 of 12
+    const round1 = pickRandomBattleRoyaleEntries(bigRoster, cfg, 8, new Set(), () => 0.35);
+    expect(round1.pickedIds).toHaveLength(8);
+    expect(round1.resetCycle).toBe(false);
+    expect(round1.nextRoster.filter((e) => e.enabled)).toHaveLength(8);
+
+    // Round 2: passes round 1's 8 IDs -> MUST include all 4 unplayed IDs + 4 from played, signaling cycle reset
+    const round1Set = new Set(round1.pickedIds);
+    const remainingUnplayedIds = bigRoster
+      .map((e) => e.entryId)
+      .filter((id) => !round1Set.has(id));
+    expect(remainingUnplayedIds).toHaveLength(4);
+
+    const round2 = pickRandomBattleRoyaleEntries(bigRoster, cfg, 8, round1Set, () => 0.42);
+    expect(round2.pickedIds).toHaveLength(8);
+    expect(round2.resetCycle).toBe(true);
+    for (const unplayedId of remainingUnplayedIds) {
+      expect(round2.pickedIds).toContain(unplayedId);
+    }
+
+    // Shuffle preserves all items
+    const shuffled = shuffleCompetitionRoster(bigRoster, () => 0.17);
+    expect(shuffled).toHaveLength(12);
+    expect(new Set(shuffled.map((e) => e.entryId))).toEqual(
+      new Set(bigRoster.map((e) => e.entryId))
+    );
+
+    // assignRandomTeams creates two balanced teams of 4
+    const teamSplit = assignRandomTeams(bigRoster, cfg, 2, new Set(), () => 0.25);
+    expect(teamSplit.pickedIds).toHaveLength(8);
+    const enabledTeams = teamSplit.nextRoster.filter((e) => e.enabled);
+    expect(enabledTeams.filter((e) => e.teamSlot === 0)).toHaveLength(4);
+    expect(enabledTeams.filter((e) => e.teamSlot === 1)).toHaveLength(4);
+  });
+
+  it('respawns bounty_hunt tanks outside alive enemy radar cones & turret lines and avoids repeating the death corner', () => {
+    const stickyCamperBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'sticky_camper',
+      name: '粘着砲台',
+      author: 'S1',
+      assembly: {
+        ...DEFAULT_PLAYER_BLUEPRINT.assembly,
+        cpu: cpuIdForGridSize(4),
+        radar: 'wide', // 70 deg FOV, 620px range
+      },
+      program: buildProgram(4, 'relative', []),
+    };
+    const victimBp: TankBlueprint = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      id: 'respawn_victim',
+      name: 'リスポン対象',
+      author: 'S2',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, cpu: cpuIdForGridSize(4) },
+      program: buildProgram(4, 'relative', []),
+    };
+
+    const parts = [
+      {
+        entry: createRosterEntryFromBlueprint(stickyCamperBp, 'test'),
+        teamId: 's_camper',
+        teamLabel: 'Camper',
+        teamColor: '#ef4444',
+        slotIndex: 0,
+      },
+      {
+        entry: createRosterEntryFromBlueprint(victimBp, 'test'),
+        teamId: 's_victim',
+        teamLabel: 'Victim',
+        teamColor: '#38bdf8',
+        slotIndex: 1,
+      },
+    ];
+    const cfg = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ruleId: 'bounty_hunt' as const,
+      arenaSize: 'medium' as const,
+      obstacleMode: 'none' as const,
+    };
+
+    const st = createBattlefieldMatchState(parts, cfg);
+    const camper = st.tanks[0];
+    const victim = st.tanks[1];
+
+    // Camper sits on West-center aiming radar & turret East covering the entire far-East side (where victim died)
+    camper.x = 550;
+    camper.y = 450;
+    camper.radarAngle = 90;
+    camper.turretAngle = 90;
+    camper.bodyAngle = 90;
+
+    victim.x = st.arena.width - 70;
+    victim.y = 450;
+    victim.hp = 0;
+
+    const camperRadar = RADAR_SPECS[camper.blueprint.assembly.radar];
+    const seenByCamper = (x: number, y: number) => {
+      const dist = Math.hypot(x - camper.x, y - camper.y);
+      const bearing = vectorToAngle(x - camper.x, y - camper.y);
+      const diff = Math.abs(normalizeAngle180(bearing - camper.radarAngle));
+      return dist <= camperRadar.range && diff <= camperRadar.fovDeg / 2;
+    };
+
+    // Even though the far-East corners might be far from something or near death spot, respawn MUST NOT land in camper's East radar cone!
+    const pickedSpots: Array<{ x: number; y: number }> = [];
+    for (let deathCount = 1; deathCount <= 4; deathCount++) {
+      st.tick = 100 * deathCount;
+      victim.stats.deaths = deathCount;
+      const pt = pickBountyRespawnPoint(victim, st, 1);
+      expect(seenByCamper(pt.x, pt.y)).toBe(false);
+      // Should also avoid turret line of fire directly East
+      const turretDiff = Math.abs(
+        normalizeAngle180(vectorToAngle(pt.x - camper.x, pt.y - camper.y) - camper.turretAngle)
+      );
+      expect(turretDiff).toBeGreaterThan(16);
+      // Should be well away from previous death coordinates
+      expect(Math.hypot(pt.x - victim.x, pt.y - victim.y)).toBeGreaterThanOrEqual(180);
+      pickedSpots.push({ x: pt.x, y: pt.y });
+      victim.x = pt.x;
+      victim.y = pt.y;
+    }
+
+    // Multiple respawns do not collapse to a single static coordinate
+    const uniqueCoordKeys = new Set(pickedSpots.map((p) => `${Math.round(p.x)}:${Math.round(p.y)}`));
+    expect(uniqueCoordKeys.size).toBeGreaterThanOrEqual(2);
   });
 });
 

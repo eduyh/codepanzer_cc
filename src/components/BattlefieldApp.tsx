@@ -48,10 +48,12 @@ import {
   stopCommentarySpeech,
 } from '../engine/battleCommentary';
 import {
+  applyLeagueGameResult,
   applyRecommendedMapPreset,
-  applyTournamentMatchResult,
+  applyTournamentGameResult,
   ARENA_ZONE_MODE_SPECS,
   ArenaZoneMode,
+  assignRandomTeams,
   BATTLEFIELD_RULE_REGISTRY,
   BattlefieldConfig,
   BattlefieldFormat,
@@ -60,6 +62,7 @@ import {
   BattlefieldRuleId,
   buildMatchReport,
   buildParticipantsFromUnitPair,
+  clearBattlefieldSession,
   CompetitionUnit,
   computeBattlefieldHudLayout,
   computeLeagueStandings,
@@ -82,11 +85,16 @@ import {
   GravityPresetId,
   isRecommendedMapPresetApplied,
   LeagueMatch,
+  loadBattlefieldSession,
   OUTER_WALL_MODE_SPECS,
   parseImportedTankContent,
+  pickRandomBattleRoyaleEntries,
+  resolveMatchConfigForGame,
   resolveRecommendedTankTier,
   SANDSTORM_PRESET_SPECS,
   SandstormPresetId,
+  saveBattlefieldSession,
+  shuffleCompetitionRoster,
   simulateMatchHeadless,
   sortRosterEntries,
   stepBattlefieldTick,
@@ -358,20 +366,74 @@ function buildParticipantsForSingleMatch(
 
 export const BattlefieldApp: React.FC = () => {
   const initialSetup = useMemo(() => {
-    const initRoster = createInitialRoster();
-    const { participants } = buildParticipantsForSingleMatch(
-      initRoster,
-      DEFAULT_BATTLEFIELD_CONFIG
-    );
+    const restored = loadBattlefieldSession();
+    const initRoster = restored ? restored.roster : createInitialRoster();
+    const initConfig = restored ? restored.config : { ...DEFAULT_BATTLEFIELD_CONFIG };
+    let initBracket = restored ? restored.tournamentBracket : null;
+    let initLeague = restored ? restored.leagueData : null;
+    let initActiveMatchId = restored ? restored.activeMatchId : null;
+    const initAutoAdvance = restored ? restored.autoAdvance : false;
+
+    let participants: BattlefieldParticipant[] = [];
+    let matchConfig = resolveMatchConfigForGame(initConfig, 0);
+
+    if (initConfig.format === 'tournament' && initBracket) {
+      initLeague = null;
+      const allMatches = initBracket.rounds.flat();
+      const targetMatch =
+        allMatches.find((m) => m.matchId === initActiveMatchId && m.unitAId && m.unitBId && !m.isBye) ??
+        allMatches.find((m) => !m.winnerUnitId && m.unitAId && m.unitBId && !m.isBye) ??
+        allMatches.find((m) => m.unitAId && m.unitBId && !m.isBye);
+      if (targetMatch) {
+        const uA = initBracket.units.find((u) => u.unitId === targetMatch.unitAId);
+        const uB = initBracket.units.find((u) => u.unitId === targetMatch.unitBId);
+        if (uA && uB) {
+          initActiveMatchId = targetMatch.matchId;
+          matchConfig = resolveMatchConfigForGame(initConfig, targetMatch.gameReports?.length ?? 0);
+          participants = buildParticipantsFromUnitPair(uA, uB);
+        }
+      }
+    } else if (initConfig.format === 'league' && initLeague) {
+      initBracket = null;
+      const targetMatch =
+        initLeague.matches.find((m) => m.matchId === initActiveMatchId) ??
+        initLeague.matches.find((m) => !m.report) ??
+        initLeague.matches[0];
+      if (targetMatch) {
+        const uA = initLeague.units.find((u) => u.unitId === targetMatch.unitAId);
+        const uB = initLeague.units.find((u) => u.unitId === targetMatch.unitBId);
+        if (uA && uB) {
+          initActiveMatchId = targetMatch.matchId;
+          matchConfig = resolveMatchConfigForGame(initConfig, targetMatch.gameReports?.length ?? 0);
+          participants = buildParticipantsFromUnitPair(uA, uB);
+        }
+      }
+    } else {
+      initBracket = null;
+      initLeague = null;
+      initActiveMatchId = null;
+      participants = buildParticipantsForSingleMatch(initRoster, initConfig).participants;
+    }
+
     return {
+      wasRestored: Boolean(restored),
       initRoster,
+      initConfig,
+      initBracket,
+      initLeague,
+      initActiveMatchId,
+      initAutoAdvance,
+      matchConfig,
       participants,
-      state: createBattlefieldMatchState(participants, DEFAULT_BATTLEFIELD_CONFIG),
+      state: createBattlefieldMatchState(participants, matchConfig),
     };
   }, []);
 
   const [roster, setRoster] = useState<BattlefieldRosterEntry[]>(() => initialSetup.initRoster);
-  const [config, setConfig] = useState<BattlefieldConfig>(() => ({ ...DEFAULT_BATTLEFIELD_CONFIG }));
+  const [config, setConfig] = useState<BattlefieldConfig>(() => initialSetup.initConfig);
+  const [activeMatchConfig, setActiveMatchConfig] = useState<BattlefieldConfig>(
+    () => initialSetup.matchConfig
+  );
 
   const [activeParticipants, setActiveParticipants] = useState<BattlefieldParticipant[]>(
     initialSetup.participants
@@ -434,13 +496,17 @@ export const BattlefieldApp: React.FC = () => {
   );
   const [matchNotice, setMatchNotice] = useState<string | null>(null);
 
-  const [tournamentBracket, setTournamentBracket] = useState<TournamentBracket | null>(null);
+  const [tournamentBracket, setTournamentBracket] = useState<TournamentBracket | null>(
+    () => initialSetup.initBracket
+  );
   const [leagueData, setLeagueData] = useState<{
     units: CompetitionUnit[];
     matches: LeagueMatch[];
-  } | null>(null);
-  const [activeMatchId, setActiveMatchId] = useState<string | null>(null);
-  const [autoAdvance, setAutoAdvance] = useState(false);
+  } | null>(() => initialSetup.initLeague);
+  const [activeMatchId, setActiveMatchId] = useState<string | null>(
+    () => initialSetup.initActiveMatchId
+  );
+  const [autoAdvance, setAutoAdvance] = useState(() => initialSetup.initAutoAdvance);
 
   const [latestReport, setLatestReport] = useState<ReturnType<typeof buildMatchReport> | null>(
     null
@@ -448,6 +514,8 @@ export const BattlefieldApp: React.FC = () => {
   const [showResultModal, setShowResultModal] = useState(false);
   const [copyToast, setCopyToast] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [recentPlayedEntryIds, setRecentPlayedEntryIds] = useState<Set<string>>(() => new Set());
+  const [vsBannerDismissed, setVsBannerDismissed] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const accumulatorRef = useRef(0);
@@ -463,7 +531,7 @@ export const BattlefieldApp: React.FC = () => {
   const [commentarySettingsOpen, setCommentarySettingsOpen] = useState(false);
   const [commentaryHistoryOpen, setCommentaryHistoryOpen] = useState(false);
   const commentaryTrackerRef = useRef<BattleCommentaryTracker>(
-    createCommentaryTracker(initialSetup.state, DEFAULT_BATTLEFIELD_CONFIG)
+    createCommentaryTracker(initialSetup.state, initialSetup.matchConfig)
   );
   const suppressNextCommentarySpeechRef = useRef(false);
   const speechSupported = useMemo(() => isSpeechSynthesisSupported(), []);
@@ -514,7 +582,7 @@ export const BattlefieldApp: React.FC = () => {
     const entry = evaluateCommentaryStep(
       tracker,
       battleState,
-      config,
+      activeMatchConfig,
       commentarySettings,
       performance.now()
     );
@@ -526,11 +594,30 @@ export const BattlefieldApp: React.FC = () => {
         speakCommentary(entry, commentarySettings, speedMultiplier);
       }
     }
-  }, [battleState, config, commentarySettings, speedMultiplier]);
+  }, [battleState, activeMatchConfig, commentarySettings, speedMultiplier]);
 
   const showToast = useCallback((msg: string) => {
     setCopyToast(msg);
   }, []);
+
+  useEffect(() => {
+    if (initialSetup.wasRestored) {
+      showToast('前回のバトルフィールド進行状況を復元しました');
+    }
+  }, [initialSetup.wasRestored, showToast]);
+
+  useEffect(() => {
+    saveBattlefieldSession({
+      version: 1,
+      savedAt: Date.now(),
+      config,
+      roster,
+      tournamentBracket,
+      leagueData,
+      activeMatchId,
+      autoAdvance,
+    });
+  }, [config, roster, tournamentBracket, leagueData, activeMatchId, autoAdvance]);
 
   useEffect(() => {
     if (!copyToast) return;
@@ -564,16 +651,19 @@ export const BattlefieldApp: React.FC = () => {
       clearAutoTimer();
       clearResultModalTimer();
       goalPauseUntilRef.current = 0;
-      const { participants, notice } = buildParticipantsForSingleMatch(nextRoster, nextConfig);
-      const nextState = createBattlefieldMatchState(participants, nextConfig);
+      const resolvedCfg = resolveMatchConfigForGame(nextConfig, 0);
+      const { participants, notice } = buildParticipantsForSingleMatch(nextRoster, resolvedCfg);
+      const nextState = createBattlefieldMatchState(participants, resolvedCfg);
+      setActiveMatchConfig(resolvedCfg);
       setActiveParticipants(participants);
       setMatchNotice(notice);
       setActiveMatchId(null);
       setLatestReport(null);
       setShowResultModal(false);
+      setVsBannerDismissed(false);
       recordedFinishRef.current = false;
       setFocusTankId(null);
-      resetCommentary(nextState, nextConfig);
+      resetCommentary(nextState, resolvedCfg);
       setBattleState(nextState);
       setIsPlaying(autoPlay && participants.length >= 2);
     },
@@ -586,20 +676,24 @@ export const BattlefieldApp: React.FC = () => {
       unitA: CompetitionUnit,
       unitB: CompetitionUnit,
       nextConfig: BattlefieldConfig,
-      autoPlay: boolean
+      autoPlay: boolean,
+      gameIndex = 0
     ) => {
       clearAutoTimer();
       clearResultModalTimer();
       goalPauseUntilRef.current = 0;
+      const resolvedCfg = resolveMatchConfigForGame(nextConfig, gameIndex);
       const participants = buildParticipantsFromUnitPair(unitA, unitB);
-      const nextState = createBattlefieldMatchState(participants, nextConfig);
+      const nextState = createBattlefieldMatchState(participants, resolvedCfg);
+      setActiveMatchConfig(resolvedCfg);
       setActiveParticipants(participants);
       setActiveMatchId(matchId);
       setLatestReport(null);
       setShowResultModal(false);
+      setVsBannerDismissed(false);
       recordedFinishRef.current = false;
       setFocusTankId(null);
-      resetCommentary(nextState, nextConfig);
+      resetCommentary(nextState, resolvedCfg);
       setBattleState(nextState);
       setIsPlaying(autoPlay);
     },
@@ -614,6 +708,7 @@ export const BattlefieldApp: React.FC = () => {
       setIsPlaying(false);
       setLatestReport(null);
       setShowResultModal(false);
+      setVsBannerDismissed(false);
       recordedFinishRef.current = false;
 
       if (nextConfig.format === 'battle_royale' || nextConfig.format === 'team_match') {
@@ -623,6 +718,7 @@ export const BattlefieldApp: React.FC = () => {
         return;
       }
 
+      const seriesBestOf: 1 | 3 = nextConfig.seriesFormat === 'bo3' ? 3 : 1;
       const { units, skippedNames } = buildUnitsForCompetition(nextRoster, nextConfig);
       const skipMsg =
         skippedNames.length > 0 ? `規格外・対象外: ${skippedNames.join(', ')}` : null;
@@ -631,6 +727,8 @@ export const BattlefieldApp: React.FC = () => {
         setLeagueData(null);
         if (units.length < 2) {
           const emptyState = createBattlefieldMatchState([], nextConfig);
+          setActiveMatchConfig(nextConfig);
+          setActiveMatchId(null);
           setTournamentBracket(null);
           setMatchNotice(
             skipMsg ?? 'トーナメントの開催には適合ユニットが 2つ以上必要です。'
@@ -640,7 +738,7 @@ export const BattlefieldApp: React.FC = () => {
           setBattleState(emptyState);
           return;
         }
-        const bracket = createTournamentBracket(units);
+        const bracket = createTournamentBracket(units, seriesBestOf);
         setTournamentBracket(bracket);
         const firstPlayable = bracket.rounds
           .flat()
@@ -650,7 +748,14 @@ export const BattlefieldApp: React.FC = () => {
           const uB = units.find((u) => u.unitId === firstPlayable.unitBId);
           if (uA && uB) {
             setMatchNotice(skipMsg);
-            loadCompetitionMatchIntoArena(firstPlayable.matchId, uA, uB, nextConfig, false);
+            loadCompetitionMatchIntoArena(
+              firstPlayable.matchId,
+              uA,
+              uB,
+              nextConfig,
+              false,
+              firstPlayable.gameReports?.length ?? 0
+            );
             return;
           }
         }
@@ -662,6 +767,8 @@ export const BattlefieldApp: React.FC = () => {
       setTournamentBracket(null);
       if (units.length < 2) {
         const emptyState = createBattlefieldMatchState([], nextConfig);
+        setActiveMatchConfig(nextConfig);
+        setActiveMatchId(null);
         setLeagueData(null);
         setMatchNotice(skipMsg ?? 'リーグ戦の開催には適合ユニットが 2つ以上必要です。');
         setActiveParticipants([]);
@@ -669,7 +776,7 @@ export const BattlefieldApp: React.FC = () => {
         setBattleState(emptyState);
         return;
       }
-      const matches = createLeagueSchedule(units);
+      const matches = createLeagueSchedule(units, seriesBestOf);
       setLeagueData({ units, matches });
       setMatchNotice(skipMsg);
       const first = matches[0];
@@ -677,7 +784,14 @@ export const BattlefieldApp: React.FC = () => {
         const uA = units.find((u) => u.unitId === first.unitAId);
         const uB = units.find((u) => u.unitId === first.unitBId);
         if (uA && uB) {
-          loadCompetitionMatchIntoArena(first.matchId, uA, uB, nextConfig, false);
+          loadCompetitionMatchIntoArena(
+            first.matchId,
+            uA,
+            uB,
+            nextConfig,
+            false,
+            first.gameReports?.length ?? 0
+          );
         }
       }
     },
@@ -767,7 +881,7 @@ export const BattlefieldApp: React.FC = () => {
           }
           const next = cloneBattleStateForStep(prev);
           for (let i = 0; i < steps; i++) {
-            stepBattlefieldTick(next, config);
+            stepBattlefieldTick(next, activeMatchConfig);
             if (next.status === 'finished') break;
             if (next.football?.pendingKickoffReset) {
               goalPauseUntilRef.current = performance.now() + 1000;
@@ -782,7 +896,7 @@ export const BattlefieldApp: React.FC = () => {
 
     rafId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafId);
-  }, [isPlaying, speedMultiplier, config]);
+  }, [isPlaying, speedMultiplier, activeMatchConfig]);
 
   // Handle battle finished -> build report & update Tournament/League & optional Auto-Advance (1s beat before modal)
   useEffect(() => {
@@ -795,7 +909,7 @@ export const BattlefieldApp: React.FC = () => {
     if (recordedFinishRef.current) return;
     recordedFinishRef.current = true;
 
-    const report = buildMatchReport(battleState, activeParticipants, config);
+    const report = buildMatchReport(battleState, activeParticipants, activeMatchConfig);
     setLatestReport(report);
     clearResultModalTimer();
     resultModalTimerRef.current = window.setTimeout(() => {
@@ -803,66 +917,95 @@ export const BattlefieldApp: React.FC = () => {
       setShowResultModal(true);
     }, 1000);
 
+    const seriesBestOf: 1 | 3 = config.seriesFormat === 'bo3' ? 3 : 1;
+
     if (config.format === 'tournament' && tournamentBracket && activeMatchId) {
+      const currentMatch = tournamentBracket.rounds
+        .flat()
+        .find((m) => m.matchId === activeMatchId);
       const winUnitId =
         report.winnerTeamId === 'unit_A'
-          ? tournamentBracket.rounds.flat().find((m) => m.matchId === activeMatchId)?.unitAId ?? null
+          ? currentMatch?.unitAId ?? null
           : report.winnerTeamId === 'unit_B'
-            ? tournamentBracket.rounds.flat().find((m) => m.matchId === activeMatchId)?.unitBId ?? null
+            ? currentMatch?.unitBId ?? null
             : null;
 
-      const updatedBracket = applyTournamentMatchResult(
+      const updatedBracket = applyTournamentGameResult(
         tournamentBracket,
         activeMatchId,
         winUnitId,
         report,
-        report.winType === 'draw'
+        report.winType === 'draw',
+        seriesBestOf
       );
       setTournamentBracket(updatedBracket);
 
       if (autoAdvance) {
-        const nextMatch = updatedBracket.rounds
-          .flat()
-          .find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+        const allBracketMatches = updatedBracket.rounds.flat();
+        const activeUpdated = allBracketMatches.find(
+          (m) => m.matchId === activeMatchId && !m.winnerUnitId && m.unitAId && m.unitBId
+        );
+        const nextMatch =
+          activeUpdated ??
+          allBracketMatches.find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
         if (nextMatch) {
           const uA = updatedBracket.units.find((u) => u.unitId === nextMatch.unitAId);
           const uB = updatedBracket.units.find((u) => u.unitId === nextMatch.unitBId);
           if (uA && uB) {
+            const nextGameIdx = nextMatch.gameReports?.length ?? 0;
             clearAutoTimer();
             autoAdvanceTimerRef.current = window.setTimeout(() => {
-              loadCompetitionMatchIntoArena(nextMatch.matchId, uA, uB, config, true);
+              loadCompetitionMatchIntoArena(
+                nextMatch.matchId,
+                uA,
+                uB,
+                config,
+                true,
+                nextGameIdx
+              );
             }, 4500);
           }
         }
       }
     } else if (config.format === 'league' && leagueData && activeMatchId) {
-      const updatedMatches = leagueData.matches.map((m) => {
-        if (m.matchId !== activeMatchId) return m;
-        const winnerUnitId =
-          report.winnerTeamId === 'unit_A'
-            ? m.unitAId
-            : report.winnerTeamId === 'unit_B'
-              ? m.unitBId
-              : null;
-        return {
-          ...m,
-          winnerUnitId,
-          isDraw: report.winType === 'draw' || !winnerUnitId,
-          report,
-        };
-      });
+      const currentMatch = leagueData.matches.find((m) => m.matchId === activeMatchId);
+      const winnerUnitId =
+        report.winnerTeamId === 'unit_A'
+          ? currentMatch?.unitAId ?? null
+          : report.winnerTeamId === 'unit_B'
+            ? currentMatch?.unitBId ?? null
+            : null;
+      const updatedMatches = applyLeagueGameResult(
+        leagueData.matches,
+        activeMatchId,
+        winnerUnitId,
+        report,
+        report.winType === 'draw',
+        seriesBestOf
+      );
       const nextLeague = { units: leagueData.units, matches: updatedMatches };
       setLeagueData(nextLeague);
 
       if (autoAdvance) {
-        const nextMatch = updatedMatches.find((m) => !m.report);
+        const activeUpdated = updatedMatches.find(
+          (m) => m.matchId === activeMatchId && !m.report
+        );
+        const nextMatch = activeUpdated ?? updatedMatches.find((m) => !m.report);
         if (nextMatch) {
           const uA = nextLeague.units.find((u) => u.unitId === nextMatch.unitAId);
           const uB = nextLeague.units.find((u) => u.unitId === nextMatch.unitBId);
           if (uA && uB) {
+            const nextGameIdx = nextMatch.gameReports?.length ?? 0;
             clearAutoTimer();
             autoAdvanceTimerRef.current = window.setTimeout(() => {
-              loadCompetitionMatchIntoArena(nextMatch.matchId, uA, uB, config, true);
+              loadCompetitionMatchIntoArena(
+                nextMatch.matchId,
+                uA,
+                uB,
+                config,
+                true,
+                nextGameIdx
+              );
             }, 4500);
           }
         }
@@ -872,6 +1015,7 @@ export const BattlefieldApp: React.FC = () => {
     battleState,
     activeParticipants,
     config,
+    activeMatchConfig,
     tournamentBracket,
     leagueData,
     activeMatchId,
@@ -890,7 +1034,7 @@ export const BattlefieldApp: React.FC = () => {
       const guardMax = next.arena.maxTicks + 4;
       let guard = 0;
       while (next.status !== 'finished' && guard < guardMax) {
-        stepBattlefieldTick(next, config);
+        stepBattlefieldTick(next, activeMatchConfig);
         guard += 1;
       }
       return next;
@@ -900,20 +1044,25 @@ export const BattlefieldApp: React.FC = () => {
   const handleSimulateAllRemainingCompetition = () => {
     clearAutoTimer();
     setIsPlaying(false);
+    const seriesBestOf: 1 | 3 = config.seriesFormat === 'bo3' ? 3 : 1;
 
     const applySimulatedFinalState = (
       parts: BattlefieldParticipant[],
       finalState: BattleState,
       finalRep: ReturnType<typeof buildMatchReport>,
+      finalCfg: BattlefieldConfig,
+      finalMatchId: string | null,
       toastMsg: string
     ) => {
+      setActiveMatchConfig(finalCfg);
       setActiveParticipants(parts);
+      if (finalMatchId) setActiveMatchId(finalMatchId);
       recordedFinishRef.current = true;
       stopCommentarySpeech();
       suppressNextCommentarySpeechRef.current = true;
       commentaryTrackerRef.current = createCommentaryTracker(
         { ...finalState, status: 'running', tick: Math.max(0, finalState.tick - 1) },
-        config
+        finalCfg
       );
       setCommentaryLog([]);
       setBattleState(finalState);
@@ -927,8 +1076,10 @@ export const BattlefieldApp: React.FC = () => {
       let lastRep: ReturnType<typeof buildMatchReport> | null = null;
       let lastState: BattleState | null = null;
       let lastParts: BattlefieldParticipant[] = [];
+      let lastCfg = config;
+      let lastMatchId: string | null = null;
       let safety = 0;
-      while (safety < 64) {
+      while (safety < 256) {
         safety += 1;
         const nextM = cur.rounds.flat().find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
         if (!nextM) break;
@@ -936,23 +1087,28 @@ export const BattlefieldApp: React.FC = () => {
         const uB = cur.units.find((u) => u.unitId === nextM.unitBId);
         if (!uA || !uB) break;
         const parts = buildParticipantsFromUnitPair(uA, uB);
-        const sim = simulateMatchHeadless(parts, config);
+        const gameIdx = nextM.gameReports?.length ?? 0;
+        const matchCfg = resolveMatchConfigForGame(config, gameIdx);
+        const sim = simulateMatchHeadless(parts, matchCfg);
         const winId =
           sim.report.winnerTeamId === 'unit_A'
             ? uA.unitId
             : sim.report.winnerTeamId === 'unit_B'
               ? uB.unitId
               : null;
-        cur = applyTournamentMatchResult(
+        cur = applyTournamentGameResult(
           cur,
           nextM.matchId,
           winId,
           sim.report,
-          sim.report.winType === 'draw'
+          sim.report.winType === 'draw',
+          seriesBestOf
         );
         lastRep = sim.report;
         lastState = sim.state;
         lastParts = parts;
+        lastCfg = matchCfg;
+        lastMatchId = nextM.matchId;
       }
       setTournamentBracket(cur);
       if (lastState && lastRep) {
@@ -960,6 +1116,8 @@ export const BattlefieldApp: React.FC = () => {
           lastParts,
           lastState,
           lastRep,
+          lastCfg,
+          lastMatchId,
           'トーナメントの全未消化試合を高速シミュレートしました'
         );
       }
@@ -970,6 +1128,8 @@ export const BattlefieldApp: React.FC = () => {
       let lastRep: ReturnType<typeof buildMatchReport> | null = null;
       let lastState: BattleState | null = null;
       let lastParts: BattlefieldParticipant[] = [];
+      let lastCfg = config;
+      let lastMatchId: string | null = null;
       const updatedMatches: LeagueMatch[] = [];
       for (const m of leagueData.matches) {
         if (m.report) {
@@ -982,23 +1142,36 @@ export const BattlefieldApp: React.FC = () => {
           updatedMatches.push(m);
           continue;
         }
-        const parts = buildParticipantsFromUnitPair(uA, uB);
-        const sim = simulateMatchHeadless(parts, config);
-        const winId =
-          sim.report.winnerTeamId === 'unit_A'
-            ? uA.unitId
-            : sim.report.winnerTeamId === 'unit_B'
-              ? uB.unitId
-              : null;
-        lastRep = sim.report;
-        lastState = sim.state;
-        lastParts = parts;
-        updatedMatches.push({
-          ...m,
-          winnerUnitId: winId,
-          isDraw: sim.report.winType === 'draw' || !winId,
-          report: sim.report,
-        });
+        let curMatch: LeagueMatch = m;
+        let gameGuard = 0;
+        while (!curMatch.report && gameGuard < 12) {
+          gameGuard += 1;
+          const parts = buildParticipantsFromUnitPair(uA, uB);
+          const gameIdx = curMatch.gameReports?.length ?? 0;
+          const matchCfg = resolveMatchConfigForGame(config, gameIdx);
+          const sim = simulateMatchHeadless(parts, matchCfg);
+          const winId =
+            sim.report.winnerTeamId === 'unit_A'
+              ? uA.unitId
+              : sim.report.winnerTeamId === 'unit_B'
+                ? uB.unitId
+                : null;
+          const nextList = applyLeagueGameResult(
+            [curMatch],
+            curMatch.matchId,
+            winId,
+            sim.report,
+            sim.report.winType === 'draw',
+            seriesBestOf
+          );
+          curMatch = nextList[0];
+          lastRep = sim.report;
+          lastState = sim.state;
+          lastParts = parts;
+          lastCfg = matchCfg;
+          lastMatchId = curMatch.matchId;
+        }
+        updatedMatches.push(curMatch);
       }
       setLeagueData({ units: leagueData.units, matches: updatedMatches });
       if (lastState && lastRep) {
@@ -1006,6 +1179,8 @@ export const BattlefieldApp: React.FC = () => {
           lastParts,
           lastState,
           lastRep,
+          lastCfg,
+          lastMatchId,
           'リーグ戦の全未消化試合を高速シミュレートしました'
         );
       }
@@ -1128,6 +1303,63 @@ export const BattlefieldApp: React.FC = () => {
     rebuildFormatAndMatch(nextRoster, config);
   };
 
+  const handleFairRandomDraw = () => {
+    if (roster.length === 0) return;
+    const res =
+      config.format === 'team_match'
+        ? assignRandomTeams(roster, config, 2, recentPlayedEntryIds)
+        : pickRandomBattleRoyaleEntries(roster, config, 8, recentPlayedEntryIds);
+    if (res.pickedIds.length === 0) {
+      showToast('現在のレギュレーションに適合する戦車がありません');
+      return;
+    }
+    const nextPlayed = res.resetCycle
+      ? new Set<string>(res.pickedIds)
+      : new Set<string>([...recentPlayedEntryIds, ...res.pickedIds]);
+    setRecentPlayedEntryIds(nextPlayed);
+    setRoster(res.nextRoster);
+    rebuildFormatAndMatch(res.nextRoster, config);
+    const cycleMsg = res.resetCycle ? '（全員1周したため巡回リセット）' : '';
+    showToast(
+      config.format === 'team_match'
+        ? `${res.pickedIds.length}機を抽選してチーム分けしました${cycleMsg}`
+        : `未出場優先で ${res.pickedIds.length}機を抽選しました${cycleMsg}`
+    );
+  };
+
+  const handleShuffleOrder = () => {
+    if (roster.length < 2) return;
+    const shuffled = shuffleCompetitionRoster(roster);
+    setRoster(shuffled);
+    rebuildFormatAndMatch(shuffled, config);
+    showToast('エントリー順・対戦組合せをシャッフルしました');
+  };
+
+  const handleRandomTeamSplit = () => {
+    if (roster.length < 2) return;
+    const res = assignRandomTeams(roster, config, 2, recentPlayedEntryIds);
+    if (res.pickedIds.length === 0) {
+      showToast('チーム戦に適合する戦車がありません');
+      return;
+    }
+    const nextPlayed = res.resetCycle
+      ? new Set<string>(res.pickedIds)
+      : new Set<string>([...recentPlayedEntryIds, ...res.pickedIds]);
+    setRecentPlayedEntryIds(nextPlayed);
+    setRoster(res.nextRoster);
+    rebuildFormatAndMatch(res.nextRoster, config);
+    showToast(`${res.pickedIds.length}機をランダムにチームへ割り振りました`);
+  };
+
+  const handleEnableAllRoster = () => {
+    if (roster.length === 0) return;
+    const nextRoster = roster.map((e) => ({ ...e, enabled: true }));
+    setRoster(nextRoster);
+    setRecentPlayedEntryIds(new Set());
+    rebuildFormatAndMatch(nextRoster, config);
+    showToast(`全 ${nextRoster.length}機を有効化しました`);
+  };
+
   const handleCopyText = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
@@ -1184,7 +1416,13 @@ export const BattlefieldApp: React.FC = () => {
       const uA = tournamentBracket.units.find((u) => u.unitId === m?.unitAId);
       const uB = tournamentBracket.units.find((u) => u.unitId === m?.unitBId);
       if (m && uA && uB) {
-        return `${m.roundLabel}: ${uA.unitName} vs ${uB.unitName}`;
+        const seriesSuffix =
+          (m.seriesBestOf ?? 1) === 3
+            ? m.winnerUnitId
+              ? ` [Bo3決着 ${m.winsA ?? 0}-${m.winsB ?? 0}]`
+              : ` [第${Math.max(1, (m.gameReports?.length ?? 0) + (battleState.status === 'finished' ? 0 : 1))}戦 (${m.winsA ?? 0}-${m.winsB ?? 0})]`
+            : '';
+        return `${m.roundLabel}: ${uA.unitName} vs ${uB.unitName}${seriesSuffix}`;
       }
     }
     if (config.format === 'league' && leagueData && activeMatchId) {
@@ -1192,11 +1430,94 @@ export const BattlefieldApp: React.FC = () => {
       const uA = leagueData.units.find((u) => u.unitId === m?.unitAId);
       const uB = leagueData.units.find((u) => u.unitId === m?.unitBId);
       if (m && uA && uB) {
-        return `第${m.roundNumber}節: ${uA.unitName} vs ${uB.unitName}`;
+        const seriesSuffix =
+          (m.seriesBestOf ?? 1) === 3
+            ? m.report
+              ? ` [Bo3決着 ${m.winsA ?? 0}-${m.winsB ?? 0}]`
+              : ` [第${Math.max(1, (m.gameReports?.length ?? 0) + (battleState.status === 'finished' ? 0 : 1))}戦 (${m.winsA ?? 0}-${m.winsB ?? 0})]`
+            : '';
+        return `第${m.roundNumber}節: ${uA.unitName} vs ${uB.unitName}${seriesSuffix}`;
       }
     }
     return 'バトルフィールド待機中';
-  }, [activeParticipants, config.format, tournamentBracket, leagueData, activeMatchId]);
+  }, [
+    activeParticipants,
+    config.format,
+    tournamentBracket,
+    leagueData,
+    activeMatchId,
+    battleState.status,
+  ]);
+
+  const activeCompetitionCard = useMemo(() => {
+    if (config.format === 'tournament' && tournamentBracket && activeMatchId) {
+      const m = tournamentBracket.rounds.flat().find((x) => x.matchId === activeMatchId);
+      const uA = tournamentBracket.units.find((u) => u.unitId === m?.unitAId);
+      const uB = tournamentBracket.units.find((u) => u.unitId === m?.unitBId);
+      if (m && uA && uB && !m.isBye) {
+        const seriesLabel =
+          (m.seriesBestOf ?? 1) === 3
+            ? m.winnerUnitId
+              ? `Bo3 決着 (${m.winsA ?? 0}-${m.winsB ?? 0})`
+              : `Bo3 第${(m.gameReports?.length ?? 0) + 1}戦 (${m.winsA ?? 0}-${m.winsB ?? 0})`
+            : null;
+        return {
+          mode: 'tournament' as const,
+          stageLabel: m.roundLabel,
+          seriesLabel,
+          ruleLabel: BATTLEFIELD_RULE_REGISTRY[config.ruleId]?.shortLabel ?? config.ruleId,
+          unitA: {
+            title: uA.entries.length === 1 ? uA.entries[0].playerName : uA.unitName,
+            subtitle: uA.entries
+              .map((e) => `${e.machineName} (${e.blueprint.program.gridSize}×${e.blueprint.program.gridSize})`)
+              .join(' / '),
+            color: activeParticipants.find((p) => p.teamId === 'unit_A')?.teamColor ?? uA.color,
+          },
+          unitB: {
+            title: uB.entries.length === 1 ? uB.entries[0].playerName : uB.unitName,
+            subtitle: uB.entries
+              .map((e) => `${e.machineName} (${e.blueprint.program.gridSize}×${e.blueprint.program.gridSize})`)
+              .join(' / '),
+            color: activeParticipants.find((p) => p.teamId === 'unit_B')?.teamColor ?? uB.color,
+          },
+        };
+      }
+    }
+    if (config.format === 'league' && leagueData && activeMatchId) {
+      const m = leagueData.matches.find((x) => x.matchId === activeMatchId);
+      const uA = leagueData.units.find((u) => u.unitId === m?.unitAId);
+      const uB = leagueData.units.find((u) => u.unitId === m?.unitBId);
+      if (m && uA && uB) {
+        const seriesLabel =
+          (m.seriesBestOf ?? 1) === 3
+            ? m.report
+              ? `Bo3 決着 (${m.winsA ?? 0}-${m.winsB ?? 0})`
+              : `Bo3 第${(m.gameReports?.length ?? 0) + 1}戦 (${m.winsA ?? 0}-${m.winsB ?? 0})`
+            : null;
+        return {
+          mode: 'league' as const,
+          stageLabel: `第${m.roundNumber}節`,
+          seriesLabel,
+          ruleLabel: BATTLEFIELD_RULE_REGISTRY[config.ruleId]?.shortLabel ?? config.ruleId,
+          unitA: {
+            title: uA.entries.length === 1 ? uA.entries[0].playerName : uA.unitName,
+            subtitle: uA.entries
+              .map((e) => `${e.machineName} (${e.blueprint.program.gridSize}×${e.blueprint.program.gridSize})`)
+              .join(' / '),
+            color: activeParticipants.find((p) => p.teamId === 'unit_A')?.teamColor ?? uA.color,
+          },
+          unitB: {
+            title: uB.entries.length === 1 ? uB.entries[0].playerName : uB.unitName,
+            subtitle: uB.entries
+              .map((e) => `${e.machineName} (${e.blueprint.program.gridSize}×${e.blueprint.program.gridSize})`)
+              .join(' / '),
+            color: activeParticipants.find((p) => p.teamId === 'unit_B')?.teamColor ?? uB.color,
+          },
+        };
+      }
+    }
+    return null;
+  }, [config.format, config.ruleId, tournamentBracket, leagueData, activeMatchId, activeParticipants]);
 
   const handleReplayCurrentMatch = () => {
     clearAutoTimer();
@@ -1205,37 +1526,74 @@ export const BattlefieldApp: React.FC = () => {
     recordedFinishRef.current = false;
     setLatestReport(null);
     setShowResultModal(false);
+    setVsBannerDismissed(false);
     setIsPlaying(false);
-    const nextState = createBattlefieldMatchState(activeParticipants, config);
-    resetCommentary(nextState, config);
+    const nextState = createBattlefieldMatchState(activeParticipants, activeMatchConfig);
+    resetCommentary(nextState, activeMatchConfig);
     setBattleState(nextState);
   };
 
   const handleLoadNextPendingMatch = (autoPlay = false) => {
     if (config.format === 'tournament' && tournamentBracket) {
-      const nextM = tournamentBracket.rounds
-        .flat()
-        .find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
+      const allMatches = tournamentBracket.rounds.flat();
+      const activePending = activeMatchId
+        ? allMatches.find(
+            (m) => m.matchId === activeMatchId && !m.winnerUnitId && m.unitAId && m.unitBId
+          )
+        : undefined;
+      const nextM =
+        activePending ?? allMatches.find((m) => !m.winnerUnitId && m.unitAId && m.unitBId);
       if (nextM) {
         const uA = tournamentBracket.units.find((u) => u.unitId === nextM.unitAId);
         const uB = tournamentBracket.units.find((u) => u.unitId === nextM.unitBId);
         if (uA && uB) {
-          loadCompetitionMatchIntoArena(nextM.matchId, uA, uB, config, autoPlay);
+          loadCompetitionMatchIntoArena(
+            nextM.matchId,
+            uA,
+            uB,
+            config,
+            autoPlay,
+            nextM.gameReports?.length ?? 0
+          );
           return;
         }
       }
     } else if (config.format === 'league' && leagueData) {
-      const nextM = leagueData.matches.find((m) => !m.report);
+      const activePending = activeMatchId
+        ? leagueData.matches.find((m) => m.matchId === activeMatchId && !m.report)
+        : undefined;
+      const nextM = activePending ?? leagueData.matches.find((m) => !m.report);
       if (nextM) {
         const uA = leagueData.units.find((u) => u.unitId === nextM.unitAId);
         const uB = leagueData.units.find((u) => u.unitId === nextM.unitBId);
         if (uA && uB) {
-          loadCompetitionMatchIntoArena(nextM.matchId, uA, uB, config, autoPlay);
+          loadCompetitionMatchIntoArena(
+            nextM.matchId,
+            uA,
+            uB,
+            config,
+            autoPlay,
+            nextM.gameReports?.length ?? 0
+          );
           return;
         }
       }
     }
     showToast('すべての試合が消化済みです');
+  };
+
+  const handleResetSavedSession = () => {
+    clearAutoTimer();
+    clearResultModalTimer();
+    clearBattlefieldSession();
+    const defaultRoster = createInitialRoster();
+    const defaultCfg: BattlefieldConfig = { ...DEFAULT_BATTLEFIELD_CONFIG };
+    setRoster(defaultRoster);
+    setConfig(defaultCfg);
+    setAutoAdvance(false);
+    setRecentPlayedEntryIds(new Set());
+    rebuildFormatAndMatch(defaultRoster, defaultCfg);
+    showToast('保存された設定と大会進行を初期化しました');
   };
 
   const hasMoreCompetitionMatches = useMemo(() => {
@@ -1249,6 +1607,22 @@ export const BattlefieldApp: React.FC = () => {
     }
     return false;
   }, [config.format, tournamentBracket, leagueData]);
+
+  const hasPendingActiveSeriesGame = useMemo(() => {
+    if (config.format === 'tournament' && tournamentBracket && activeMatchId) {
+      const m = tournamentBracket.rounds.flat().find((x) => x.matchId === activeMatchId);
+      return Boolean(
+        m && !m.winnerUnitId && (m.seriesBestOf ?? 1) === 3 && (m.gameReports?.length ?? 0) > 0
+      );
+    }
+    if (config.format === 'league' && leagueData && activeMatchId) {
+      const m = leagueData.matches.find((x) => x.matchId === activeMatchId);
+      return Boolean(
+        m && !m.report && (m.seriesBestOf ?? 1) === 3 && (m.gameReports?.length ?? 0) > 0
+      );
+    }
+    return false;
+  }, [config.format, tournamentBracket, leagueData, activeMatchId]);
 
   return (
     <div className="app-shell bf-shell">
@@ -1309,14 +1683,24 @@ export const BattlefieldApp: React.FC = () => {
             <section className="bf-card">
               <div className="bf-card-header">
                 <h2>⚙ ルール・レギュレーション設定</h2>
-                <button
-                  type="button"
-                  className="mini-btn"
-                  onClick={() => rebuildFormatAndMatch(roster, config)}
-                  title="現在の設定で試合・大会を再構成"
-                >
-                  <RotateCcw size={12} /> 再構築
-                </button>
+                <div className="bf-card-header-actions">
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={() => rebuildFormatAndMatch(roster, config)}
+                    title="現在の設定で試合・大会を再構成"
+                  >
+                    <RotateCcw size={12} /> 再構築
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn danger"
+                    onClick={handleResetSavedSession}
+                    title="保存済みの設定・エントリー・大会進行を初期状態にリセット"
+                  >
+                    <Trash2 size={12} /> 初期化
+                  </button>
+                </div>
               </div>
 
               <div className="bf-form-grid">
@@ -1382,23 +1766,50 @@ export const BattlefieldApp: React.FC = () => {
                   />
                   <span>SP禁止</span>
                 </label>
+
+                <label
+                  className={`bf-check-pill ${config.randomizeSeedPerMatch ? 'is-accent' : ''}`}
+                  title="各試合・Bo3各セットごとに障害物シードをランダム抽選（戦車サッカー・障害物なしを除く）"
+                >
+                  <input
+                    type="checkbox"
+                    checked={Boolean(config.randomizeSeedPerMatch)}
+                    onChange={(e) => updateConfigField('randomizeSeedPerMatch', e.target.checked)}
+                  />
+                  <span>🎲 毎試合シード変更</span>
+                </label>
               </div>
 
               <div className="bf-form-grid bf-form-grid-4">
                 {(config.format === 'tournament' || config.format === 'league') && (
-                  <label className="bf-field">
-                    <span>1組の構成</span>
-                    <select
-                      value={config.teamUnitSize}
-                      disabled={config.cpuRegulation === 'pair_6x6_4x4'}
-                      onChange={(e) =>
-                        updateConfigField('teamUnitSize', Number(e.target.value) as 1 | 2)
-                      }
-                    >
-                      <option value={1}>1機シングル</option>
-                      <option value={2}>2機ペア</option>
-                    </select>
-                  </label>
+                  <>
+                    <label className="bf-field">
+                      <span>1組の構成</span>
+                      <select
+                        value={config.teamUnitSize}
+                        disabled={config.cpuRegulation === 'pair_6x6_4x4'}
+                        onChange={(e) =>
+                          updateConfigField('teamUnitSize', Number(e.target.value) as 1 | 2)
+                        }
+                      >
+                        <option value={1}>1機シングル</option>
+                        <option value={2}>2機ペア</option>
+                      </select>
+                    </label>
+
+                    <label className="bf-field">
+                      <span>試合方式</span>
+                      <select
+                        value={config.seriesFormat ?? 'bo1'}
+                        onChange={(e) =>
+                          updateConfigField('seriesFormat', e.target.value as 'bo1' | 'bo3')
+                        }
+                      >
+                        <option value="bo1">1本勝負 (Bo1)</option>
+                        <option value="bo3">2本先取 (Bo3)</option>
+                      </select>
+                    </label>
+                  </>
                 )}
 
                 <label className="bf-field">
@@ -1557,6 +1968,7 @@ export const BattlefieldApp: React.FC = () => {
                   className="mini-btn danger"
                   onClick={() => {
                     setRoster([]);
+                    setRecentPlayedEntryIds(new Set());
                     rebuildFormatAndMatch([], config);
                   }}
                 >
@@ -1640,6 +2052,45 @@ export const BattlefieldApp: React.FC = () => {
                   追加
                 </button>
               </div>
+
+              {roster.length >= 2 && (
+                <div className="bf-roster-tools">
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={handleFairRandomDraw}
+                    title="未出場機を優先して最大8機を有効化（1周したら自動リセット）"
+                  >
+                    <Sparkles size={12} /> 抽選 (最大8機)
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={handleShuffleOrder}
+                    title="エントリー順・トーナメント表／リーグ順をシャッフル"
+                  >
+                    <Shuffle size={12} /> シャッフル
+                  </button>
+                  {config.format === 'team_match' && (
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={handleRandomTeamSplit}
+                      title="適合機体を抽選してランダムにTeam A/Bへ均等配分"
+                    >
+                      <Users size={12} /> ランダム組分け
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={handleEnableAllRoster}
+                    title="登録されている全機体を有効化"
+                  >
+                    <Check size={12} /> 全有効
+                  </button>
+                </div>
+              )}
 
               {importNotice && (
                 <div className={`bf-notice ${importNotice.type}`}>{importNotice.text}</div>
@@ -1791,6 +2242,15 @@ export const BattlefieldApp: React.FC = () => {
                   {SANDSTORM_PRESET_SPECS[config.sandstormPreset].shortLabel}
                 </span>
               )}
+              {(config.format === 'tournament' || config.format === 'league') &&
+                config.seriesFormat === 'bo3' && (
+                  <span className="bf-tag is-warn">Bo3 (2本先取)</span>
+                )}
+              {config.randomizeSeedPerMatch &&
+                activeMatchConfig.obstacleMode !== 'none' &&
+                config.ruleId !== 'tank_soccer' && (
+                  <span className="bf-tag">Seed #{activeMatchConfig.obstacleSeed}</span>
+                )}
               {config.disableWeapons && (
                 <span className="bf-tag is-danger">🚫 射撃禁止 (SP含む)</span>
               )}
@@ -1893,25 +2353,39 @@ export const BattlefieldApp: React.FC = () => {
             );
           })()}
 
-          {config.ruleId === 'balloon_hunt' && battleState.ruleTeamScores && (
-            <div className="bf-rule-scoreboard">
-              <div className="bf-territory-legend">
-                {Object.entries(battleState.ruleTeamScores)
-                  .sort((a, b) => b[1] - a[1])
-                  .map(([tid, score]) => (
-                    <span key={tid} className="bf-score-pill">
-                      <span
-                        className="bf-color-dot"
-                        style={{
-                          backgroundColor: battleState.ruleTeamColors?.[tid] ?? '#38bdf8',
-                        }}
-                      />
-                      {battleState.ruleTeamLabels?.[tid] ?? tid}: <strong>{score}pt</strong>
-                    </span>
-                  ))}
-              </div>
-            </div>
-          )}
+          {(config.ruleId === 'balloon_hunt' || config.ruleId === 'bounty_hunt') &&
+            battleState.ruleTeamScores && (() => {
+              const wantedTop =
+                config.ruleId === 'bounty_hunt'
+                  ? [...battleState.tanks]
+                      .filter((t) => (t.bountyValue ?? 100) >= 200)
+                      .sort((a, b) => (b.bountyValue ?? 100) - (a.bountyValue ?? 100))[0] ?? null
+                  : null;
+              return (
+                <div className="bf-rule-scoreboard">
+                  <div className="bf-territory-legend">
+                    {Object.entries(battleState.ruleTeamScores)
+                      .sort((a, b) => b[1] - a[1])
+                      .map(([tid, score]) => (
+                        <span key={tid} className="bf-score-pill">
+                          <span
+                            className="bf-color-dot"
+                            style={{
+                              backgroundColor: battleState.ruleTeamColors?.[tid] ?? '#38bdf8',
+                            }}
+                          />
+                          {battleState.ruleTeamLabels?.[tid] ?? tid}: <strong>{score}pt</strong>
+                        </span>
+                      ))}
+                    {wantedTop && (
+                      <span className="bf-bounty-badge">
+                        👑 現賞金首: {wantedTop.blueprint.name} ★{wantedTop.bountyValue}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
           {/* Multi-Tank Live HUD */}
           {(() => {
@@ -1959,6 +2433,13 @@ export const BattlefieldApp: React.FC = () => {
                     <span className="bf-hud-team" style={{ color: t.blueprint.color }}>
                       {meta?.teamLabel ?? t.teamId}
                     </span>
+                    {config.ruleId === 'bounty_hunt' &&
+                      t.hp > 0 &&
+                      (t.bountyValue ?? 100) >= 200 && (
+                        <span className="bf-bounty-badge is-mini">
+                          {(t.bountyValue ?? 100) >= 400 ? '👑' : ''}★{t.bountyValue}
+                        </span>
+                      )}
                     <span className="bf-hud-cpu">
                       {t.blueprint.program.gridSize}×{t.blueprint.program.gridSize}
                     </span>
@@ -1974,9 +2455,17 @@ export const BattlefieldApp: React.FC = () => {
                     />
                   </div>
                   <div className="bf-hud-stats">
-                    <span>
-                      HP {Math.max(0, Math.round(t.hp))}/{t.maxHp}
-                    </span>
+                    {config.ruleId === 'bounty_hunt' &&
+                    t.hp <= 0 &&
+                    (t.respawnTicks ?? 0) > 0 ? (
+                      <span className="bf-respawn-tag">
+                        復帰 {((t.respawnTicks ?? 0) / BASE_TPS).toFixed(1)}s
+                      </span>
+                    ) : (
+                      <span>
+                        HP {Math.max(0, Math.round(t.hp))}/{t.maxHp}
+                      </span>
+                    )}
                     {config.ruleId === 'elimination' ? (
                       <>
                         <span>撃破:{t.stats.kills ?? 0}</span>
@@ -2060,7 +2549,7 @@ export const BattlefieldApp: React.FC = () => {
           {/* Live Commentary Bar + Settings Popover */}
           {(() => {
             const latestCommentary = commentaryLog[commentaryLog.length - 1] ?? null;
-            const standbyText = createStandbyCommentaryText(battleState, config);
+            const standbyText = createStandbyCommentaryText(battleState, activeMatchConfig);
             return (
               <div className="bf-commentary-wrap">
                 <div
@@ -2386,6 +2875,81 @@ export const BattlefieldApp: React.FC = () => {
                   <span>{battleState.football.lastGoalBanner.teamLabel}</span>
                 </div>
               )}
+
+            {activeCompetitionCard &&
+              !vsBannerDismissed &&
+              !isPlaying &&
+              battleState.tick === 0 &&
+              battleState.status === 'running' &&
+              activeParticipants.length >= 2 && (
+                <div className="bf-vs-banner-overlay" role="region" aria-label="対戦カード表示">
+                  <div className="bf-vs-kicker">
+                    <span className="bf-vs-stage">
+                      {activeCompetitionCard.mode === 'tournament' ? (
+                        <Trophy size={14} />
+                      ) : (
+                        <Award size={14} />
+                      )}
+                      {activeCompetitionCard.stageLabel}
+                    </span>
+                    <span className="bf-tag">{activeCompetitionCard.ruleLabel}</span>
+                    {activeCompetitionCard.seriesLabel && (
+                      <span className="bf-vs-series">{activeCompetitionCard.seriesLabel}</span>
+                    )}
+                  </div>
+
+                  <div className="bf-vs-matchup">
+                    <div
+                      className="bf-vs-side is-left"
+                      style={{ borderColor: activeCompetitionCard.unitA.color }}
+                    >
+                      <div
+                        className="bf-vs-player"
+                        style={{ color: activeCompetitionCard.unitA.color }}
+                      >
+                        {activeCompetitionCard.unitA.title}
+                      </div>
+                      <div className="bf-vs-machine">{activeCompetitionCard.unitA.subtitle}</div>
+                    </div>
+
+                    <div className="bf-vs-divider">VS</div>
+
+                    <div
+                      className="bf-vs-side is-right"
+                      style={{ borderColor: activeCompetitionCard.unitB.color }}
+                    >
+                      <div
+                        className="bf-vs-player"
+                        style={{ color: activeCompetitionCard.unitB.color }}
+                      >
+                        {activeCompetitionCard.unitB.title}
+                      </div>
+                      <div className="bf-vs-machine">{activeCompetitionCard.unitB.subtitle}</div>
+                    </div>
+                  </div>
+
+                  <div className="bf-vs-actions">
+                    <button
+                      type="button"
+                      className="btn-play"
+                      onClick={() => {
+                        clearAutoTimer();
+                        clearResultModalTimer();
+                        setIsPlaying(true);
+                      }}
+                    >
+                      <Play size={15} /> 試合開始
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={() => setVsBannerDismissed(true)}
+                    >
+                      <Eye size={13} /> マップを見る
+                    </button>
+                  </div>
+                </div>
+              )}
           </div>
 
           {/* Playback Controls */}
@@ -2403,8 +2967,13 @@ export const BattlefieldApp: React.FC = () => {
                     recordedFinishRef.current = false;
                     setLatestReport(null);
                     setShowResultModal(false);
-                    const nextState = createBattlefieldMatchState(activeParticipants, config);
-                    resetCommentary(nextState, config);
+                    const rematchCfg =
+                      config.format === 'battle_royale' || config.format === 'team_match'
+                        ? resolveMatchConfigForGame(config, 0)
+                        : activeMatchConfig;
+                    setActiveMatchConfig(rematchCfg);
+                    const nextState = createBattlefieldMatchState(activeParticipants, rematchCfg);
+                    resetCommentary(nextState, rematchCfg);
                     setBattleState(nextState);
                     setIsPlaying(true);
                   } else {
@@ -2423,7 +2992,7 @@ export const BattlefieldApp: React.FC = () => {
                 onClick={() => {
                   setIsPlaying(false);
                   setBattleState((prev) =>
-                    stepBattlefieldTick(cloneBattleStateForStep(prev), config)
+                    stepBattlefieldTick(cloneBattleStateForStep(prev), activeMatchConfig)
                   );
                 }}
               >
@@ -2530,6 +3099,14 @@ export const BattlefieldApp: React.FC = () => {
                   <button
                     type="button"
                     className="mini-btn"
+                    onClick={handleShuffleOrder}
+                    title="出場ユニットの並び順をシャッフルして組合せを再構築"
+                  >
+                    <Shuffle size={13} /> 組合せシャッフル
+                  </button>
+                  <button
+                    type="button"
+                    className="mini-btn"
                     onClick={() =>
                       void handleCopyText(
                         formatTournamentSummaryText(tournamentBracket, config),
@@ -2554,6 +3131,9 @@ export const BattlefieldApp: React.FC = () => {
                         ? tournamentBracket.units.find((u) => u.unitId === m.unitBId)
                         : null;
                       const isCur = activeMatchId === m.matchId;
+                      const isBo3Match =
+                        (m.seriesBestOf ?? 1) === 3 || (m.gameReports?.length ?? 0) > 0;
+                      const playedGames = m.gameReports?.length ?? 0;
                       return (
                         <div
                           key={m.matchId}
@@ -2567,6 +3147,9 @@ export const BattlefieldApp: React.FC = () => {
                             }`}
                           >
                             <span>{uA ? uA.unitName : m.isBye ? '(BYE)' : '未定'}</span>
+                            {isBo3Match && uA && uB && (
+                              <strong className="bf-series-score">{m.winsA ?? 0}</strong>
+                            )}
                           </div>
                           <div
                             className={`bf-match-slot ${
@@ -2574,16 +3157,30 @@ export const BattlefieldApp: React.FC = () => {
                             }`}
                           >
                             <span>{uB ? uB.unitName : m.isBye ? '(BYE)' : '未定'}</span>
+                            {isBo3Match && uA && uB && (
+                              <strong className="bf-series-score">{m.winsB ?? 0}</strong>
+                            )}
                           </div>
                           {uA && uB && !m.isBye && (
                             <button
                               type="button"
                               className="mini-btn bf-watch-btn"
                               onClick={() =>
-                                loadCompetitionMatchIntoArena(m.matchId, uA, uB, config, false)
+                                loadCompetitionMatchIntoArena(
+                                  m.matchId,
+                                  uA,
+                                  uB,
+                                  config,
+                                  false,
+                                  playedGames
+                                )
                               }
                             >
-                              {m.winnerUnitId ? '再戦 / 観戦' : 'この試合をセット'}
+                              {m.winnerUnitId
+                                ? '再戦 / 観戦'
+                                : playedGames > 0
+                                  ? '続きをセット'
+                                  : 'この試合をセット'}
                             </button>
                           )}
                         </div>
@@ -2629,6 +3226,14 @@ export const BattlefieldApp: React.FC = () => {
                       </button>
                     </>
                   )}
+                  <button
+                    type="button"
+                    className="mini-btn"
+                    onClick={handleShuffleOrder}
+                    title="出場ユニットの対戦順をシャッフルしてリーグ戦を再構築"
+                  >
+                    <Shuffle size={13} /> 組合せシャッフル
+                  </button>
                   <button
                     type="button"
                     className="mini-btn"
@@ -2712,7 +3317,14 @@ export const BattlefieldApp: React.FC = () => {
                         m.report ? 'is-done' : ''
                       }`}
                       onClick={() =>
-                        loadCompetitionMatchIntoArena(m.matchId, uA, uB, config, false)
+                        loadCompetitionMatchIntoArena(
+                          m.matchId,
+                          uA,
+                          uB,
+                          config,
+                          false,
+                          m.gameReports?.length ?? 0
+                        )
                       }
                     >
                       <span>第{m.roundNumber}節</span>
@@ -2721,10 +3333,14 @@ export const BattlefieldApp: React.FC = () => {
                       </strong>
                       <em>
                         {m.report
-                          ? m.isDraw
-                            ? '引分'
-                            : `勝: ${winName}`
-                          : '未対戦'}
+                          ? `${m.isDraw ? '引分' : `勝: ${winName}`}${
+                              (m.seriesBestOf ?? 1) === 3
+                                ? ` (${m.winsA ?? 0}-${m.winsB ?? 0})`
+                                : ''
+                            }`
+                          : (m.seriesBestOf ?? 1) === 3 && (m.gameReports?.length ?? 0) > 0
+                            ? `途中 (${m.winsA ?? 0}-${m.winsB ?? 0})`
+                            : '未対戦'}
                       </em>
                     </button>
                   );
@@ -2777,7 +3393,8 @@ export const BattlefieldApp: React.FC = () => {
                     className="btn-primary"
                     onClick={() => handleLoadNextPendingMatch(true)}
                   >
-                    <FastForward size={14} /> 次の試合へ
+                    <FastForward size={14} />{' '}
+                    {hasPendingActiveSeriesGame ? '次のゲームへ (Bo3)' : '次の試合へ'}
                   </button>
                 )}
                 <button
@@ -2805,6 +3422,29 @@ export const BattlefieldApp: React.FC = () => {
                 )}
               </div>
             )}
+
+            {(() => {
+              const awardEntries = latestReport.tankRows.flatMap((r) =>
+                r.awards.map((award) => ({
+                  award,
+                  label: `${r.machineName} (${r.playerName})`,
+                  color: r.teamColor,
+                }))
+              );
+              if (awardEntries.length === 0) return null;
+              return (
+                <div className="bf-awards-strip">
+                  <span className="bf-awards-strip-label">🏅 今試合の特別賞</span>
+                  {awardEntries.map((item, idx) => (
+                    <span key={`${item.award}_${idx}`} className="bf-award-chip">
+                      <span className="bf-color-dot" style={{ backgroundColor: item.color }} />
+                      <strong>{item.award}</strong>
+                      <em>{item.label}</em>
+                    </span>
+                  ))}
+                </div>
+              );
+            })()}
 
             <div className="bf-table-scroll">
               <table className="bf-stats-table">
@@ -2852,14 +3492,26 @@ export const BattlefieldApp: React.FC = () => {
                       <td>
                         {row.survivedSeconds.toFixed(1)}s{' '}
                         <span className="bf-sub-note">
-                          {row.isAlive ? '(生存)' : `(${row.killedByLabel})`}
+                          {latestReport.configSnapshot.ruleId === 'bounty_hunt'
+                            ? `(${row.killedByLabel})`
+                            : row.isAlive
+                              ? '(生存)'
+                              : `(${row.killedByLabel})`}
                         </span>
                       </td>
                       <td>
                         <strong>{row.contributionScore}</strong>{' '}
                         <span className="bf-sub-note">({row.ruleMetricText})</span>
                       </td>
-                      <td>{row.awards.join(' ')}</td>
+                      <td>
+                        {row.awards.length > 0
+                          ? row.awards.map((aw) => (
+                              <span key={aw} className="bf-award-chip">
+                                {aw}
+                              </span>
+                            ))
+                          : '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

@@ -299,6 +299,8 @@ export function createTankRuntime(
     lastAimTick: -999,
     wallHitCooldown: 0,
     killedById: null,
+    invulnerableTicks: 0,
+    respawnTicks: 0,
     counters: { A: 0, B: 0 },
     loopCounters: {},
     loopStack: [],
@@ -328,6 +330,12 @@ export function createTankRuntime(
       kills: 0,
       eliminatedAtTick: null,
       ruleScore: 0,
+      deaths: 0,
+      maxBountyStreak: 0,
+      bountyClaimedCount: 0,
+      maxBountyClaimed: 0,
+      firstKillTick: null,
+      subWeaponsUsed: 0,
     },
   };
 }
@@ -921,20 +929,31 @@ export function applyDamage(
   attacker: TankRuntime | undefined,
   tick: number
 ): number {
+  if ((victim.invulnerableTicks ?? 0) > 0) {
+    return 0;
+  }
   const wasAlive = victim.hp > 0;
   const mitigation = victim.shieldTicks > 0 ? 0.4 : 1.0;
   const actual = rawDamage * mitigation;
   victim.hp = Math.max(0, victim.hp - actual);
   victim.lastHitTick = tick;
   victim.stats.damageTaken += actual;
+  if (attacker && attacker.id !== victim.id && actual > 0) {
+    victim.lastAttackerId = attacker.id;
+    victim.lastAttackerTick = tick;
+  }
   if (attacker) {
     attacker.stats.damageDealt += actual;
   }
   if (wasAlive && victim.hp <= 0) {
     victim.killedById = attacker ? attacker.id : 'environment';
     victim.stats.eliminatedAtTick = tick;
+    victim.stats.deaths = (victim.stats.deaths ?? 0) + 1;
     if (attacker && attacker.id !== victim.id) {
       attacker.stats.kills = (attacker.stats.kills ?? 0) + 1;
+      if (attacker.stats.firstKillTick == null) {
+        attacker.stats.firstKillTick = tick;
+      }
     }
   }
   return actual;
@@ -1075,7 +1094,9 @@ function evaluateMultiTeamBattleState(state: BattleState): void {
   }
 
   const allDeadWithScoreRule =
-    aliveTeamIds.length === 0 && Boolean(state.arena.scoreOnlyVictory);
+    aliveTeamIds.length === 0 &&
+    Boolean(state.arena.scoreOnlyVictory) &&
+    !state.arena.respawnEnabled;
   if (state.tick < state.arena.maxTicks && !allDeadWithScoreRule) {
     return;
   }
@@ -1121,6 +1142,10 @@ function evaluateMultiTeamBattleState(state: BattleState): void {
       state.endReason = tiedTop
         ? `風船割り引き分け（同点 ${topScore}pt）`
         : `${winLabel} の勝利！（風船 ${topScore}pt）`;
+    } else if (state.arena.ruleId === 'bounty_hunt') {
+      state.endReason = tiedTop
+        ? `賞金首バトル引き分け（同点 ${topScore}pt）`
+        : `${winLabel} の賞金王勝利！（獲得 ${topScore}pt）`;
     } else {
       state.endReason = tiedTop ? '時間切れ引き分け' : `${winLabel} の勝利！`;
     }
@@ -1267,9 +1292,20 @@ export function stepBattleTick(
     const sub = SUB_WEAPON_SPECS[tank.blueprint.assembly.subWeapon];
 
     // Decay timers & cooling
-    tank.gunHeat = Math.max(0, tank.gunHeat - gun.coolingRate * (chassis.coolingMultiplier ?? 1));
+    const inCooldownZone = isTankInTileKind(tank, state.arena, 'cooldown');
+    const zoneCoolingMult = inCooldownZone ? 2.0 : 1.0;
+    const bountyCoolingMult = tank.bountyCoolingMult ?? 1.0;
+    tank.gunHeat = Math.max(
+      0,
+      tank.gunHeat -
+        gun.coolingRate *
+          (chassis.coolingMultiplier ?? 1) *
+          zoneCoolingMult *
+          bountyCoolingMult
+    );
     tank.subCooldown = Math.max(0, tank.subCooldown - 1);
     tank.shieldTicks = Math.max(0, tank.shieldTicks - 1);
+    tank.invulnerableTicks = Math.max(0, (tank.invulnerableTicks ?? 0) - 1);
     tank.boostTicks = Math.max(0, tank.boostTicks - 1);
     tank.recoil = Math.max(0, tank.recoil - 0.12);
     tank.wallHitCooldown = Math.max(0, tank.wallHitCooldown - 1);
@@ -1327,15 +1363,34 @@ export function stepBattleTick(
 
     // Acceleration & movement
     const targetSpeed = commands.targetSpeedRatio * effectiveMaxSpeed;
-    const speedDiff = targetSpeed - tank.speed;
-    const accelStep = clamp(speedDiff, -effectiveAccel, effectiveAccel);
-    tank.speed += accelStep;
+    const inIceZone = isTankInTileKind(tank, state.arena, 'ice');
+    if (inIceZone) {
+      const moveVec = angleToVector(tank.bodyAngle);
+      const desiredVx = moveVec.dx * targetSpeed;
+      const desiredVy = moveVec.dy * targetSpeed;
+      const iceGrip = 0.085;
+      tank.vx = tank.vx + (desiredVx - tank.vx) * iceGrip;
+      tank.vy = tank.vy + (desiredVy - tank.vy) * iceGrip;
+      const curMag = Math.hypot(tank.vx, tank.vy);
+      const maxIceSpeed = effectiveMaxSpeed * 1.15;
+      if (curMag > maxIceSpeed && curMag > 1e-5) {
+        tank.vx = (tank.vx / curMag) * maxIceSpeed;
+        tank.vy = (tank.vy / curMag) * maxIceSpeed;
+      }
+      tank.speed = tank.vx * moveVec.dx + tank.vy * moveVec.dy;
+      tank.x += tank.vx;
+      tank.y += tank.vy;
+    } else {
+      const speedDiff = targetSpeed - tank.speed;
+      const accelStep = clamp(speedDiff, -effectiveAccel, effectiveAccel);
+      tank.speed += accelStep;
 
-    const moveVec = angleToVector(tank.bodyAngle);
-    tank.vx = moveVec.dx * tank.speed;
-    tank.vy = moveVec.dy * tank.speed;
-    tank.x += tank.vx;
-    tank.y += tank.vy;
+      const moveVec = angleToVector(tank.bodyAngle);
+      tank.vx = moveVec.dx * tank.speed;
+      tank.vy = moveVec.dy * tank.speed;
+      tank.x += tank.vx;
+      tank.y += tank.vy;
+    }
 
     // Wall & obstacle collisions
     const preWallVx = tank.vx;
@@ -1515,9 +1570,10 @@ export function stepBattleTick(
       );
       const power = metrics.power;
       const bulletSpeed = metrics.bulletSpeed;
-      const damage = metrics.damage;
+      const damage = metrics.damage * (tank.bountyDamageMult ?? 1.0);
       tank.gunHeat = metrics.gunHeat;
       tank.recoil = 1.0;
+      tank.invulnerableTicks = 0;
       tank.stats.shotsFired += 1;
 
       const dir = angleToVector(tank.turretAngle);
@@ -1553,6 +1609,8 @@ export function stepBattleTick(
     ) {
       tank.subAmmo -= 1;
       tank.subCooldown = sub.cooldownTicks;
+      tank.invulnerableTicks = 0;
+      tank.stats.subWeaponsUsed = (tank.stats.subWeaponsUsed ?? 0) + 1;
 
       if (tank.blueprint.assembly.subWeapon === 'shield') {
         tank.shieldTicks = 120;

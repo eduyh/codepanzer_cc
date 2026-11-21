@@ -77,6 +77,8 @@ interface TankSnapshot {
   kills: number;
   subAmmo: number;
   ruleScore: number;
+  bountyValue: number;
+  bountyStreak: number;
   lastTankCollisionTick: number;
   lastAttackHitTick: number;
 }
@@ -116,6 +118,7 @@ const RULE_DISPLAY_NAMES: Record<BattlefieldRuleId, string> = {
   domination: '陣取り',
   balloon_hunt: '風船割り',
   tank_soccer: 'コンバットフットボール',
+  bounty_hunt: 'バウンティハンター',
 };
 
 const VALID_STYLES: CommentaryStyle[] = ['standard', 'hype', 'analyst'];
@@ -171,6 +174,8 @@ function captureTankSnapshots(tanks: TankRuntime[]): Record<string, TankSnapshot
       kills: t.stats.kills ?? 0,
       subAmmo: t.subAmmo,
       ruleScore: t.stats.ruleScore ?? 0,
+      bountyValue: t.bountyValue ?? 100,
+      bountyStreak: t.bountyStreak ?? 0,
       lastTankCollisionTick: t.lastTankCollisionTick ?? -999,
       lastAttackHitTick: t.lastAttackHitTick ?? -999,
     };
@@ -295,8 +300,12 @@ function buildRuleSituationTail(
     const es = Math.round(state.ruleTeamScores?.[fb.eastTeamId] ?? 0);
     return `現在 ${fb.westTeamLabel} ${ws} - ${es} ${fb.eastTeamLabel}`;
   }
-  if (config.ruleId === 'balloon_hunt' || config.ruleId === 'domination') {
-    const unit = config.ruleId === 'balloon_hunt' ? 'pt' : 'マス';
+  if (
+    config.ruleId === 'balloon_hunt' ||
+    config.ruleId === 'domination' ||
+    config.ruleId === 'bounty_hunt'
+  ) {
+    const unit = config.ruleId === 'domination' ? 'マス' : 'pt';
     const top = findStrictLeader(state.ruleTeamScores);
     if (top) {
       return `現在首位は ${getTeamDisplayLabel(state, top.teamId)}（${top.score}${unit}）`;
@@ -425,6 +434,25 @@ function evaluateCandidateEvent(
             standard: [`🎈 試合終了！${winLabel} が ${topScore}pt を獲得して優勝です！`],
             hype: [`🎈 フィニッシュ！！風船を割りまくった ${winLabel} が ${topScore}pt で頂点へ！！`],
             analyst: [`🏁 試合終了。合計 ${topScore}pt を記録した ${winLabel} の勝利です。`],
+          },
+          style,
+          cIdx
+        ),
+      };
+    }
+
+    if (config.ruleId === 'bounty_hunt') {
+      const topScore = winTeamId ? Math.round(state.ruleTeamScores?.[winTeamId] ?? 0) : 0;
+      return {
+        priority: 'S',
+        category: 'finish',
+        badge: '賞金王決定',
+        accentColor: winColor,
+        text: pickVariant(
+          {
+            standard: [`👑 試合終了！${winLabel} が賞金 ${topScore}pt を稼ぎ出し賞金王に輝きました！`],
+            hype: [`👑 タイムアップ！！大金を掴み取った ${winLabel}（${topScore}pt）が賞金首バトルを制覇！！`],
+            analyst: [`🏁 試合終了。総獲得賞金 ${topScore}pt で ${winLabel} が勝利しました。`],
           },
           style,
           cIdx
@@ -591,6 +619,44 @@ function evaluateCandidateEvent(
     if (killer) {
       const killerName = formatCallName(killer, allTanks);
       const kills = killer.stats.kills ?? 0;
+      if (config.ruleId === 'bounty_hunt') {
+        const prevBounty = tracker.tanks[victim.id]?.bountyValue ?? 100;
+        const killerNewBounty = killer.bountyValue ?? 100;
+        if (prevBounty >= 200) {
+          return {
+            priority: 'S',
+            category: 'ko',
+            badge: '賞金首討伐',
+            accentColor: '#fbbf24',
+            text: pickVariant(
+              {
+                standard: [`👑 賞金首討伐！${killerName} が ${victimName} を撃破し懸賞金 ★${prevBounty} を奪取！`],
+                hype: [`👑 大金星！！${killerName} が賞金首 ${victimName}（★${prevBounty}）を討ち取ったぁ！！`],
+                analyst: [`👑 賞金奪取：${killerName} が ${victimName} の懸賞金 ${prevBounty}pt を獲得（自身 ★${killerNewBounty}）。`],
+              },
+              style,
+              cIdx
+            ),
+          };
+        }
+        if (killerNewBounty >= 300) {
+          return {
+            priority: 'S',
+            category: 'ko',
+            badge: '賞金首',
+            accentColor: killer.blueprint.color,
+            text: pickVariant(
+              {
+                standard: [`🔥 賞金首指定！${killerName} が連続撃破で懸賞金 ★${killerNewBounty} に跳ね上がった！`],
+                hype: [`🔥 止まらない！！${killerName} が ★${killerNewBounty} の賞金首へ成り上がったぁ！！`],
+                analyst: [`🔥 賞金首上昇：${killerName} が連勝により懸賞金 ★${killerNewBounty} に到達しました。`],
+              },
+              style,
+              cIdx
+            ),
+          };
+        }
+      }
       const streakNote = kills >= 3 ? `（${kills}連続無双！）` : kills === 2 ? '（2機目撃破）' : '';
       if (config.ruleId === 'ramming_derby') {
         return {
@@ -675,7 +741,9 @@ function evaluateCandidateEvent(
 
   // 5. Score Lead Change & Domination Majority (Priority A)
   if (
-    (config.ruleId === 'balloon_hunt' || config.ruleId === 'domination') &&
+    (config.ruleId === 'balloon_hunt' ||
+      config.ruleId === 'domination' ||
+      config.ruleId === 'bounty_hunt') &&
     state.tick >= 100 &&
     state.status === 'running'
   ) {
@@ -684,7 +752,7 @@ function evaluateCandidateEvent(
       const prevLeader = tracker.lastLeaderTeamId;
       tracker.lastLeaderTeamId = strictLeader.teamId;
       if (prevLeader && prevLeader !== strictLeader.teamId) {
-        const unit = config.ruleId === 'balloon_hunt' ? 'pt' : 'マス';
+        const unit = config.ruleId === 'domination' ? 'マス' : 'pt';
         const leaderName = getTeamDisplayLabel(state, strictLeader.teamId);
         return {
           priority: 'A',
@@ -1099,8 +1167,12 @@ function evaluateCandidateEvent(
       };
     }
 
-    if (config.ruleId === 'balloon_hunt' || config.ruleId === 'domination') {
-      const unit = config.ruleId === 'balloon_hunt' ? 'pt' : 'マス';
+    if (
+      config.ruleId === 'balloon_hunt' ||
+      config.ruleId === 'domination' ||
+      config.ruleId === 'bounty_hunt'
+    ) {
+      const unit = config.ruleId === 'domination' ? 'マス' : 'pt';
       const sorted = Object.entries(state.ruleTeamScores ?? {}).sort((a, b) => b[1] - a[1]);
       if (sorted.length >= 2) {
         const l1 = getTeamDisplayLabel(state, sorted[0][0]);
@@ -1213,7 +1285,11 @@ export function evaluateCommentaryStep(
   if (state.football) {
     tracker.lastFootballGoals = getTeamScoresTotal(state);
   }
-  if (config.ruleId === 'balloon_hunt' || config.ruleId === 'domination') {
+  if (
+    config.ruleId === 'balloon_hunt' ||
+    config.ruleId === 'domination' ||
+    config.ruleId === 'bounty_hunt'
+  ) {
     const leader = findStrictLeader(state.ruleTeamScores);
     if (leader) {
       tracker.lastLeaderTeamId = leader.teamId;
@@ -1426,6 +1502,31 @@ function buildSummaryHeadline(
       standard: `${winDisplay} が手際よく風船を割り続け、${s1}pt でトップを守り切りました。`,
       hype: `ナイスハンティング！${winDisplay} が ${s1}pt を奪取して風船バトル優勝！！`,
       analyst: `${winDisplay} が計 ${s1}pt を獲得し、安定してポイントを重ねました。`,
+    });
+  }
+
+  if (ruleId === 'bounty_hunt') {
+    const s1 = Math.round(winTeam?.teamRuleScore ?? 0);
+    const s2 = Math.round(secondTeam?.teamRuleScore ?? 0);
+    const gap = s1 - s2;
+    if (gap <= 100 && s2 > 0) {
+      return pickStyleText(style, {
+        standard: `${winDisplay} が合計 ${s1}pt を獲得し、2位（${s2}pt）との賞金レースを競り勝ちました。`,
+        hype: `最後の最後まで逆転の匂いが漂う激闘！！${winDisplay} が ${s1}pt で賞金王の座を守り抜いた！！`,
+        analyst: `賞金差 ${gap}pt（1位 ${s1}pt / 2位 ${s2}pt）の大接戦を ${winDisplay} が制しています。`,
+      });
+    }
+    if (gap >= 300) {
+      return pickStyleText(style, {
+        standard: `${winDisplay} が連続撃破と懸賞金回収で ${s1}pt を荒稼ぎし、堂々の賞金王に輝きました。`,
+        hype: `圧巻の賞金荒稼ぎ！！${winDisplay} が ${s1}pt（+${gap}pt差）を奪い取って独走勝利！！`,
+        analyst: `${winDisplay} が総獲得 ${s1}pt（2位比 +${gap}pt）を記録し、賞金首レースを支配しました。`,
+      });
+    }
+    return pickStyleText(style, {
+      standard: `${winDisplay} が着実に撃破と懸賞金を重ね、${s1}pt でトップを掴みました。`,
+      hype: `狙い通りのハント成功！！${winDisplay} が ${s1}pt で賞金王を獲得！！`,
+      analyst: `${winDisplay} が計 ${s1}pt を記録し、リスポーン戦を安定して勝ち切りました。`,
     });
   }
 

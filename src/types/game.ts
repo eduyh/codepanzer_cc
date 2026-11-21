@@ -283,6 +283,12 @@ export interface TankStats {
   kills?: number;
   eliminatedAtTick?: number | null;
   ruleScore?: number;
+  deaths?: number;
+  maxBountyStreak?: number;
+  bountyClaimedCount?: number;
+  maxBountyClaimed?: number;
+  firstKillTick?: number | null;
+  subWeaponsUsed?: number;
 }
 
 export interface TankRuntime {
@@ -325,6 +331,14 @@ export interface TankRuntime {
   lastCollisionImpactSpeed?: number;
   lastHitZone?: 'front' | 'side' | 'rear';
   killedById?: string | null;
+  invulnerableTicks?: number;
+  respawnTicks?: number;
+  bountyValue?: number;
+  bountyStreak?: number;
+  bountyDamageMult?: number;
+  bountyCoolingMult?: number;
+  lastAttackerId?: string | null;
+  lastAttackerTick?: number;
   counters: Record<string, number>;
   loopCounters: Record<string, number>;
   loopStack?: Array<{
@@ -432,7 +446,15 @@ export interface ArenaObstacle {
   height: number;
 }
 
-export type FloorTileKind = 'goal' | 'checkpoint' | 'color' | 'hazard' | 'slow' | 'no_weapon';
+export type FloorTileKind =
+  | 'goal'
+  | 'checkpoint'
+  | 'color'
+  | 'hazard'
+  | 'slow'
+  | 'no_weapon'
+  | 'ice'
+  | 'cooldown';
 export type FloorTileColor = 'red' | 'blue' | 'green' | 'yellow';
 export type OuterWallMode = 'normal' | 'bounce' | 'damage' | 'damage_bounce';
 
@@ -506,6 +528,7 @@ export interface ArenaConfig {
   allowBalloonRamPop?: boolean;
   continueUntilTimeout?: boolean;
   scoreOnlyVictory?: boolean;
+  respawnEnabled?: boolean;
 }
 
 export interface TerritoryGridState {

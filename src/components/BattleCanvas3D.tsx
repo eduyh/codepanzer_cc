@@ -22,6 +22,12 @@ function resolveTileColors(tile: ArenaTile): { fill: number; border: number; hex
   if (tile.kind === 'no_weapon') {
     return { fill: 0x6d28d9, border: 0xc084fc, hex: '#7c3aed', label: 'NO FIRE' };
   }
+  if (tile.kind === 'ice') {
+    return { fill: 0x0284c7, border: 0x7dd3fc, hex: '#38bdf8', label: 'ICE' };
+  }
+  if (tile.kind === 'cooldown') {
+    return { fill: 0x0d9488, border: 0x5eead4, hex: '#14b8a6', label: 'COOL x2' };
+  }
   switch (tile.color) {
     case 'blue':
       return { fill: 0x1d4ed8, border: 0x60a5fa, hex: '#1d4ed8' };
@@ -146,6 +152,13 @@ interface TankVisual {
   radarConeMat: THREE.MeshBasicMaterial;
   aimLine: THREE.Line;
   shieldMesh: THREE.Mesh;
+  shieldMat: THREE.MeshBasicMaterial;
+  bountyRingMesh: THREE.Mesh;
+  bountyRingMat: THREE.MeshBasicMaterial;
+  bountySprite: THREE.Sprite;
+  bountyCanvas: HTMLCanvasElement;
+  bountyTexture: THREE.CanvasTexture;
+  lastBountyKey: string;
   speechSprite: THREE.Sprite;
   speechCanvas: HTMLCanvasElement;
   speechTexture: THREE.CanvasTexture;
@@ -154,6 +167,30 @@ interface TankVisual {
   mainGunId: string;
   radarId: string;
   color: string;
+}
+
+function updateBountyBadgeCanvas(canvas: HTMLCanvasElement, bountyValue: number): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const isTopWanted = bountyValue >= 300;
+  ctx.fillStyle = isTopWanted ? 'rgba(120, 53, 15, 0.92)' : 'rgba(15, 23, 42, 0.9)';
+  ctx.strokeStyle = isTopWanted ? '#fbbf24' : '#fde047';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.roundRect(10, 10, w - 20, h - 20, 18);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#fef08a';
+  ctx.font = 'bold 34px system-ui, -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const crown = bountyValue >= 400 ? '👑 ' : isTopWanted ? '★ ' : '';
+  ctx.fillText(`${crown}★${bountyValue}`, w / 2, h / 2 + 1);
 }
 
 function lerpAngleRad(current: number, target: number, alpha: number): number {
@@ -398,6 +435,36 @@ function buildTankVisual(tank: TankRuntime): TankVisual {
   shieldMesh.position.set(0, 10, 0);
   shieldMesh.visible = false;
 
+  // Bounty aura ring & floating bounty badge (Bounty Hunt rule)
+  const bountyRingGeo = new THREE.RingGeometry(radius + 6, radius + 12, 28);
+  bountyRingGeo.rotateX(-Math.PI / 2);
+  const bountyRingMat = new THREE.MeshBasicMaterial({
+    color: 0xfbbf24,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const bountyRingMesh = new THREE.Mesh(bountyRingGeo, bountyRingMat);
+  bountyRingMesh.position.set(0, 1.5, 0);
+  bountyRingMesh.visible = false;
+
+  const bountyCanvas = document.createElement('canvas');
+  bountyCanvas.width = 256;
+  bountyCanvas.height = 84;
+  const bountyTexture = new THREE.CanvasTexture(bountyCanvas);
+  const bountyMat = new THREE.SpriteMaterial({
+    map: bountyTexture,
+    transparent: true,
+    depthTest: false,
+  });
+  const bountySprite = new THREE.Sprite(bountyMat);
+  bountySprite.center.set(0.5, 0);
+  bountySprite.position.set(0, 31, 0);
+  bountySprite.scale.set(92, 30, 1);
+  bountySprite.renderOrder = 24;
+  bountySprite.visible = false;
+
   // Debug print() speech bubble sprite above radar
   const speechCanvas = document.createElement('canvas');
   speechCanvas.width = 512;
@@ -415,7 +482,15 @@ function buildTankVisual(tank: TankRuntime): TankVisual {
   speechSprite.renderOrder = 25;
   speechSprite.visible = false;
 
-  root.add(bodyGroup, turretGroup, radarGroup, shieldMesh, speechSprite);
+  root.add(
+    bodyGroup,
+    turretGroup,
+    radarGroup,
+    shieldMesh,
+    bountyRingMesh,
+    bountySprite,
+    speechSprite
+  );
 
   return {
     root,
@@ -427,6 +502,13 @@ function buildTankVisual(tank: TankRuntime): TankVisual {
     radarConeMat,
     aimLine,
     shieldMesh,
+    shieldMat,
+    bountyRingMesh,
+    bountyRingMat,
+    bountySprite,
+    bountyCanvas,
+    bountyTexture,
+    lastBountyKey: '',
     speechSprite,
     speechCanvas,
     speechTexture,
@@ -837,6 +919,18 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       'rgba(192, 132, 252, 0.26)',
       'rgba(192, 132, 252, 0.92)'
     );
+    const iceTileTexture = createZoneTileTexture(
+      'ICE',
+      'rgba(2, 132, 199, 0.32)',
+      'rgba(125, 211, 252, 0.3)',
+      'rgba(125, 211, 252, 0.94)'
+    );
+    const cooldownTileTexture = createZoneTileTexture(
+      'COOL x2',
+      'rgba(13, 148, 136, 0.32)',
+      'rgba(94, 234, 212, 0.28)',
+      'rgba(94, 234, 212, 0.94)'
+    );
 
     let animFrameId = 0;
     const renderLoop = () => {
@@ -960,7 +1054,11 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
               ? slowTileTexture
               : tile.kind === 'no_weapon'
                 ? noWeaponTileTexture
-                : null;
+                : tile.kind === 'ice'
+                  ? iceTileTexture
+                  : tile.kind === 'cooldown'
+                    ? cooldownTileTexture
+                    : null;
           const padMat = isGoal && goalTileTexture
             ? new THREE.MeshBasicMaterial({
                 map: goalTileTexture,
@@ -1110,6 +1208,10 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
             scene.remove(vis.root);
             vis.speechTexture.dispose();
             (vis.speechSprite.material as THREE.Material).dispose();
+            vis.bountyTexture.dispose();
+            (vis.bountySprite.material as THREE.Material).dispose();
+            vis.bountyRingMesh.geometry.dispose();
+            vis.bountyRingMat.dispose();
           }
           vis = buildTankVisual(tank);
           tankVisuals.set(tank.id, vis);
@@ -1163,14 +1265,40 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
         vis.radarConeMat.color.set(tank.blueprint.color || '#56b4e9');
         vis.radarConeMat.opacity = tank.radarLock ? 0.15 : 0.07;
 
-        vis.shieldMesh.visible = tank.shieldTicks > 0;
-        if (tank.shieldTicks > 0) {
-          vis.shieldMesh.rotation.y += 0.04;
+        const hasShield = tank.shieldTicks > 0;
+        const isInvuln = (tank.invulnerableTicks ?? 0) > 0;
+        vis.shieldMesh.visible = hasShield || isInvuln;
+        if (vis.shieldMesh.visible) {
+          vis.shieldMesh.rotation.y += isInvuln ? 0.08 : 0.04;
+          vis.shieldMat.color.setHex(hasShield ? 0x38bdf8 : 0xe2e8f0);
+          vis.shieldMat.opacity = isInvuln
+            ? 0.2 + 0.2 * Math.abs(Math.sin(performance.now() * 0.014))
+            : 0.28;
+        }
+
+        const bounty = tank.bountyValue ?? 100;
+        const isWanted = tank.hp > 0 && bounty >= 200;
+        vis.bountyRingMesh.visible = isWanted;
+        vis.bountySprite.visible = isWanted;
+        if (isWanted) {
+          const tierColor = bounty >= 400 ? 0xf59e0b : bounty >= 300 ? 0xfbbf24 : 0xfde047;
+          vis.bountyRingMat.color.setHex(tierColor);
+          const pulse = 1 + 0.06 * Math.sin(performance.now() * 0.008);
+          vis.bountyRingMesh.scale.set(pulse, pulse, 1);
+          const bKey = String(bounty);
+          if (bKey !== vis.lastBountyKey) {
+            updateBountyBadgeCanvas(vis.bountyCanvas, bounty);
+            vis.bountyTexture.needsUpdate = true;
+            vis.lastBountyKey = bKey;
+          }
+        } else {
+          vis.lastBountyKey = '';
         }
 
         const speechLines = tank.activePrintSpeech?.lines ?? [];
         const speechKey = speechLines.join('\n');
         if (speechLines.length > 0 && tank.hp > 0) {
+          vis.speechSprite.position.y = isWanted ? 58 : 32;
           vis.speechSprite.visible = true;
           if (speechKey !== vis.lastSpeechKey) {
             updateSpeechBubbleCanvas(vis.speechCanvas, speechLines, tank.blueprint.color);
@@ -1187,6 +1315,10 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
           scene.remove(vis.root);
           vis.speechTexture.dispose();
           (vis.speechSprite.material as THREE.Material).dispose();
+          vis.bountyTexture.dispose();
+          (vis.bountySprite.material as THREE.Material).dispose();
+          vis.bountyRingMesh.geometry.dispose();
+          vis.bountyRingMat.dispose();
           tankVisuals.delete(id);
         }
       }
@@ -1470,6 +1602,8 @@ export const BattleCanvas3D: React.FC<BattleCanvas3DProps> = ({
       goalTileTexture?.dispose();
       slowTileTexture?.dispose();
       noWeaponTileTexture?.dispose();
+      iceTileTexture?.dispose();
+      cooldownTileTexture?.dispose();
       territoryTexture.dispose();
       territoryGeo.dispose();
       territoryMat.dispose();
@@ -1719,6 +1853,30 @@ const BattleCanvas2DFallback: React.FC<{
       ctx.fillStyle = '#e2e8f0';
       ctx.fillRect(-3, -28, 6, 26);
       ctx.restore();
+
+      if ((tank.bountyValue ?? 100) >= 200) {
+        ctx.save();
+        ctx.strokeStyle = (tank.bountyValue ?? 100) >= 400 ? '#f59e0b' : '#fbbf24';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(tank.x, tank.y, 26, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#fef08a';
+        ctx.font = 'bold 11px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(`★${tank.bountyValue}`, tank.x, tank.y - 30);
+        ctx.restore();
+      }
+      if ((tank.invulnerableTicks ?? 0) > 0) {
+        ctx.save();
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(tank.x, tank.y, 22, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
 
       const fallbackSpeech = tank.activePrintSpeech?.lines ?? [];
       if (fallbackSpeech.length > 0) {

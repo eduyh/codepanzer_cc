@@ -2,6 +2,7 @@ import {
   CHASSIS_SPECS,
   computeShellMetrics,
   MAIN_GUN_SPECS,
+  RADAR_SPECS,
   SUB_WEAPON_SPECS,
 } from '../data/parts';
 import {
@@ -31,7 +32,14 @@ import {
   decodeShareCode,
   validateAndNormalizeBlueprint,
 } from '../utils/share';
-import { circleIntersectsRect } from './math';
+import {
+  circleIntersectsRect,
+  clamp,
+  hasLineOfSight,
+  normalizeAngle180,
+  normalizeAngle360,
+  vectorToAngle,
+} from './math';
 import {
   applyDamage,
   ARENA_SIZE_SPECS,
@@ -50,7 +58,8 @@ export type BattlefieldRuleId =
   | 'ramming_derby'
   | 'domination'
   | 'balloon_hunt'
-  | 'tank_soccer';
+  | 'tank_soccer'
+  | 'bounty_hunt';
 
 export type CpuRegulationId =
   | 'any'
@@ -61,7 +70,7 @@ export type CpuRegulationId =
   | 'only_8x8'
   | 'pair_6x6_4x4';
 
-export type ArenaZoneMode = 'none' | 'slow' | 'no_weapon' | 'mixed';
+export type ArenaZoneMode = 'none' | 'slow' | 'no_weapon' | 'ice' | 'cooldown' | 'mixed';
 
 export type GravityPresetId = 'high_2' | 'high_1' | 'normal' | 'low_1' | 'low_2';
 
@@ -94,6 +103,8 @@ export interface BattlefieldConfig {
   obstacleSeed: number;
   maxSeconds: number;
   teamUnitSize: 1 | 2;
+  seriesFormat?: 'bo1' | 'bo3';
+  randomizeSeedPerMatch?: boolean;
 }
 
 export interface BattlefieldParticipant {
@@ -461,12 +472,371 @@ function resetFootballPositions(state: BattleState, freezeTicks: number): void {
   }
 }
 
+export const BOUNTY_TUNING = {
+  baseValue: 100,
+  stepValue: 100,
+  maxValue: 500,
+  respawnTicks: 50, // 2.5s at 20 TPS
+  invulnerableTicks: 30, // 1.5s at 20 TPS
+  killHealRatio: 0.2, // +20% maxHp per kill
+  killSpRecover: 1, // +1 SP ammo per kill
+  streakBuffs: [
+    { damageMult: 1.0, coolingMult: 1.0 }, // 0 streak (100pt)
+    { damageMult: 1.08, coolingMult: 1.05 }, // 1 streak (200pt)
+    { damageMult: 1.15, coolingMult: 1.1 }, // 2 streak (300pt)
+    { damageMult: 1.22, coolingMult: 1.15 }, // 3 streak (400pt)
+    { damageMult: 1.28, coolingMult: 1.2 }, // 4+ streak (500pt)
+  ],
+} as const;
+
+export function getBountyStreakBuff(streak: number): {
+  damageMult: number;
+  coolingMult: number;
+} {
+  const idx = clamp(Math.floor(streak), 0, BOUNTY_TUNING.streakBuffs.length - 1);
+  return BOUNTY_TUNING.streakBuffs[idx];
+}
+
+function isBountyAllied(a: TankRuntime, b: TankRuntime, state: BattleState): boolean {
+  if (a.id === b.id) return true;
+  if (state.arena.multiTeamMode && a.teamId && b.teamId) {
+    return a.teamId === b.teamId;
+  }
+  return Boolean(state.arena.teamBattle && a.team === b.team);
+}
+
+function isPointDetectedByEnemyRadar(
+  pt: { x: number; y: number },
+  enemy: TankRuntime,
+  state: BattleState
+): boolean {
+  const radar = RADAR_SPECS[enemy.blueprint.assembly.radar];
+  const radarRangeMult = clamp(state.arena.radarRangeMult ?? 1.0, 0.2, 1.0);
+  const effectiveRange = radar.range * radarRangeMult;
+  const dist = Math.hypot(pt.x - enemy.x, pt.y - enemy.y);
+  if (dist > effectiveRange * 1.05) return false;
+  const absBearing = vectorToAngle(pt.x - enemy.x, pt.y - enemy.y);
+  const diff = Math.abs(normalizeAngle180(absBearing - enemy.radarAngle));
+  if (diff > radar.fovDeg / 2 + 8) return false;
+  return hasLineOfSight(
+    enemy.x,
+    enemy.y,
+    pt.x,
+    pt.y,
+    state.arena.obstacles,
+    state.smokes ?? []
+  );
+}
+
+function isPointInEnemyTurretLine(
+  pt: { x: number; y: number },
+  enemy: TankRuntime,
+  state: BattleState
+): boolean {
+  const dist = Math.hypot(pt.x - enemy.x, pt.y - enemy.y);
+  if (dist > 900) return false;
+  const absBearing = vectorToAngle(pt.x - enemy.x, pt.y - enemy.y);
+  const diff = Math.abs(normalizeAngle180(absBearing - enemy.turretAngle));
+  if (diff > 16) return false;
+  return hasLineOfSight(
+    enemy.x,
+    enemy.y,
+    pt.x,
+    pt.y,
+    state.arena.obstacles,
+    state.smokes ?? []
+  );
+}
+
+export function pickBountyRespawnPoint(
+  tank: TankRuntime,
+  state: BattleState,
+  tankIndex: number
+): { x: number; y: number; angle: number } {
+  const w = state.arena.width;
+  const h = state.arena.height;
+  const r = CHASSIS_SPECS[tank.blueprint.assembly.chassis].radius;
+  const wallMargin = Math.max(54, r + 28);
+  const candidates: Array<{ x: number; y: number }> = [];
+
+  for (const sp of getSpawnsForArena(w, h)) {
+    candidates.push({
+      x: clamp(sp.x, wallMargin, w - wallMargin),
+      y: clamp(sp.y, wallMargin, h - wallMargin),
+    });
+  }
+
+  const cols = 6;
+  const rows = 5;
+  const spanX = Math.max(40, w - wallMargin * 2);
+  const spanY = Math.max(40, h - wallMargin * 2);
+  for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+      candidates.push({
+        x: Math.round(wallMargin + (spanX * col) / Math.max(1, cols - 1)),
+        y: Math.round(wallMargin + (spanY * row) / Math.max(1, rows - 1)),
+      });
+    }
+  }
+
+  const unobstructed = candidates.filter((pt) => {
+    const blockedByObs = state.arena.obstacles.some((obs) =>
+      circleIntersectsRect(pt.x, pt.y, r + 14, obs)
+    );
+    if (blockedByObs) return false;
+    const inDangerousTile = (state.arena.tiles ?? []).some(
+      (tl) =>
+        (tl.kind === 'hazard' || tl.kind === 'slow') &&
+        circleIntersectsRect(pt.x, pt.y, r + 6, tl)
+    );
+    return !inDangerousTile;
+  });
+
+  const otherAlive = state.tanks.filter((other) => other.id !== tank.id && other.hp > 0);
+  const nonOverlapping = unobstructed.filter(
+    (pt) =>
+      !otherAlive.some(
+        (other) =>
+          Math.hypot(pt.x - other.x, pt.y - other.y) <
+          r + CHASSIS_SPECS[other.blueprint.assembly.chassis].radius + 24
+      )
+  );
+
+  const pool =
+    nonOverlapping.length > 0
+      ? nonOverlapping
+      : unobstructed.length > 0
+        ? unobstructed
+        : candidates;
+
+  const enemiesAlive = otherAlive.filter((other) => !isBountyAllied(tank, other, state));
+  const refTargets = enemiesAlive.length > 0 ? enemiesAlive : otherAlive;
+
+  interface ScoredCandidate {
+    pt: { x: number; y: number };
+    radarHits: number;
+    turretHits: number;
+    projHazard: boolean;
+    minEnemyDist: number;
+    distFromDeath: number;
+  }
+
+  const scored: ScoredCandidate[] = pool.map((pt) => {
+    let radarHits = 0;
+    let turretHits = 0;
+    for (const enemy of enemiesAlive) {
+      if (isPointDetectedByEnemyRadar(pt, enemy, state)) radarHits += 1;
+      if (isPointInEnemyTurretLine(pt, enemy, state)) turretHits += 1;
+    }
+
+    const projHazard = state.projectiles.some((p) => {
+      if (p.ownerId === tank.id) return false;
+      const owner = state.tanks.find((t) => t.id === p.ownerId);
+      if (owner && isBountyAllied(tank, owner, state)) return false;
+      const dx = pt.x - p.x;
+      const dy = pt.y - p.y;
+      const dist = Math.hypot(dx, dy);
+      return dist <= 150 && dx * p.vx + dy * p.vy > 0;
+    });
+
+    let minEnemyDist = 9999;
+    for (const target of refTargets) {
+      const d = Math.hypot(pt.x - target.x, pt.y - target.y);
+      if (d < minEnemyDist) minEnemyDist = d;
+    }
+    const distFromDeath = Math.hypot(pt.x - tank.x, pt.y - tank.y);
+
+    return { pt, radarHits, turretHits, projHazard, minEnemyDist, distFromDeath };
+  });
+
+  const tier1 = scored.filter((c) => c.radarHits === 0 && c.turretHits === 0 && !c.projHazard);
+  const tier2 = scored.filter((c) => c.radarHits === 0 && !c.projHazard);
+  const tier3 = scored.filter((c) => c.radarHits === 0);
+
+  let bestTier: ScoredCandidate[];
+  if (tier1.length > 0) {
+    bestTier = tier1;
+  } else if (tier2.length > 0) {
+    bestTier = tier2;
+  } else if (tier3.length > 0) {
+    bestTier = tier3;
+  } else {
+    const minPenalty = Math.min(
+      ...scored.map((c) => c.radarHits * 4 + c.turretHits * 2 + (c.projHazard ? 2 : 0))
+    );
+    bestTier = scored.filter(
+      (c) => c.radarHits * 4 + c.turretHits * 2 + (c.projHazard ? 2 : 0) === minPenalty
+    );
+  }
+
+  const awayFromDeath = bestTier.filter((c) => c.distFromDeath >= 180);
+  const stepA = awayFromDeath.length > 0 ? awayFromDeath : bestTier;
+
+  const wellSpaced = stepA.filter((c) => c.minEnemyDist >= 200);
+  const ranked = [...(wellSpaced.length > 0 ? wellSpaced : stepA)].sort((a, b) => {
+    const scoreB = b.minEnemyDist + Math.min(260, b.distFromDeath * 0.6);
+    const scoreA = a.minEnemyDist + Math.min(260, a.distFromDeath * 0.6);
+    return scoreB - scoreA;
+  });
+
+  const topChoices = ranked.slice(0, Math.min(6, ranked.length));
+  const rng = createZoneRng(
+    ((state.tick + 1) * 97 + (tankIndex + 1) * 313 + (tank.stats.deaths ?? 0) * 1997) >>> 0
+  );
+  const chosen = topChoices[Math.floor(rng() * topChoices.length)] ?? ranked[0];
+  const faceAngle = normalizeAngle360(
+    vectorToAngle(w / 2 - chosen.pt.x, h / 2 - chosen.pt.y)
+  );
+  return { x: chosen.pt.x, y: chosen.pt.y, angle: faceAngle };
+}
+
+function handleBountyHuntTick(state: BattleState): void {
+  const justDiedIds = new Set<string>();
+
+  for (const victim of state.tanks) {
+    if (victim.hp > 0 || (victim.respawnTicks ?? 0) > 0) continue;
+    justDiedIds.add(victim.id);
+    victim.respawnTicks = BOUNTY_TUNING.respawnTicks;
+
+    const directKiller =
+      victim.killedById &&
+      victim.killedById !== 'environment' &&
+      victim.killedById !== victim.id
+        ? state.tanks.find((t) => t.id === victim.killedById)
+        : undefined;
+    const recentAttacker =
+      !directKiller &&
+      victim.lastAttackerId &&
+      victim.lastAttackerId !== victim.id &&
+      state.tick - (victim.lastAttackerTick ?? -999) <= 100
+        ? state.tanks.find((t) => t.id === victim.lastAttackerId)
+        : undefined;
+    const killer = directKiller ?? recentAttacker;
+
+    const claimedBounty = victim.bountyValue ?? BOUNTY_TUNING.baseValue;
+    if (killer && !isBountyAllied(killer, victim, state)) {
+      killer.stats.ruleScore = (killer.stats.ruleScore ?? 0) + claimedBounty;
+      if (claimedBounty >= 200) {
+        killer.stats.bountyClaimedCount = (killer.stats.bountyClaimedCount ?? 0) + 1;
+      }
+      killer.stats.maxBountyClaimed = Math.max(
+        killer.stats.maxBountyClaimed ?? 0,
+        claimedBounty
+      );
+
+      const nextStreak = (killer.bountyStreak ?? 0) + 1;
+      killer.bountyStreak = nextStreak;
+      killer.stats.maxBountyStreak = Math.max(
+        killer.stats.maxBountyStreak ?? 0,
+        nextStreak
+      );
+      killer.bountyValue = Math.min(
+        BOUNTY_TUNING.maxValue,
+        BOUNTY_TUNING.baseValue + nextStreak * BOUNTY_TUNING.stepValue
+      );
+      const buff = getBountyStreakBuff(nextStreak);
+      killer.bountyDamageMult = buff.damageMult;
+      killer.bountyCoolingMult = buff.coolingMult;
+
+      if (killer.hp > 0) {
+        const healAmount = Math.round(killer.maxHp * BOUNTY_TUNING.killHealRatio);
+        killer.hp = Math.min(killer.maxHp, killer.hp + healAmount);
+        const subMax =
+          SUB_WEAPON_SPECS[killer.blueprint.assembly.subWeapon]?.maxAmmo ?? 0;
+        if (subMax > 0) {
+          killer.subAmmo = Math.min(subMax, killer.subAmmo + BOUNTY_TUNING.killSpRecover);
+        }
+        state.explosions.push({
+          id: `bounty_heal_${state.tick}_${killer.id}`,
+          x: killer.x,
+          y: killer.y,
+          radius: 46,
+          color: '#fbbf24',
+          age: 0,
+          maxAge: 24,
+        });
+      }
+    }
+
+    victim.bountyValue = BOUNTY_TUNING.baseValue;
+    victim.bountyStreak = 0;
+    victim.bountyDamageMult = 1.0;
+    victim.bountyCoolingMult = 1.0;
+    victim.lastAttackerId = null;
+  }
+
+  for (let i = 0; i < state.tanks.length; i++) {
+    const tank = state.tanks[i];
+    if (tank.hp > 0 || justDiedIds.has(tank.id)) continue;
+    const rem = (tank.respawnTicks ?? 0) - 1;
+    if (rem > 0) {
+      tank.respawnTicks = rem;
+      continue;
+    }
+
+    const pt = pickBountyRespawnPoint(tank, state, i);
+    const subMax = SUB_WEAPON_SPECS[tank.blueprint.assembly.subWeapon]?.maxAmmo ?? 0;
+    tank.x = pt.x;
+    tank.y = pt.y;
+    tank.vx = 0;
+    tank.vy = 0;
+    tank.speed = 0;
+    tank.bodyAngle = pt.angle;
+    tank.turretAngle = pt.angle;
+    tank.radarAngle = pt.angle;
+    tank.hp = tank.maxHp;
+    tank.gunHeat = 0;
+    tank.subAmmo = subMax;
+    tank.subCooldown = 0;
+    tank.shieldTicks = 0;
+    tank.boostTicks = 0;
+    tank.recoil = 0;
+    tank.invulnerableTicks = BOUNTY_TUNING.invulnerableTicks;
+    tank.respawnTicks = 0;
+    tank.killedById = null;
+    tank.lastAttackerId = null;
+    tank.lastAttackerTick = undefined;
+    tank.wallHitCooldown = 0;
+    tank.outerWallBounceCooldown = 0;
+    tank.detectedEnemy = null;
+    tank.enemyDist = null;
+    tank.radarLock = false;
+    tank.underLock = false;
+    tank.moveState = null;
+    tank.sleepState = null;
+    tank.turnState = null;
+    tank.fireState = null;
+    tank.halted = false;
+    tank.loopStack = [];
+    tank.counters = { A: 0, B: 0 };
+    tank.loopCounters = {};
+    tank.activePrintSpeech = null;
+
+    state.explosions.push({
+      id: `bounty_spawn_${state.tick}_${tank.id}`,
+      x: tank.x,
+      y: tank.y,
+      radius: 44,
+      color: '#38bdf8',
+      age: 0,
+      maxAge: 22,
+    });
+  }
+
+  const nextScores: Record<string, number> = {};
+  for (const tank of state.tanks) {
+    const tid = tank.teamId ?? tank.id;
+    nextScores[tid] = (nextScores[tid] ?? 0) + Math.round(tank.stats.ruleScore ?? 0);
+  }
+  state.ruleTeamScores = nextScores;
+}
+
 export const BATTLEFIELD_RULE_REGISTRY: Record<BattlefieldRuleId, BattlefieldRuleSpec> = {
   elimination: {
     id: 'elimination',
     name: '殲滅バトル（標準）',
     shortLabel: '殲滅戦',
-    description: '相手を全滅させるか、制限時間終了時の残存HP率・ダメージ判定で勝敗を決めます。',
+    description: '相手を全滅させるか、制限時間終了時の生存数・基礎貢献度判定で勝敗を決めます。',
     ready: true,
     computeContributionLabel: (tank) => `与ダメ ${Math.round(tank.stats.damageDealt)}`,
   },
@@ -870,6 +1240,36 @@ export const BATTLEFIELD_RULE_REGISTRY: Record<BattlefieldRuleId, BattlefieldRul
     },
     computeContributionLabel: (tank) => `ゴール ${Math.round(tank.stats.ruleScore ?? 0)}pt`,
   },
+  bounty_hunt: {
+    id: 'bounty_hunt',
+    name: 'バウンティハンター（リスポーン賞金首戦）',
+    shortLabel: '賞金首戦',
+    description:
+      '通常バトロワ機体のまま参加できるリスポーン付きポイント戦。撃破で相手の懸賞金(100〜500pt)を奪いHP20%＋SP1回復＋連勝バフを獲得。撃破されても2.5秒後に無敵＆SP満タンで敵レーダー外の安全地点へ復帰します。',
+    ready: true,
+    setupArena: (state) => {
+      state.arena.continueUntilTimeout = true;
+      state.arena.scoreOnlyVictory = true;
+      state.arena.respawnEnabled = true;
+      const scores: Record<string, number> = {};
+      for (const tank of state.tanks) {
+        tank.bountyValue = BOUNTY_TUNING.baseValue;
+        tank.bountyStreak = 0;
+        tank.bountyDamageMult = 1.0;
+        tank.bountyCoolingMult = 1.0;
+        tank.respawnTicks = 0;
+        tank.invulnerableTicks = 0;
+        const tid = tank.teamId ?? tank.id;
+        scores[tid] = scores[tid] ?? 0;
+      }
+      state.ruleTeamScores = scores;
+    },
+    onTick: (state) => {
+      handleBountyHuntTick(state);
+    },
+    computeContributionLabel: (tank) =>
+      `賞金 ${Math.round(tank.stats.ruleScore ?? 0)}pt (★${tank.bountyValue ?? 100})`,
+  },
 };
 
 export const OUTER_WALL_MODE_SPECS: Record<
@@ -924,11 +1324,23 @@ export const ARENA_ZONE_MODE_SPECS: Record<
     shortLabel: '武器禁止エリア',
     description: 'エリア内では主砲・副武装が発射不可になります（外からの射撃は有効）。',
   },
+  ice: {
+    id: 'ice',
+    label: '氷床エリア（スリップ）',
+    shortLabel: '氷床エリア',
+    description: 'エリア内では車体が慣性で滑り、急制動や急旋回がドリフト気味になります。',
+  },
+  cooldown: {
+    id: 'cooldown',
+    label: '冷却エリア（急速放熱 ×2）',
+    shortLabel: '冷却エリア',
+    description: 'エリア内にいる間は主砲の放熱速度が2倍になり、連射戦が激化します。',
+  },
   mixed: {
     id: 'mixed',
-    label: '混合（減速＋武器禁止）',
-    shortLabel: '減速+武器禁止',
-    description: '減速エリアと武器禁止エリアの両方を戦場に配置します。',
+    label: '混合（減速＋武器禁止＋氷＋冷却）',
+    shortLabel: '全種混合エリア',
+    description: '減速・武器禁止・氷床・冷却の各エリアを戦場にバランスよく配置します。',
   },
 };
 
@@ -1041,6 +1453,8 @@ export const DEFAULT_BATTLEFIELD_CONFIG: BattlefieldConfig = {
   obstacleSeed: -1,
   maxSeconds: 180,
   teamUnitSize: 1,
+  seriesFormat: 'bo1',
+  randomizeSeedPerMatch: false,
 };
 
 export type BattlefieldTankTier = 4 | 8;
@@ -1203,6 +1617,34 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       summary: '中 / 障害物:なし / 強バウンド / 60秒 / 毎回ランダム配置(-1)',
     },
   },
+  bounty_hunt: {
+    4: {
+      arenaSize: 'medium',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 'random',
+      summary: '中 / 障害物:少 / 通常壁 / 120秒 / シード:ランダム',
+    },
+    8: {
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 'random',
+      summary: '大 / 障害物:少 / 通常壁 / 120秒 / シード:ランダム',
+    },
+  },
 };
 
 /** Return the curated recommended map preset for a rule and tank count tier. */
@@ -1271,6 +1713,34 @@ export function isRecommendedMapPresetApplied(
     config.disableSubWeapons === preset.disableSubWeapons &&
     seedMatches
   );
+}
+
+/**
+ * Resolve the per-game BattlefieldConfig (optionally rolling a fresh obstacleSeed
+ * per match or offsetting fixed positive seeds across Bo3 games 2 & 3).
+ * Combat Football and obstacle-less modes keep config untouched so randomized kickoffs stay fresh.
+ */
+export function resolveMatchConfigForGame(
+  config: BattlefieldConfig,
+  gameIndex = 0,
+  rng: () => number = Math.random
+): BattlefieldConfig {
+  if (config.ruleId === 'tank_soccer' || config.obstacleMode === 'none') {
+    return config;
+  }
+  if (config.randomizeSeedPerMatch) {
+    return {
+      ...config,
+      obstacleSeed: Math.floor(rng() * 9000) + 1,
+    };
+  }
+  if (gameIndex > 0 && config.obstacleSeed >= 0) {
+    return {
+      ...config,
+      obstacleSeed: ((config.obstacleSeed + gameIndex * 37) % 9000) + 1,
+    };
+  }
+  return config;
 }
 
 export function validateEntryForRegulation(
@@ -1492,6 +1962,148 @@ export function sortRosterEntries(
   });
 }
 
+export function shuffleArray<T>(
+  items: readonly T[],
+  rng: () => number = Math.random
+): T[] {
+  const arr = [...items];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+/** Shuffle roster order randomly (enabled entries stay enabled) for randomized brackets/schedules. */
+export function shuffleCompetitionRoster(
+  roster: BattlefieldRosterEntry[],
+  rng: () => number = Math.random
+): BattlefieldRosterEntry[] {
+  return shuffleArray(roster, rng);
+}
+
+/**
+ * Draw up to `maxCount` regulation-eligible entries from a potentially large roster,
+ * prioritizing entries not yet drawn in `recentPlayedIds` (fair rotation).
+ * Unpicked entries remain in the roster with `enabled: false`.
+ */
+export function pickRandomBattleRoyaleEntries(
+  roster: BattlefieldRosterEntry[],
+  config: BattlefieldConfig,
+  maxCount = 8,
+  recentPlayedIds: ReadonlySet<string> = new Set(),
+  rng: () => number = Math.random
+): {
+  nextRoster: BattlefieldRosterEntry[];
+  pickedIds: string[];
+  resetCycle: boolean;
+  eligibleCount: number;
+} {
+  const limit = Math.max(1, Math.trunc(maxCount));
+  const eligible = roster.filter(
+    (entry) => validateEntryForRegulation(entry, config.cpuRegulation).valid
+  );
+  if (eligible.length === 0) {
+    return { nextRoster: [...roster], pickedIds: [], resetCycle: false, eligibleCount: 0 };
+  }
+
+  const unplayed = shuffleArray(
+    eligible.filter((e) => !recentPlayedIds.has(e.entryId)),
+    rng
+  );
+  const played = shuffleArray(
+    eligible.filter((e) => recentPlayedIds.has(e.entryId)),
+    rng
+  );
+
+  let picked: BattlefieldRosterEntry[] = [];
+  let resetCycle = false;
+
+  if (unplayed.length >= limit) {
+    picked = unplayed.slice(0, limit);
+  } else {
+    resetCycle = played.length > 0 && eligible.length > limit;
+    picked = [...unplayed, ...played.slice(0, Math.max(0, limit - unplayed.length))];
+  }
+
+  const pickedIdSet = new Set(picked.map((e) => e.entryId));
+  const pickedOrdered = picked.map((e) => ({ ...e, enabled: true }));
+  const remainder = roster
+    .filter((e) => !pickedIdSet.has(e.entryId))
+    .map((e) => ({
+      ...e,
+      enabled: false,
+    }));
+
+  return {
+    nextRoster: [...pickedOrdered, ...remainder],
+    pickedIds: picked.map((e) => e.entryId),
+    resetCycle,
+    eligibleCount: eligible.length,
+  };
+}
+
+/**
+ * Draw up to 8 eligible entries (using fair rotation) and shuffle-assign them cleanly
+ * into balanced `teamCount` slots (0..teamCount-1) for team matches.
+ */
+export function assignRandomTeams(
+  roster: BattlefieldRosterEntry[],
+  config: BattlefieldConfig,
+  teamCount: 2 | 4 = 2,
+  recentPlayedIds: ReadonlySet<string> = new Set(),
+  rng: () => number = Math.random
+): {
+  nextRoster: BattlefieldRosterEntry[];
+  pickedIds: string[];
+  resetCycle: boolean;
+  eligibleCount: number;
+} {
+  const { nextRoster, pickedIds, resetCycle, eligibleCount } = pickRandomBattleRoyaleEntries(
+    roster,
+    config,
+    8,
+    recentPlayedIds,
+    rng
+  );
+  if (pickedIds.length === 0) {
+    return { nextRoster, pickedIds, resetCycle, eligibleCount };
+  }
+
+  const pickedSet = new Set(pickedIds);
+  const pickedEntries = shuffleArray(
+    nextRoster.filter((e) => pickedSet.has(e.entryId)),
+    rng
+  );
+
+  // Assign slots sequentially round-robin so teams are size-balanced;
+  // for pair_6x6_4x4 regulation try to pair a 6x6 and 4x4 onto each team first.
+  const orderedForSlots =
+    config.cpuRegulation === 'pair_6x6_4x4'
+      ? [
+          ...pickedEntries.filter((e) => e.blueprint.program.gridSize === 6),
+          ...pickedEntries.filter((e) => e.blueprint.program.gridSize === 4),
+          ...pickedEntries.filter(
+            (e) => e.blueprint.program.gridSize !== 6 && e.blueprint.program.gridSize !== 4
+          ),
+        ]
+      : pickedEntries;
+
+  const teamAssigned = orderedForSlots.map((entry, idx) => ({
+    ...entry,
+    enabled: true,
+    teamSlot: idx % teamCount,
+  }));
+  const rest = nextRoster.filter((e) => !pickedSet.has(e.entryId));
+
+  return {
+    nextRoster: [...teamAssigned, ...rest],
+    pickedIds,
+    resetCycle,
+    eligibleCount,
+  };
+}
+
 export function formatTankListLabel(
   machineName: string,
   playerName: string,
@@ -1597,7 +2209,16 @@ export function generateBattlefieldZones(
     arenaSize === 'tiny' || arenaSize === 'small' ? 2 : arenaSize === 'medium' ? 3 : 4;
 
   const baseSeed = seed === -1 ? 4242 : seed;
-  const modeSalt = zoneMode === 'slow' ? 11 : zoneMode === 'no_weapon' ? 23 : 37;
+  const modeSalt =
+    zoneMode === 'slow'
+      ? 11
+      : zoneMode === 'no_weapon'
+        ? 23
+        : zoneMode === 'ice'
+          ? 41
+          : zoneMode === 'cooldown'
+            ? 53
+            : 37;
   const rng = createZoneRng(baseSeed * 131 + modeSalt);
 
   const spawns = getSpawnsForArena(arenaW, arenaH);
@@ -1627,11 +2248,15 @@ export function generateBattlefieldZones(
     if (obstacles.some((obs) => rectsOverlapWithGap(rect, obs, obsGap))) continue;
     if (placed.some((other) => rectsOverlapWithGap(rect, other, zoneGap))) continue;
 
+    const mixedCycle: Array<'slow' | 'no_weapon' | 'ice' | 'cooldown'> = [
+      'slow',
+      'no_weapon',
+      'ice',
+      'cooldown',
+    ];
     const kind =
       zoneMode === 'mixed'
-        ? placed.length % 2 === 0
-          ? 'slow'
-          : 'no_weapon'
+        ? mixedCycle[placed.length % mixedCycle.length]
         : zoneMode;
 
     placed.push({
@@ -1776,6 +2401,11 @@ export interface TankMatchReportRow {
   contributionScore: number;
   ruleMetricText: string;
   awards: string[];
+  deaths?: number;
+  maxBountyStreak?: number;
+  bountyClaimedCount?: number;
+  maxBountyClaimed?: number;
+  firstKillTick?: number | null;
 }
 
 export interface TeamMatchReportRow {
@@ -1854,7 +2484,14 @@ export function buildMatchReport(
     const contributionScore = winBonus + computeTankBaseContribution(t, state.tick);
 
     let killedByLabel = isAlive ? '生存' : '場外・自滅';
-    if (!isAlive && t.killedById) {
+    const deaths = t.stats.deaths ?? 0;
+    if (config.ruleId === 'bounty_hunt') {
+      killedByLabel = isAlive
+        ? deaths > 0
+          ? `生存 (被撃破${deaths}回)`
+          : '無敗生存'
+        : `復帰待機 (被撃破${deaths}回)`;
+    } else if (!isAlive && t.killedById) {
       if (t.killedById === 'environment') {
         killedByLabel = '壁・環境';
       } else {
@@ -1890,6 +2527,11 @@ export function buildMatchReport(
       contributionScore,
       ruleMetricText: ruleSpec?.computeContributionLabel?.(t) ?? `与ダメ ${Math.round(damageDealt)}`,
       awards: [],
+      deaths,
+      maxBountyStreak: t.stats.maxBountyStreak ?? 0,
+      bountyClaimedCount: t.stats.bountyClaimedCount ?? 0,
+      maxBountyClaimed: t.stats.maxBountyClaimed ?? 0,
+      firstKillTick: t.stats.firstKillTick ?? null,
     };
   });
 
@@ -1924,21 +2566,108 @@ export function buildMatchReport(
     if (bestContrib.contributionScore > 0) {
       bestContrib.awards.push('🏆 MVP');
     }
+
+    if (config.ruleId === 'bounty_hunt') {
+      const hunters = rawRows.filter((r) => (r.bountyClaimedCount ?? 0) >= 1);
+      if (hunters.length > 0) {
+        const topHunter = [...hunters].sort((a, b) => {
+          const maxDiff = (b.maxBountyClaimed ?? 0) - (a.maxBountyClaimed ?? 0);
+          if (maxDiff !== 0) return maxDiff;
+          const cntDiff = (b.bountyClaimedCount ?? 0) - (a.bountyClaimedCount ?? 0);
+          if (cntDiff !== 0) return cntDiff;
+          return b.ruleScore - a.ruleScore;
+        })[0];
+        topHunter.awards.push('👑 賞金首ハンター');
+      }
+      const streakers = rawRows.filter((r) => (r.maxBountyStreak ?? 0) >= 2);
+      if (streakers.length > 0) {
+        const topStreak = [...streakers].sort((a, b) => {
+          const sDiff = (b.maxBountyStreak ?? 0) - (a.maxBountyStreak ?? 0);
+          return sDiff !== 0 ? sDiff : b.ruleScore - a.ruleScore;
+        })[0];
+        topStreak.awards.push('🔥 連勝の覇者');
+      }
+    } else {
+      const multiKillers = rawRows.filter((r) => r.kills >= 2);
+      if (multiKillers.length > 0) {
+        const topKiller = [...multiKillers].sort((a, b) =>
+          b.kills !== a.kills ? b.kills - a.kills : b.damageDealt - a.damageDealt
+        )[0];
+        topKiller.awards.push('🔥 連勝の覇者');
+      }
+    }
+
+    const totalKills = rawRows.reduce((s, r) => s + r.kills, 0);
+    const firstKillers = rawRows.filter((r) => r.firstKillTick != null);
+    if (firstKillers.length > 0 && (totalKills >= 2 || rawRows.length >= 3)) {
+      const fastestKiller = [...firstKillers].sort(
+        (a, b) => (a.firstKillTick ?? Infinity) - (b.firstKillTick ?? Infinity)
+      )[0];
+      fastestKiller.awards.push('⚡ 電光石火');
+    }
+
     const maxDmg = [...rawRows].sort((a, b) => b.damageDealt - a.damageDealt)[0];
     if (maxDmg.damageDealt > 0) {
       maxDmg.awards.push('💥 最多ダメージ');
     }
+
     const sharpshooters = rawRows.filter((r) => r.shotsFired >= 3 && (r.hitRatePercent ?? 0) > 0);
     if (sharpshooters.length > 0) {
-      const topAcc = [...sharpshooters].sort(
-        (a, b) => (b.hitRatePercent ?? 0) - (a.hitRatePercent ?? 0)
+      const topAcc = [...sharpshooters].sort((a, b) =>
+        (b.hitRatePercent ?? 0) !== (a.hitRatePercent ?? 0)
+          ? (b.hitRatePercent ?? 0) - (a.hitRatePercent ?? 0)
+          : b.shotsHit - a.shotsHit
       )[0];
-      topAcc.awards.push('🎯 高命中');
+      topAcc.awards.push('🎯 スナイパー');
     }
+
     const survivors = rawRows.filter((r) => r.isAlive);
+    const totalDamage = rawRows.reduce((s, r) => s + r.damageDealt + r.damageTaken, 0);
     if (survivors.length > 0) {
-      const toughest = [...survivors].sort((a, b) => a.damageTaken - b.damageTaken)[0];
-      toughest.awards.push('🛡️ 生存');
+      const heavyTanks = survivors.filter((r) => r.damageTaken >= 60);
+      if (heavyTanks.length > 0) {
+        const ironWall = [...heavyTanks].sort((a, b) => b.damageTaken - a.damageTaken)[0];
+        ironWall.awards.push('🛡️ 鉄壁');
+      } else if (totalDamage > 0 && survivors.some((r) => r.damageTaken === 0)) {
+        const untouched = [...survivors]
+          .filter((r) => r.damageTaken === 0)
+          .sort((a, b) => b.contributionScore - a.contributionScore)[0];
+        untouched.awards.push('✨ 無傷');
+      } else {
+        const toughest = [...survivors].sort((a, b) => a.damageTaken - b.damageTaken)[0];
+        toughest.awards.push('🛡️ 生存');
+      }
+    }
+
+    const giantKillers = rawRows.filter((r) => {
+      const hasBiggerFoeOutranked = rawRows.some(
+        (other) =>
+          other.teamId !== r.teamId &&
+          other.gridSize > r.gridSize &&
+          (other.rank > r.rank || !other.isAlive)
+      );
+      return hasBiggerFoeOutranked && (r.kills >= 1 || (winnerTeamId && r.teamId === winnerTeamId));
+    });
+    if (giantKillers.length > 0) {
+      const smallestHero = [...giantKillers].sort((a, b) =>
+        a.gridSize !== b.gridSize
+          ? a.gridSize - b.gridSize
+          : b.contributionScore - a.contributionScore
+      )[0];
+      smallestHero.awards.push('🌟 ジャイアントキリング');
+    }
+
+    const runnerUpCandidates = rawRows.filter(
+      (r) =>
+        (!winnerTeamId || r.teamId !== winnerTeamId) &&
+        r.awards.length === 0 &&
+        (r.damageDealt > 0 || r.ruleScore > 0)
+    );
+    if (runnerUpCandidates.length > 0) {
+      const fightingSpirit = [...runnerUpCandidates].sort(
+        (a, b) => b.contributionScore - a.contributionScore
+      )[0];
+      fightingSpirit.awards.push('💪 敢闘賞');
     }
   }
 
@@ -2133,6 +2862,11 @@ export interface TournamentMatch {
   isDraw?: boolean;
   isBye?: boolean;
   report?: BattlefieldMatchReport;
+  seriesBestOf?: 1 | 3;
+  winsA?: number;
+  winsB?: number;
+  draws?: number;
+  gameReports?: BattlefieldMatchReport[];
   nextMatchId?: string;
   nextMatchSlot?: 'A' | 'B';
 }
@@ -2151,7 +2885,10 @@ function getRoundLabel(roundIdx: number, totalRounds: number): string {
   return `${roundIdx + 1}回戦`;
 }
 
-export function createTournamentBracket(units: CompetitionUnit[]): TournamentBracket {
+export function createTournamentBracket(
+  units: CompetitionUnit[],
+  seriesBestOf: 1 | 3 = 1
+): TournamentBracket {
   if (units.length < 2) {
     return { units, rounds: [], championUnitId: units[0]?.unitId ?? null };
   }
@@ -2190,6 +2927,11 @@ export function createTournamentBracket(units: CompetitionUnit[]): TournamentBra
         unitAId: r === 0 ? seededSlots[m * 2] : null,
         unitBId: r === 0 ? seededSlots[m * 2 + 1] : null,
         winnerUnitId: null,
+        seriesBestOf,
+        winsA: 0,
+        winsB: 0,
+        draws: 0,
+        gameReports: [],
         nextMatchId: r < totalRounds - 1 ? `tour_r${r + 1}_m${Math.floor(m / 2)}` : undefined,
         nextMatchSlot: r < totalRounds - 1 ? (m % 2 === 0 ? 'A' : 'B') : undefined,
       });
@@ -2284,6 +3026,103 @@ export function applyTournamentMatchResult(
   };
 }
 
+/**
+ * Record one completed game toward a Bo1 or Bo3 (first-to-2) tournament match.
+ * Keeps the match active until one side reaches 2 wins or 3 games have been played.
+ */
+export function applyTournamentGameResult(
+  bracket: TournamentBracket,
+  matchId: string,
+  gameWinnerUnitId: string | null,
+  report: BattlefieldMatchReport,
+  isGameDraw: boolean,
+  seriesBestOf: 1 | 3 = 1
+): TournamentBracket {
+  const effectiveBestOf: 1 | 3 =
+    seriesBestOf === 3 ||
+    bracket.rounds.flat().find((m) => m.matchId === matchId)?.seriesBestOf === 3
+      ? 3
+      : 1;
+
+  if (effectiveBestOf === 1) {
+    return applyTournamentMatchResult(
+      bracket,
+      matchId,
+      gameWinnerUnitId,
+      report,
+      isGameDraw
+    );
+  }
+
+  const nextRounds = bracket.rounds.map((round) => round.map((m) => ({ ...m })));
+  const target = nextRounds.flat().find((m) => m.matchId === matchId);
+  if (!target) return bracket;
+
+  // Re-playing an already decided series restarts the Bo3 tally cleanly
+  const restart = Boolean(target.winnerUnitId);
+  let winsA = restart ? 0 : (target.winsA ?? 0);
+  let winsB = restart ? 0 : (target.winsB ?? 0);
+  let draws = restart ? 0 : (target.draws ?? 0);
+  const gameReports = restart ? [] : [...(target.gameReports ?? [])];
+
+  if (isGameDraw || !gameWinnerUnitId) {
+    draws += 1;
+  } else if (gameWinnerUnitId === target.unitAId) {
+    winsA += 1;
+  } else if (gameWinnerUnitId === target.unitBId) {
+    winsB += 1;
+  } else {
+    draws += 1;
+  }
+  gameReports.push(report);
+
+  target.seriesBestOf = 3;
+  target.winsA = winsA;
+  target.winsB = winsB;
+  target.draws = draws;
+  target.gameReports = gameReports;
+  target.report = report;
+
+  const seriesDone = winsA >= 2 || winsB >= 2 || gameReports.length >= 3;
+  if (!seriesDone) {
+    target.winnerUnitId = null;
+    target.isDraw = false;
+    return {
+      units: bracket.units,
+      rounds: nextRounds,
+      championUnitId: bracket.championUnitId,
+    };
+  }
+
+  let seriesWinnerId: string | null = null;
+  if (winsA > winsB) {
+    seriesWinnerId = target.unitAId;
+  } else if (winsB > winsA) {
+    seriesWinnerId = target.unitBId;
+  } else {
+    let contribA = 0;
+    let contribB = 0;
+    for (const rep of gameReports) {
+      contribA += rep.teamRows.find((tr) => tr.teamId === 'unit_A')?.totalContribution ?? 0;
+      contribB += rep.teamRows.find((tr) => tr.teamId === 'unit_B')?.totalContribution ?? 0;
+    }
+    seriesWinnerId = contribB > contribA ? target.unitBId : target.unitAId;
+  }
+
+  const updatedBracket: TournamentBracket = {
+    units: bracket.units,
+    rounds: nextRounds,
+    championUnitId: bracket.championUnitId,
+  };
+  return applyTournamentMatchResult(
+    updatedBracket,
+    matchId,
+    seriesWinnerId,
+    report,
+    winsA === winsB
+  );
+}
+
 export interface LeagueMatch {
   matchId: string;
   roundNumber: number;
@@ -2292,6 +3131,11 @@ export interface LeagueMatch {
   winnerUnitId: string | null;
   isDraw: boolean;
   report?: BattlefieldMatchReport;
+  seriesBestOf?: 1 | 3;
+  winsA?: number;
+  winsB?: number;
+  draws?: number;
+  gameReports?: BattlefieldMatchReport[];
 }
 
 export interface LeagueStandingRow {
@@ -2318,7 +3162,10 @@ export interface LeagueStandingRow {
   teamRuleScore?: number;
 }
 
-export function createLeagueSchedule(units: CompetitionUnit[]): LeagueMatch[] {
+export function createLeagueSchedule(
+  units: CompetitionUnit[],
+  seriesBestOf: 1 | 3 = 1
+): LeagueMatch[] {
   if (units.length < 2) return [];
   const ids: (string | null)[] = units.map((u) => u.unitId);
   if (ids.length % 2 === 1) {
@@ -2343,6 +3190,11 @@ export function createLeagueSchedule(units: CompetitionUnit[]): LeagueMatch[] {
           unitBId: b,
           winnerUnitId: null,
           isDraw: false,
+          seriesBestOf,
+          winsA: 0,
+          winsB: 0,
+          draws: 0,
+          gameReports: [],
         });
       }
     }
@@ -2352,6 +3204,82 @@ export function createLeagueSchedule(units: CompetitionUnit[]): LeagueMatch[] {
     }
   }
   return matches;
+}
+
+/**
+ * Record one completed game toward a Bo1 or Bo3 league match.
+ * Leaves `report` unset until the Bo3 series reaches 2 wins or 3 games.
+ */
+export function applyLeagueGameResult(
+  matches: LeagueMatch[],
+  matchId: string,
+  gameWinnerUnitId: string | null,
+  report: BattlefieldMatchReport,
+  isGameDraw: boolean,
+  seriesBestOf: 1 | 3 = 1
+): LeagueMatch[] {
+  return matches.map((m) => {
+    if (m.matchId !== matchId) return m;
+    const effectiveBestOf: 1 | 3 = seriesBestOf === 3 || m.seriesBestOf === 3 ? 3 : 1;
+    if (effectiveBestOf === 1) {
+      return {
+        ...m,
+        seriesBestOf: 1,
+        winnerUnitId: isGameDraw ? null : gameWinnerUnitId,
+        isDraw: isGameDraw || !gameWinnerUnitId,
+        winsA: !isGameDraw && gameWinnerUnitId === m.unitAId ? 1 : 0,
+        winsB: !isGameDraw && gameWinnerUnitId === m.unitBId ? 1 : 0,
+        draws: isGameDraw || !gameWinnerUnitId ? 1 : 0,
+        gameReports: [report],
+        report,
+      };
+    }
+
+    const restart = Boolean(m.report);
+    let winsA = restart ? 0 : (m.winsA ?? 0);
+    let winsB = restart ? 0 : (m.winsB ?? 0);
+    let draws = restart ? 0 : (m.draws ?? 0);
+    const gameReports = restart ? [] : [...(m.gameReports ?? [])];
+
+    if (isGameDraw || !gameWinnerUnitId) {
+      draws += 1;
+    } else if (gameWinnerUnitId === m.unitAId) {
+      winsA += 1;
+    } else if (gameWinnerUnitId === m.unitBId) {
+      winsB += 1;
+    } else {
+      draws += 1;
+    }
+    gameReports.push(report);
+
+    const seriesDone = winsA >= 2 || winsB >= 2 || gameReports.length >= 3;
+    if (!seriesDone) {
+      return {
+        ...m,
+        seriesBestOf: 3,
+        winsA,
+        winsB,
+        draws,
+        gameReports,
+        winnerUnitId: null,
+        isDraw: false,
+        report: undefined,
+      };
+    }
+
+    const seriesWinnerId = winsA > winsB ? m.unitAId : winsB > winsA ? m.unitBId : null;
+    return {
+      ...m,
+      seriesBestOf: 3,
+      winsA,
+      winsB,
+      draws,
+      gameReports,
+      winnerUnitId: seriesWinnerId,
+      isDraw: winsA === winsB,
+      report,
+    };
+  });
 }
 
 export function computeLeagueStandings(
@@ -2372,6 +3300,7 @@ export function computeLeagueStandings(
     let totalShotsFired = 0;
     let totalShotsHit = 0;
     let survivedSum = 0;
+    let survivedDenom = 0;
     let totalContribution = 0;
 
     for (const m of matches) {
@@ -2390,18 +3319,22 @@ export function computeLeagueStandings(
       }
 
       const myTeamId = isA ? 'unit_A' : 'unit_B';
-      const myTanks = m.report.tankRows.filter((tr) => tr.teamId === myTeamId);
-      for (const tr of myTanks) {
-        totalKills += tr.kills;
-        totalDamageDealt += tr.damageDealt;
-        totalDamageTaken += tr.damageTaken;
-        totalShotsFired += tr.shotsFired;
-        totalShotsHit += tr.shotsHit;
-        totalContribution += tr.contributionScore;
-      }
-      if (myTanks.length > 0) {
-        survivedSum +=
-          myTanks.reduce((s, tr) => s + tr.survivedSeconds, 0) / myTanks.length;
+      const reports = m.gameReports && m.gameReports.length > 0 ? m.gameReports : [m.report];
+      for (const rep of reports) {
+        const myTanks = rep.tankRows.filter((tr) => tr.teamId === myTeamId);
+        for (const tr of myTanks) {
+          totalKills += tr.kills;
+          totalDamageDealt += tr.damageDealt;
+          totalDamageTaken += tr.damageTaken;
+          totalShotsFired += tr.shotsFired;
+          totalShotsHit += tr.shotsHit;
+          totalContribution += tr.contributionScore;
+        }
+        if (myTanks.length > 0) {
+          survivedSum +=
+            myTanks.reduce((s, tr) => s + tr.survivedSeconds, 0) / myTanks.length;
+          survivedDenom += 1;
+        }
       }
     }
 
@@ -2428,7 +3361,7 @@ export function computeLeagueStandings(
           ? Math.round((totalShotsHit / totalShotsFired) * 1000) / 10
           : null,
       avgSurvivedSeconds:
-        played > 0 ? Math.round((survivedSum / played) * 10) / 10 : 0,
+        survivedDenom > 0 ? Math.round((survivedSum / survivedDenom) * 10) / 10 : 0,
       totalContribution,
     };
   });
@@ -2535,9 +3468,12 @@ export function formatMatchReportText(
       r.hitRatePercent !== null
         ? `${r.hitRatePercent.toFixed(1)}% (${r.shotsHit}/${r.shotsFired})`
         : `- (0/0)`;
-    const survStr = r.isAlive
-      ? `${r.survivedSeconds.toFixed(1)}s (生存 HP:${r.hpRemaining}/${r.maxHp})`
-      : `${r.survivedSeconds.toFixed(1)}s (${r.killedByLabel}に撃破)`;
+    const survStr =
+      cfg.ruleId === 'bounty_hunt'
+        ? `${r.killedByLabel} (残HP:${r.hpRemaining}/${r.maxHp})`
+        : r.isAlive
+          ? `${r.survivedSeconds.toFixed(1)}s (生存 HP:${r.hpRemaining}/${r.maxHp})`
+          : `${r.survivedSeconds.toFixed(1)}s (${r.killedByLabel}に撃破)`;
     const awardStr = r.awards.length > 0 ? r.awards.join(' ') : '-';
     lines.push(
       `${r.rank}位 | ${r.teamLabel} | ${r.playerName} | ${r.machineName} | ${r.gridSize}x${r.gridSize} | ${r.kills} | ${r.damageDealt.toFixed(1)} | ${r.damageTaken.toFixed(1)} | ${hitStr} | ${survStr} | ${r.contributionScore} (${r.ruleMetricText}) | ${awardStr}`
@@ -2597,9 +3533,10 @@ export function formatLeagueStandingsText(
 ): string {
   const ruleName = BATTLEFIELD_RULE_REGISTRY[config.ruleId]?.name ?? config.ruleId;
   const regLabel = CPU_REGULATION_SPECS[config.cpuRegulation]?.label ?? config.cpuRegulation;
+  const seriesNote = config.seriesFormat === 'bo3' ? ' / Bo3(2本先取)' : '';
   const lines: string[] = [
     '=== CodePanzer.py バトルフィールド リーグ戦順位表 ===',
-    `[条件] ${ruleName} / ${regLabel} / ${config.disableWeapons ? '射撃禁止' : '通常武装'}${formatConfigConditionSuffix(config)}`,
+    `[条件] ${ruleName} / ${regLabel} / ${config.disableWeapons ? '射撃禁止' : '通常武装'}${seriesNote}${formatConfigConditionSuffix(config)}`,
     '順位 | チーム/ユニット | Player名 | マシーン名 | CPU | 試合 | 勝 | 分 | 負 | 勝点 | 総撃破 | 総与ダメ | 総被ダメ | 命中率 | 平均生存 | 総貢献',
   ];
 
@@ -2623,10 +3560,11 @@ export function formatTournamentSummaryText(
   const champ = bracket.championUnitId ? unitById.get(bracket.championUnitId) : null;
   const ruleName = BATTLEFIELD_RULE_REGISTRY[config.ruleId]?.name ?? config.ruleId;
   const regLabel = CPU_REGULATION_SPECS[config.cpuRegulation]?.label ?? config.cpuRegulation;
+  const seriesNote = config.seriesFormat === 'bo3' ? ' / Bo3(2本先取)' : '';
 
   const lines: string[] = [
     '=== CodePanzer.py バトルフィールド トーナメント結果 ===',
-    `[条件] ${ruleName} / ${regLabel} / ${config.disableWeapons ? '射撃禁止' : '通常武装'}${formatConfigConditionSuffix(config)}`,
+    `[条件] ${ruleName} / ${regLabel} / ${config.disableWeapons ? '射撃禁止' : '通常武装'}${seriesNote}${formatConfigConditionSuffix(config)}`,
     champ
       ? `[優勝] 🏆 ${champ.unitName} (Player: ${champ.entries.map((e) => e.playerName).join(' & ')} / マシーン: ${champ.entries.map((e) => e.machineName).join(' + ')})`
       : '[進行状況] トーナメント未決着',
@@ -2639,18 +3577,137 @@ export function formatTournamentSummaryText(
     for (const m of round) {
       const a = m.unitAId ? unitById.get(m.unitAId)?.unitName ?? m.unitAId : '(BYE)';
       const b = m.unitBId ? unitById.get(m.unitBId)?.unitName ?? m.unitBId : '(BYE)';
+      const scoreTag =
+        m.seriesBestOf === 3 && (m.winsA !== undefined || m.winsB !== undefined)
+          ? ` [${m.winsA ?? 0}-${m.winsB ?? 0}]`
+          : '';
       if (m.isBye) {
         const w = m.winnerUnitId ? unitById.get(m.winnerUnitId)?.unitName ?? '-' : '-';
         lines.push(`  ${a} vs ${b} -> ${w} (シード勝ち抜け)`);
       } else if (m.winnerUnitId) {
         const w = unitById.get(m.winnerUnitId)?.unitName ?? m.winnerUnitId;
         const dur = m.report ? `${m.report.durationSeconds.toFixed(1)}s` : '-';
-        lines.push(`  ${a} vs ${b} -> 勝者: ${w} (${dur})`);
+        lines.push(`  ${a} vs ${b}${scoreTag} -> 勝者: ${w} (${dur})`);
       } else {
-        lines.push(`  ${a} vs ${b} -> 未対戦`);
+        lines.push(`  ${a} vs ${b}${scoreTag} -> 未対戦`);
       }
     }
   }
 
   return lines.join('\n');
+}
+
+export const BATTLEFIELD_SESSION_STORAGE_KEY = 'codepanzer_bf_session_v1';
+
+export interface BattlefieldSessionSnapshot {
+  version: 1;
+  savedAt: number;
+  config: BattlefieldConfig;
+  roster: BattlefieldRosterEntry[];
+  tournamentBracket: TournamentBracket | null;
+  leagueData: {
+    units: CompetitionUnit[];
+    matches: LeagueMatch[];
+  } | null;
+  activeMatchId: string | null;
+  autoAdvance: boolean;
+}
+
+/** Save current Battlefield roster, config, and tournament/league progress to localStorage. */
+export function saveBattlefieldSession(snapshot: BattlefieldSessionSnapshot): boolean {
+  try {
+    if (typeof localStorage === 'undefined') return false;
+    localStorage.setItem(BATTLEFIELD_SESSION_STORAGE_KEY, JSON.stringify(snapshot));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Load and repair the persisted Battlefield session if valid; otherwise return null. */
+export function loadBattlefieldSession(): BattlefieldSessionSnapshot | null {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(BATTLEFIELD_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<BattlefieldSessionSnapshot>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.roster) || !parsed.config) {
+      return null;
+    }
+
+    const repairedRoster: BattlefieldRosterEntry[] = [];
+    for (const item of parsed.roster) {
+      if (!item || typeof item !== 'object' || !item.blueprint || !item.entryId) continue;
+      const repairedBp = validateAndRepairBlueprint(item.blueprint).blueprint;
+      const gs = repairedBp.program.gridSize;
+      repairedRoster.push({
+        entryId: String(item.entryId),
+        playerName: String(item.playerName ?? (item.isPreset ? 'CPU' : 'Player')),
+        ...(item.basePlayerName ? { basePlayerName: String(item.basePlayerName) } : {}),
+        machineName: sanitizeTankName(item.machineName ?? repairedBp.name, 'カスタム戦車'),
+        blueprint: {
+          ...repairedBp,
+          assembly: {
+            ...repairedBp.assembly,
+            cpu: cpuIdForGridSize(gs),
+          },
+        },
+        sourceLabel: String(item.sourceLabel ?? '復元'),
+        teamSlot:
+          typeof item.teamSlot === 'number'
+            ? Math.max(0, Math.min(3, Math.trunc(item.teamSlot)))
+            : 0,
+        enabled: item.enabled !== false,
+        isPreset: Boolean(item.isPreset),
+      });
+    }
+
+    if (repairedRoster.length === 0) return null;
+    entrySeq = Math.max(entrySeq, repairedRoster.length + 10);
+
+    const cfg: BattlefieldConfig = {
+      ...DEFAULT_BATTLEFIELD_CONFIG,
+      ...parsed.config,
+      seriesFormat: parsed.config.seriesFormat === 'bo3' ? 'bo3' : 'bo1',
+      randomizeSeedPerMatch: Boolean(parsed.config.randomizeSeedPerMatch),
+    };
+
+    const bracket =
+      parsed.tournamentBracket &&
+      Array.isArray(parsed.tournamentBracket.units) &&
+      Array.isArray(parsed.tournamentBracket.rounds)
+        ? parsed.tournamentBracket
+        : null;
+
+    const league =
+      parsed.leagueData &&
+      Array.isArray(parsed.leagueData.units) &&
+      Array.isArray(parsed.leagueData.matches)
+        ? parsed.leagueData
+        : null;
+
+    return {
+      version: 1,
+      savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
+      config: cfg,
+      roster: repairedRoster,
+      tournamentBracket: bracket,
+      leagueData: league,
+      activeMatchId: typeof parsed.activeMatchId === 'string' ? parsed.activeMatchId : null,
+      autoAdvance: Boolean(parsed.autoAdvance),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Remove any saved Battlefield session from localStorage cleanly. */
+export function clearBattlefieldSession(): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(BATTLEFIELD_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore storage errors cleanly
+  }
 }

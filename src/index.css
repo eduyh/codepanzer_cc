@@ -92,7 +92,7 @@ button {
 }
 
 .brand-title-row {
-  display: inline-flex;
+  display: flex;
   align-items: baseline;
   gap: 8px;
 }
@@ -104,6 +104,8 @@ button {
 }
 
 .brand-sub {
+  display: block;
+  margin-top: 2px;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -4118,8 +4120,8 @@ html:has(.app-shell.mobile-layout) #root {
 
 .bf-weapon-locks {
   display: flex;
-  flex-wrap: nowrap;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .bf-check-pill {
@@ -4140,6 +4142,13 @@ html:has(.app-shell.mobile-layout) #root {
   border-color: rgba(244, 63, 94, 0.7);
   background: rgba(244, 63, 94, 0.14);
   color: #fecdd3;
+  font-weight: 600;
+}
+
+.bf-check-pill.is-accent {
+  border-color: rgba(56, 189, 248, 0.65);
+  background: rgba(56, 189, 248, 0.14);
+  color: #bae6fd;
   font-weight: 600;
 }
 
@@ -4192,6 +4201,18 @@ html:has(.app-shell.mobile-layout) #root {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 6px;
+  font-size: 11px;
+}
+
+.bf-roster-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.bf-roster-tools .mini-btn {
+  padding: 4px 8px;
   font-size: 11px;
 }
 
@@ -4480,6 +4501,69 @@ html:has(.app-shell.mobile-layout) #root {
   color: var(--text-muted);
 }
 
+.bf-bounty-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #fde68a;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.bf-bounty-badge.is-mini {
+  padding: 0 5px;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.bf-respawn-tag {
+  color: #7dd3fc;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.bf-awards-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid var(--border);
+}
+
+.bf-awards-strip-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--amber);
+  margin-right: 4px;
+}
+
+.bf-award-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  font-size: 11px;
+  color: var(--text-main);
+  margin-right: 4px;
+}
+
+.bf-award-chip em {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
 .bf-goal-viewport-overlay {
   position: absolute;
   top: 50%;
@@ -4498,6 +4582,117 @@ html:has(.app-shell.mobile-layout) #root {
   font-size: 18px;
   letter-spacing: 0.04em;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+}
+
+.bf-vs-banner-overlay {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 7;
+  width: min(560px, 92%);
+  padding: 16px 20px 15px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.9);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  box-shadow: 0 18px 42px rgba(2, 6, 23, 0.72);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+}
+
+.bf-vs-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bf-vs-stage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #fde68a;
+  letter-spacing: 0.04em;
+}
+
+.bf-vs-series {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  background: rgba(56, 189, 248, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #bae6fd;
+}
+
+.bf-vs-matchup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.bf-vs-side {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.72);
+  border: 1px solid var(--border);
+  border-top-width: 3px;
+  min-width: 0;
+}
+
+.bf-vs-player {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bf-vs-machine {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bf-vs-divider {
+  font-size: 20px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  color: #facc15;
+  text-shadow: 0 2px 12px rgba(250, 204, 21, 0.45);
+  padding: 0 2px;
+}
+
+.bf-vs-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+@media (max-width: 600px) {
+  .bf-vs-matchup {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .bf-vs-player {
+    font-size: 17px;
+  }
+  .bf-vs-divider {
+    font-size: 16px;
+  }
 }
 
 .bf-hud-rows {
@@ -5014,6 +5209,25 @@ html:has(.app-shell.mobile-layout) #root {
   color: #86efac;
   background: rgba(16, 185, 129, 0.16);
   font-weight: 700;
+}
+
+.bf-card-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.bf-series-score {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--sky);
+  background: rgba(56, 189, 248, 0.14);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  font-variant-numeric: tabular-nums;
 }
 
 .bf-watch-btn {
