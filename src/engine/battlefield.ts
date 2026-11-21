@@ -1055,7 +1055,7 @@ export interface BattlefieldMapPreset {
   maxSeconds: number;
   disableWeapons: boolean;
   disableSubWeapons: boolean;
-  obstacleSeed: number;
+  obstacleSeed: number | 'random';
   summary: string;
 }
 
@@ -1074,8 +1074,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 120,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: 224,
-      summary: '中 / 障害物:少 / 通常壁 / 120秒 / シード224',
+      obstacleSeed: 'random',
+      summary: '中 / 障害物:少 / 通常壁 / 120秒 / シード:ランダム',
     },
     8: {
       arenaSize: 'large',
@@ -1087,8 +1087,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 180,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: 198,
-      summary: '大 / 障害物:少 / 通常壁 / 180秒 / シード198',
+      obstacleSeed: 'random',
+      summary: '大 / 障害物:少 / 通常壁 / 180秒 / シード:ランダム',
     },
   },
   ramming_derby: {
@@ -1130,8 +1130,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 60,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: 106,
-      summary: '中 / 障害物:少 / 強バウンド / 60秒 / シード106',
+      obstacleSeed: 'random',
+      summary: '中 / 障害物:少 / 強バウンド / 60秒 / シード:ランダム',
     },
     8: {
       arenaSize: 'large',
@@ -1143,8 +1143,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 60,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: -1,
-      summary: '大 / 障害物:少 / 強バウンド / 60秒 / 標準配置(-1)',
+      obstacleSeed: 'random',
+      summary: '大 / 障害物:少 / 強バウンド / 60秒 / シード:ランダム',
     },
   },
   domination: {
@@ -1158,8 +1158,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 60,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: 188,
-      summary: '小 / 障害物:少 / 通常壁 / 60秒 / シード188',
+      obstacleSeed: 'random',
+      summary: '小 / 障害物:少 / 通常壁 / 60秒 / シード:ランダム',
     },
     8: {
       arenaSize: 'large',
@@ -1171,8 +1171,8 @@ export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
       maxSeconds: 120,
       disableWeapons: false,
       disableSubWeapons: false,
-      obstacleSeed: 250,
-      summary: '大 / 障害物:少 / 通常壁 / 120秒 / シード250',
+      obstacleSeed: 'random',
+      summary: '大 / 障害物:少 / 通常壁 / 120秒 / シード:ランダム',
     },
   },
   tank_soccer: {
@@ -1228,9 +1228,14 @@ export function resolveRecommendedTankTier(
 /** Return a copy of config with the recommended map settings applied for the rule & tier. */
 export function applyRecommendedMapPreset(
   config: BattlefieldConfig,
-  tier: BattlefieldTankTier
+  tier: BattlefieldTankTier,
+  rng: () => number = Math.random
 ): BattlefieldConfig {
   const preset = getRecommendedMapPreset(config.ruleId, tier);
+  const resolvedSeed =
+    preset.obstacleSeed === 'random'
+      ? Math.floor(rng() * 9000) + 1
+      : preset.obstacleSeed;
   return {
     ...config,
     arenaSize: preset.arenaSize,
@@ -1242,7 +1247,7 @@ export function applyRecommendedMapPreset(
     maxSeconds: preset.maxSeconds,
     disableWeapons: preset.disableWeapons,
     disableSubWeapons: preset.disableSubWeapons,
-    obstacleSeed: preset.obstacleSeed,
+    obstacleSeed: resolvedSeed,
   };
 }
 
@@ -1252,6 +1257,8 @@ export function isRecommendedMapPresetApplied(
   tier: BattlefieldTankTier
 ): boolean {
   const preset = getRecommendedMapPreset(config.ruleId, tier);
+  const seedMatches =
+    preset.obstacleSeed === 'random' || config.obstacleSeed === preset.obstacleSeed;
   return (
     config.arenaSize === preset.arenaSize &&
     config.obstacleMode === preset.obstacleMode &&
@@ -1262,7 +1269,7 @@ export function isRecommendedMapPresetApplied(
     config.maxSeconds === preset.maxSeconds &&
     config.disableWeapons === preset.disableWeapons &&
     config.disableSubWeapons === preset.disableSubWeapons &&
-    config.obstacleSeed === preset.obstacleSeed
+    seedMatches
   );
 }
 

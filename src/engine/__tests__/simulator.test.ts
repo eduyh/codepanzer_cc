@@ -4577,18 +4577,18 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
       expect(BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][8].summary.length).toBeGreaterThan(0);
     }
 
-    // User-specified defaults and benchmarked curated seeds
+    // User-specified defaults and random seed selection for obstacle-using modes
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.elimination[4]).toMatchObject({
       arenaSize: 'medium',
       obstacleMode: 'few',
       maxSeconds: 120,
-      obstacleSeed: 224,
+      obstacleSeed: 'random',
     });
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.elimination[8]).toMatchObject({
       arenaSize: 'large',
       obstacleMode: 'few',
       maxSeconds: 180,
-      obstacleSeed: 198,
+      obstacleSeed: 'random',
     });
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.ramming_derby[4]).toMatchObject({
       arenaSize: 'small',
@@ -4611,26 +4611,26 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
       obstacleMode: 'few',
       outerWallMode: 'bounce',
       maxSeconds: 60,
-      obstacleSeed: 106,
+      obstacleSeed: 'random',
     });
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.balloon_hunt[8]).toMatchObject({
       arenaSize: 'large',
       obstacleMode: 'few',
       outerWallMode: 'bounce',
       maxSeconds: 60,
-      obstacleSeed: -1,
+      obstacleSeed: 'random',
     });
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.domination[4]).toMatchObject({
       arenaSize: 'small',
       obstacleMode: 'few',
       maxSeconds: 60,
-      obstacleSeed: 188,
+      obstacleSeed: 'random',
     });
     expect(BATTLEFIELD_RECOMMENDED_PRESETS.domination[8]).toMatchObject({
       arenaSize: 'large',
       obstacleMode: 'few',
       maxSeconds: 120,
-      obstacleSeed: 250,
+      obstacleSeed: 'random',
     });
     for (const tier of [4, 8] as const) {
       expect(BATTLEFIELD_RECOMMENDED_PRESETS.tank_soccer[tier]).toMatchObject({
@@ -4683,7 +4683,7 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
           disableSubWeapons: true,
           obstacleSeed: 9999,
         };
-        const applied = applyRecommendedMapPreset(dirtyCfg, tier);
+        const applied = applyRecommendedMapPreset(dirtyCfg, tier, () => 0.25);
         // Does not mutate dirtyCfg and preserves competition settings
         expect(dirtyCfg.arenaSize).toBe('tiny');
         expect(applied.format).toBe('team_match');
@@ -4694,7 +4694,18 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
         expect(applied.sandstormPreset).toBe('none');
         expect(applied.zoneMode).toBe('none');
         expect(isRecommendedMapPresetApplied(applied, tier)).toBe(true);
-        expect(isRecommendedMapPresetApplied({ ...applied, obstacleSeed: 1234 }, tier)).toBe(false);
+
+        const usesRandomSeed = BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][tier].obstacleSeed === 'random';
+        if (usesRandomSeed) {
+          expect(applied.obstacleSeed).toBe(2251);
+          const secondRoll = applyRecommendedMapPreset(dirtyCfg, tier, () => 0.75);
+          expect(secondRoll.obstacleSeed).toBe(6751);
+          expect(isRecommendedMapPresetApplied({ ...applied, obstacleSeed: 1234 }, tier)).toBe(true);
+        } else {
+          expect(applied.obstacleSeed).toBe(-1);
+          expect(isRecommendedMapPresetApplied({ ...applied, obstacleSeed: 1234 }, tier)).toBe(false);
+        }
+        expect(isRecommendedMapPresetApplied({ ...applied, arenaSize: 'tiny' }, tier)).toBe(false);
 
         const matchState = createBattlefieldMatchState(parts, applied);
         expect(matchState.arena.sizeId).toBe(BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][tier].arenaSize);
