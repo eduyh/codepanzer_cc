@@ -1,5 +1,5 @@
 # CodePanzer.py - Code Your Tank, Command the Arena.
-**Version: v1.5.19** | **オフライン版ダウンロード**: [codepanzer-portable.zip（最新版）](https://github.com/eduyh/codepanzer_cc/releases/latest/download/codepanzer-portable.zip)（[GitHub Releases](https://github.com/eduyh/codepanzer_cc/releases/latest)）
+**Version: v1.7.5** | **オフライン版ダウンロード**: [codepanzer-portable.zip（最新版）](https://github.com/eduyh/codepanzer_cc/releases/latest/download/codepanzer-portable.zip)（[GitHub Releases](https://github.com/eduyh/codepanzer_cc/releases/latest)）
 
 **CodePanzer.py** は、2D グリッド上に命令チップを並べて戦車の自律 AI を設計し、リアルタイムに対戦・検証できるプログラミング戦車バトルシミュレータです。
 

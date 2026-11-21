@@ -35,6 +35,7 @@ import { circleIntersectsRect } from './math';
 import {
   applyDamage,
   ARENA_SIZE_SPECS,
+  computeTankBaseContribution,
   createTankRuntime,
   generateArenaObstacles,
   getSpawnsForArena,
@@ -69,6 +70,7 @@ export type SandstormPresetId = 'none' | 'light' | 'medium' | 'heavy' | 'extreme
 export interface BattlefieldRosterEntry {
   entryId: string;
   playerName: string;
+  basePlayerName?: string;
   machineName: string;
   blueprint: TankBlueprint;
   sourceLabel: string;
@@ -1041,6 +1043,229 @@ export const DEFAULT_BATTLEFIELD_CONFIG: BattlefieldConfig = {
   teamUnitSize: 1,
 };
 
+export type BattlefieldTankTier = 4 | 8;
+
+export interface BattlefieldMapPreset {
+  arenaSize: ArenaSizeId;
+  obstacleMode: ObstacleMode;
+  outerWallMode: OuterWallMode;
+  zoneMode: ArenaZoneMode;
+  gravityPreset: GravityPresetId;
+  sandstormPreset: SandstormPresetId;
+  maxSeconds: number;
+  disableWeapons: boolean;
+  disableSubWeapons: boolean;
+  obstacleSeed: number;
+  summary: string;
+}
+
+export const BATTLEFIELD_RECOMMENDED_PRESETS: Record<
+  BattlefieldRuleId,
+  Record<BattlefieldTankTier, BattlefieldMapPreset>
+> = {
+  elimination: {
+    4: {
+      arenaSize: 'medium',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 224,
+      summary: '中 / 障害物:少 / 通常壁 / 120秒 / シード224',
+    },
+    8: {
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 180,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 198,
+      summary: '大 / 障害物:少 / 通常壁 / 180秒 / シード198',
+    },
+  },
+  ramming_derby: {
+    4: {
+      arenaSize: 'small',
+      obstacleMode: 'none',
+      outerWallMode: 'bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: true,
+      disableSubWeapons: false,
+      obstacleSeed: -1,
+      summary: '小 / 障害物:なし / 強バウンド / 120秒 / 全武装禁止',
+    },
+    8: {
+      arenaSize: 'small',
+      obstacleMode: 'none',
+      outerWallMode: 'damage_bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: true,
+      disableSubWeapons: false,
+      obstacleSeed: -1,
+      summary: '小 / 障害物:なし / 電撃バウンド / 120秒 / 全武装禁止',
+    },
+  },
+  balloon_hunt: {
+    4: {
+      arenaSize: 'medium',
+      obstacleMode: 'few',
+      outerWallMode: 'bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 60,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 106,
+      summary: '中 / 障害物:少 / 強バウンド / 60秒 / シード106',
+    },
+    8: {
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      outerWallMode: 'bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 60,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: -1,
+      summary: '大 / 障害物:少 / 強バウンド / 60秒 / 標準配置(-1)',
+    },
+  },
+  domination: {
+    4: {
+      arenaSize: 'small',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 60,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 188,
+      summary: '小 / 障害物:少 / 通常壁 / 60秒 / シード188',
+    },
+    8: {
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      outerWallMode: 'normal',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 120,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: 250,
+      summary: '大 / 障害物:少 / 通常壁 / 120秒 / シード250',
+    },
+  },
+  tank_soccer: {
+    4: {
+      arenaSize: 'medium',
+      obstacleMode: 'none',
+      outerWallMode: 'bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 60,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: -1,
+      summary: '中 / 障害物:なし / 強バウンド / 60秒 / 毎回ランダム配置(-1)',
+    },
+    8: {
+      arenaSize: 'medium',
+      obstacleMode: 'none',
+      outerWallMode: 'bounce',
+      zoneMode: 'none',
+      gravityPreset: 'normal',
+      sandstormPreset: 'none',
+      maxSeconds: 60,
+      disableWeapons: false,
+      disableSubWeapons: false,
+      obstacleSeed: -1,
+      summary: '中 / 障害物:なし / 強バウンド / 60秒 / 毎回ランダム配置(-1)',
+    },
+  },
+};
+
+/** Return the curated recommended map preset for a rule and tank count tier. */
+export function getRecommendedMapPreset(
+  ruleId: BattlefieldRuleId,
+  tier: BattlefieldTankTier
+): BattlefieldMapPreset {
+  return BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][tier];
+}
+
+/** Determine whether 4-tank or 8-tank preset fits the active format and enabled roster. */
+export function resolveRecommendedTankTier(
+  format: BattlefieldFormat,
+  teamUnitSize: 1 | 2,
+  enabledTankCount: number
+): BattlefieldTankTier {
+  if (format === 'tournament' || format === 'league') {
+    return teamUnitSize * 2 >= 6 ? 8 : 4;
+  }
+  return enabledTankCount >= 6 ? 8 : 4;
+}
+
+/** Return a copy of config with the recommended map settings applied for the rule & tier. */
+export function applyRecommendedMapPreset(
+  config: BattlefieldConfig,
+  tier: BattlefieldTankTier
+): BattlefieldConfig {
+  const preset = getRecommendedMapPreset(config.ruleId, tier);
+  return {
+    ...config,
+    arenaSize: preset.arenaSize,
+    obstacleMode: preset.obstacleMode,
+    outerWallMode: preset.outerWallMode,
+    zoneMode: preset.zoneMode,
+    gravityPreset: preset.gravityPreset,
+    sandstormPreset: preset.sandstormPreset,
+    maxSeconds: preset.maxSeconds,
+    disableWeapons: preset.disableWeapons,
+    disableSubWeapons: preset.disableSubWeapons,
+    obstacleSeed: preset.obstacleSeed,
+  };
+}
+
+/** Check whether config currently matches all map fields of the recommended preset. */
+export function isRecommendedMapPresetApplied(
+  config: BattlefieldConfig,
+  tier: BattlefieldTankTier
+): boolean {
+  const preset = getRecommendedMapPreset(config.ruleId, tier);
+  return (
+    config.arenaSize === preset.arenaSize &&
+    config.obstacleMode === preset.obstacleMode &&
+    config.outerWallMode === preset.outerWallMode &&
+    config.zoneMode === preset.zoneMode &&
+    config.gravityPreset === preset.gravityPreset &&
+    config.sandstormPreset === preset.sandstormPreset &&
+    config.maxSeconds === preset.maxSeconds &&
+    config.disableWeapons === preset.disableWeapons &&
+    config.disableSubWeapons === preset.disableSubWeapons &&
+    config.obstacleSeed === preset.obstacleSeed
+  );
+}
+
 export function validateEntryForRegulation(
   entry: BattlefieldRosterEntry,
   regulation: CpuRegulationId,
@@ -1141,6 +1366,7 @@ export function createRosterEntryFromBlueprint(
   return {
     entryId: `bf_entry_${entrySeq++}_${Date.now().toString(36)}`,
     playerName,
+    basePlayerName: playerName,
     machineName,
     blueprint: normalized,
     sourceLabel,
@@ -1148,6 +1374,100 @@ export function createRosterEntryFromBlueprint(
     enabled: true,
     isPreset,
   };
+}
+
+function extractUuidTail2(uuid?: string): string | null {
+  if (!uuid) return null;
+  const cleaned = uuid.replace(/[^0-9a-zA-Z]/g, '').toUpperCase();
+  return cleaned.length >= 2 ? cleaned.slice(-2) : null;
+}
+
+function pickRandom2DigitSuffix(
+  prefix: string,
+  usedNames: Set<string>,
+  rng: () => number
+): string {
+  for (let i = 0; i < 40; i++) {
+    const cand = String(Math.floor(rng() * 100)).padStart(2, '0');
+    if (!usedNames.has(`${prefix}-${cand}`)) {
+      return cand;
+    }
+  }
+  for (let n = 0; n < 100; n++) {
+    const cand = String(n).padStart(2, '0');
+    if (!usedNames.has(`${prefix}-${cand}`)) {
+      return cand;
+    }
+  }
+  for (let n = 100; n < 1000; n++) {
+    const cand = String(n);
+    if (!usedNames.has(`${prefix}-${cand}`)) {
+      return cand;
+    }
+  }
+  return '00';
+}
+
+/**
+ * Ensure every roster entry has a distinct display playerName.
+ * Colliding player names receive `-${UUID tail 2 chars}` when authorUuid is available,
+ * otherwise a unique random 2-digit numeric suffix (`-00`..`-99`).
+ */
+export function disambiguateRosterPlayerNames(
+  entries: BattlefieldRosterEntry[],
+  rng: () => number = Math.random
+): BattlefieldRosterEntry[] {
+  const baseCounts = new Map<string, number>();
+  const exactCounts = new Map<string, number>();
+
+  const meta = entries.map((entry) => {
+    const fallback = entry.isPreset ? 'CPU' : 'Player';
+    const currentName = entry.playerName.trim() || fallback;
+    const baseName = entry.basePlayerName?.trim() || currentName;
+    baseCounts.set(baseName, (baseCounts.get(baseName) ?? 0) + 1);
+    exactCounts.set(currentName, (exactCounts.get(currentName) ?? 0) + 1);
+    return { entry, currentName, baseName };
+  });
+
+  const usedNames = new Set<string>();
+  const keepIndices = new Set<number>();
+
+  // Pass 1: preserve unique names and already-assigned unique suffixes
+  meta.forEach(({ currentName, baseName }, idx) => {
+    const isExactUnique = exactCounts.get(currentName) === 1;
+    const isBaseUnique = baseCounts.get(baseName) === 1;
+    const alreadySuffixed = currentName !== baseName;
+    if (isExactUnique && (isBaseUnique || alreadySuffixed)) {
+      keepIndices.add(idx);
+      usedNames.add(currentName);
+    }
+  });
+
+  // Pass 2: assign deterministic UUID-tail or random 2-digit suffixes to colliding entries
+  return meta.map(({ entry, currentName, baseName }, idx) => {
+    if (keepIndices.has(idx)) {
+      return {
+        ...entry,
+        playerName: currentName,
+        basePlayerName: baseName,
+      };
+    }
+
+    const prefix = baseName.slice(0, 13);
+    const uuidTail = entry.isPreset ? null : extractUuidTail2(entry.blueprint.authorUuid);
+    const suffix =
+      uuidTail && !usedNames.has(`${prefix}-${uuidTail}`)
+        ? uuidTail
+        : pickRandom2DigitSuffix(prefix, usedNames, rng);
+    const finalName = `${prefix}-${suffix}`;
+    usedNames.add(finalName);
+
+    return {
+      ...entry,
+      playerName: finalName,
+      basePlayerName: baseName,
+    };
+  });
 }
 
 export function sortRosterEntries(
@@ -1523,21 +1843,8 @@ export function buildMatchReport(
     const survivedSeconds = Math.round((survivedTicks / 20) * 10) / 10;
     const ruleScore = Math.round((t.stats.ruleScore ?? 0) * 10) / 10;
 
-    const survivalBonus = Math.round(
-      (survivedTicks / Math.max(1, state.tick)) * 60
-    );
-    const accuracyBonus =
-      shotsFired >= 3 && hitRatePercent !== null ? Math.round(hitRatePercent * 0.4) : 0;
     const winBonus = winnerTeamId && teamId === winnerTeamId ? 120 : 0;
-    const aliveBonus = isAlive ? 40 : 0;
-    const contributionScore =
-      winBonus +
-      aliveBonus +
-      survivalBonus +
-      kills * 100 +
-      Math.round(damageDealt * 1.2) +
-      accuracyBonus +
-      Math.round(ruleScore * 10);
+    const contributionScore = winBonus + computeTankBaseContribution(t, state.tick);
 
     let killedByLabel = isAlive ? '生存' : '場外・自滅';
     if (!isAlive && t.killedById) {
@@ -1698,6 +2005,107 @@ export function simulateMatchHeadless(
     state,
     report: buildMatchReport(state, participants, config),
   };
+}
+
+export interface HudTeamCluster {
+  teamId: string;
+  teamLabel: string;
+  teamColor: string;
+  tankIds: string[];
+}
+
+export interface HudRowLayout {
+  columns: number;
+  clusters: HudTeamCluster[];
+}
+
+export interface BattlefieldHudLayout {
+  isTeamGrouped: boolean;
+  rows: HudRowLayout[];
+}
+
+/**
+ * Arrange active tanks into clean HP HUD rows (max 4 tanks per row; 6 tanks -> 3+3).
+ * When any team has 2+ members, keeps all teammates contiguous inside team clusters
+ * without mutating the underlying tank array order.
+ */
+export function computeBattlefieldHudLayout(
+  tanks: TankRuntime[],
+  teamLabels?: Record<string, string>,
+  teamColors?: Record<string, string>
+): BattlefieldHudLayout {
+  if (tanks.length === 0) {
+    return { isTeamGrouped: false, rows: [] };
+  }
+
+  const groups: HudTeamCluster[] = [];
+  const groupById = new Map<string, HudTeamCluster>();
+  for (const t of tanks) {
+    const teamId = t.teamId ?? t.id;
+    let group = groupById.get(teamId);
+    if (!group) {
+      group = {
+        teamId,
+        teamLabel: teamLabels?.[teamId] ?? (t.playerName || t.blueprint.name),
+        teamColor: teamColors?.[teamId] ?? t.blueprint.color,
+        tankIds: [],
+      };
+      groupById.set(teamId, group);
+      groups.push(group);
+    }
+    group.tankIds.push(t.id);
+  }
+
+  const isTeamGrouped = groups.some((g) => g.tankIds.length >= 2);
+  if (!isTeamGrouped) {
+    const cols = tanks.length <= 4 ? Math.max(1, tanks.length) : Math.min(4, Math.ceil(tanks.length / 2));
+    const rows: HudRowLayout[] = [];
+    for (let i = 0; i < tanks.length; i += cols) {
+      const slice = tanks.slice(i, i + cols);
+      rows.push({
+        columns: cols,
+        clusters: slice.map((t) => {
+          const teamId = t.teamId ?? t.id;
+          return {
+            teamId,
+            teamLabel: teamLabels?.[teamId] ?? (t.playerName || t.blueprint.name),
+            teamColor: teamColors?.[teamId] ?? t.blueprint.color,
+            tankIds: [t.id],
+          };
+        }),
+      });
+    }
+    return { isTeamGrouped: false, rows };
+  }
+
+  const rows: HudRowLayout[] = [];
+  let currentClusters: HudTeamCluster[] = [];
+  let currentSlots = 0;
+
+  const flushRow = () => {
+    if (currentClusters.length === 0) return;
+    rows.push({
+      columns: Math.max(1, currentSlots),
+      clusters: currentClusters,
+    });
+    currentClusters = [];
+    currentSlots = 0;
+  };
+
+  for (const cluster of groups) {
+    const slots = Math.min(4, cluster.tankIds.length);
+    if (currentClusters.length > 0 && currentSlots + slots > 4) {
+      flushRow();
+    }
+    currentClusters.push(cluster);
+    currentSlots += slots;
+    if (cluster.tankIds.length >= 4) {
+      flushRow();
+    }
+  }
+  flushRow();
+
+  return { isTeamGrouped: true, rows };
 }
 
 export interface CompetitionUnit {
@@ -2084,7 +2492,10 @@ export function formatConfigConditionSuffix(cfg: BattlefieldConfig): string {
   return parts.length > 0 ? ` / ${parts.join(' / ')}` : '';
 }
 
-export function formatMatchReportText(report: BattlefieldMatchReport): string {
+export function formatMatchReportText(
+  report: BattlefieldMatchReport,
+  summary?: { headline: string; highlights?: string[] } | null
+): string {
   const cfg = report.configSnapshot;
   const ruleName = BATTLEFIELD_RULE_REGISTRY[cfg.ruleId]?.name ?? cfg.ruleId;
   const regLabel = CPU_REGULATION_SPECS[cfg.cpuRegulation]?.label ?? cfg.cpuRegulation;
@@ -2098,9 +2509,19 @@ export function formatMatchReportText(report: BattlefieldMatchReport): string {
     '=== CodePanzer.py バトルフィールド 試合結果 ===',
     `[ルール] ${ruleName} / ${regLabel} / ${weaponNote}${formatConfigConditionSuffix(cfg)} / ${ARENA_SIZE_SPECS[cfg.arenaSize].shortLabel}アリーナ (${cfg.maxSeconds}秒上限)`,
     `[決着] ${report.endReason} (経過: ${report.durationSeconds.toFixed(1)}s)`,
-    '',
-    '順位 | チーム | Player名 | マシーン名 | CPU | 撃破 | 与ダメ | 被ダメ | 命中率 | 生存時間 | 貢献度 | 賞',
   ];
+
+  if (summary?.headline) {
+    lines.push(`[総評] ${summary.headline}`);
+    for (const h of summary.highlights ?? []) {
+      lines.push(`  ・${h}`);
+    }
+  }
+
+  lines.push(
+    '',
+    '順位 | チーム | Player名 | マシーン名 | CPU | 撃破 | 与ダメ | 被ダメ | 命中率 | 生存時間 | 貢献度 | 賞'
+  );
 
   for (const r of report.tankRows) {
     const hitStr =

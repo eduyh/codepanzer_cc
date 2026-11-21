@@ -1290,7 +1290,10 @@ export function App() {
         <div className="brand">
           <div className="brand-logo">CP</div>
           <div>
-            <h1>CodePanzer.py</h1>
+            <h1 className="brand-title-row">
+              <span>CodePanzer.py</span>
+              <span className="brand-ver">v{CURRENT_GAME_VERSION}</span>
+            </h1>
             <span className="brand-sub">Code Your Tank, Command the Arena.</span>
           </div>
         </div>

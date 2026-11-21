@@ -954,6 +954,43 @@ function isFootballOwnGoalAim(tank: TankRuntime, state: BattleState): boolean {
   return false;
 }
 
+/**
+ * Compute a tank's match contribution score excluding the +120 winner bonus.
+ * Shared by timeout decision evaluation and match report scoring so rankings and MVP stay aligned.
+ */
+export function computeTankBaseContribution(
+  tank: TankRuntime,
+  totalTicks: number
+): number {
+  const isAlive = tank.hp > 0;
+  const survivedTicks = isAlive
+    ? totalTicks
+    : (tank.stats.eliminatedAtTick ?? totalTicks);
+  const kills = tank.stats.kills ?? 0;
+  const damageDealt = Math.round(tank.stats.damageDealt * 10) / 10;
+  const shotsFired = tank.stats.shotsFired;
+  const shotsHit = tank.stats.shotsHit;
+  const hitRatePercent =
+    shotsFired > 0 ? Math.round((shotsHit / shotsFired) * 1000) / 10 : null;
+  const ruleScore = Math.round((tank.stats.ruleScore ?? 0) * 10) / 10;
+
+  const survivalBonus = Math.round(
+    (survivedTicks / Math.max(1, totalTicks)) * 60
+  );
+  const accuracyBonus =
+    shotsFired >= 3 && hitRatePercent !== null ? Math.round(hitRatePercent * 0.4) : 0;
+  const aliveBonus = isAlive ? 40 : 0;
+
+  return (
+    aliveBonus +
+    survivalBonus +
+    kills * 100 +
+    Math.round(damageDealt * 1.2) +
+    accuracyBonus +
+    Math.round(ruleScore * 10)
+  );
+}
+
 function evaluateMultiTeamBattleState(state: BattleState): void {
   const aliveTanks = state.tanks.filter((t) => t.hp > 0);
   const hasLethalOuterWall =
@@ -996,9 +1033,10 @@ function evaluateMultiTeamBattleState(state: BattleState): void {
       const aAlive = a.hp > 0 ? 1 : 0;
       const bAlive = b.hp > 0 ? 1 : 0;
       if (bAlive !== aAlive) return bAlive - aAlive;
-      const aRule = a.stats.ruleScore ?? 0;
-      const bRule = b.stats.ruleScore ?? 0;
-      if (bRule !== aRule) return bRule - aRule;
+      const contribDiff =
+        computeTankBaseContribution(b, state.tick) -
+        computeTankBaseContribution(a, state.tick);
+      if (contribDiff !== 0) return contribDiff;
       if (b.stats.damageDealt !== a.stats.damageDealt) {
         return b.stats.damageDealt - a.stats.damageDealt;
       }
@@ -1093,28 +1131,36 @@ function evaluateMultiTeamBattleState(state: BattleState): void {
   const teamScores = distinctTeams
     .map((teamKey) => {
       const members = state.tanks.filter((t) => getTeamKey(t) === teamKey);
-      const ruleScoreSum = members.reduce((acc, t) => acc + (t.stats.ruleScore ?? 0), 0);
+      const aliveCount = members.filter((t) => t.hp > 0).length;
+      const baseContribSum = members.reduce(
+        (acc, t) => acc + computeTankBaseContribution(t, state.tick),
+        0
+      );
       const avgHpRatio =
         members.reduce((acc, t) => acc + Math.max(0, t.hp) / t.maxHp, 0) /
         Math.max(1, members.length);
       const damageSum = members.reduce((acc, t) => acc + t.stats.damageDealt, 0);
-      return { teamKey, ruleScoreSum, avgHpRatio, damageSum };
+      return { teamKey, membersCount: members.length, aliveCount, baseContribSum, avgHpRatio, damageSum };
     })
     .sort((a, b) => {
-      if (Math.abs(b.ruleScoreSum - a.ruleScoreSum) >= 0.001) {
-        return b.ruleScoreSum - a.ruleScoreSum;
+      if (b.aliveCount !== a.aliveCount) {
+        return b.aliveCount - a.aliveCount;
       }
-      if (Math.abs(b.avgHpRatio - a.avgHpRatio) >= 0.001) {
-        return b.avgHpRatio - a.avgHpRatio;
+      if (b.baseContribSum !== a.baseContribSum) {
+        return b.baseContribSum - a.baseContribSum;
       }
-      return b.damageSum - a.damageSum;
+      if (Math.abs(b.damageSum - a.damageSum) >= 0.1) {
+        return b.damageSum - a.damageSum;
+      }
+      return b.avgHpRatio - a.avgHpRatio;
     });
 
   const tiedTop =
     teamScores.length >= 2 &&
-    Math.abs(teamScores[0].ruleScoreSum - teamScores[1].ruleScoreSum) < 0.001 &&
-    Math.abs(teamScores[0].avgHpRatio - teamScores[1].avgHpRatio) < 0.001 &&
-    Math.abs(teamScores[0].damageSum - teamScores[1].damageSum) < 0.1;
+    teamScores[0].aliveCount === teamScores[1].aliveCount &&
+    teamScores[0].baseContribSum === teamScores[1].baseContribSum &&
+    Math.abs(teamScores[0].damageSum - teamScores[1].damageSum) < 0.1 &&
+    Math.abs(teamScores[0].avgHpRatio - teamScores[1].avgHpRatio) < 0.001;
 
   if (!anyContribution || tiedTop || teamScores.length === 0) {
     state.status = 'finished';
@@ -1124,11 +1170,18 @@ function evaluateMultiTeamBattleState(state: BattleState): void {
       ? '時間切れ引き分け'
       : '時間切れ引き分け（有効打なし）';
   } else {
-    const winner = pickBestTankInTeam(teamScores[0].teamKey);
+    const topTeam = teamScores[0];
+    const winner = pickBestTankInTeam(topTeam.teamKey);
+    const decidedBySurvivors =
+      teamScores.length >= 2 && topTeam.aliveCount > teamScores[1].aliveCount;
+    const displayName =
+      topTeam.membersCount > 1 ? getTeamLabel(topTeam.teamKey) : winner.blueprint.name;
     state.status = 'finished';
     state.winnerId = winner.id;
     state.winType = 'decision';
-    state.endReason = `時間切れ判定勝 (${winner.blueprint.name})`;
+    state.endReason = decidedBySurvivors
+      ? `時間切れ判定勝 (${displayName} / 生存数優位)`
+      : `時間切れ判定勝 (${displayName} / 貢献度判定)`;
   }
 }
 

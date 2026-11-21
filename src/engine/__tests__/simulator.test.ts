@@ -68,10 +68,13 @@ import {
   vectorToAngle,
 } from '../math';
 import {
+  applyRecommendedMapPreset,
   applyTournamentMatchResult,
+  BATTLEFIELD_RECOMMENDED_PRESETS,
   buildMatchReport,
   buildParticipantsFromUnitPair,
   CompetitionUnit,
+  computeBattlefieldHudLayout,
   computeLeagueStandings,
   computeRammingDamage,
   createBattlefieldMatchState,
@@ -79,6 +82,7 @@ import {
   createRosterEntryFromBlueprint,
   createTournamentBracket,
   DEFAULT_BATTLEFIELD_CONFIG,
+  disambiguateRosterPlayerNames,
   formatLeagueStandingsText,
   formatMatchReportText,
   formatMatchReportTsv,
@@ -86,7 +90,9 @@ import {
   formatTournamentSummaryText,
   generateBattlefieldZones,
   GRAVITY_PRESET_SPECS,
+  isRecommendedMapPresetApplied,
   RAMMING_DAMAGE_MULTIPLIER,
+  resolveRecommendedTankTier,
   SANDSTORM_PRESET_SPECS,
   sortRosterEntries,
   stepBattlefieldTick,
@@ -94,7 +100,16 @@ import {
   validateTeamForRegulation,
 } from '../battlefield';
 import {
+  buildMatchSummaryComment,
+  CommentaryStyle,
+  createCommentaryTracker,
+  createStandbyCommentaryText,
+  DEFAULT_COMMENTARY_SETTINGS,
+  evaluateCommentaryStep,
+} from '../battleCommentary';
+import {
   ARENA_SIZE_SPECS,
+  computeTankBaseContribution,
   createBattleState,
   EIGHT_PLAYER_SPAWNS,
   FOUR_PLAYER_SPAWNS,
@@ -3060,13 +3075,13 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
   });
 
   it('tracks semantic gameVersion across Python, gatekeeper, share codes, and environment dumps', () => {
-    expect(CURRENT_GAME_VERSION).toBe('1.5.19');
-    expect(compareSemver('1.6.0', '1.5.19')).toBe(1);
-    expect(compareSemver('1.5.19', '1.5.19')).toBe(0);
-    expect(compareSemver('1.5.9', '1.5.19')).toBe(-1);
-    expect(isNewerGameVersion('1.6.0', '1.5.19')).toBe(true);
-    expect(isNewerGameVersion('1.5.19', '1.5.19')).toBe(false);
-    expect(isNewerGameVersion('1.5.9', '1.5.19')).toBe(false);
+    expect(CURRENT_GAME_VERSION).toBe('1.7.5');
+    expect(compareSemver('1.8.0', '1.7.5')).toBe(1);
+    expect(compareSemver('1.7.5', '1.7.5')).toBe(0);
+    expect(compareSemver('1.7.4', '1.7.5')).toBe(-1);
+    expect(isNewerGameVersion('1.8.0', '1.7.5')).toBe(true);
+    expect(isNewerGameVersion('1.7.5', '1.7.5')).toBe(false);
+    expect(isNewerGameVersion('1.5.19', '1.7.5')).toBe(false);
 
     // Future game_version in Python source produces a clear compatibility warning
     const futurePy = [
@@ -3166,8 +3181,10 @@ describe('Learning Mode Lesson 4 missions (4-1 to 4-6) & full 24-mission curricu
     const xorNum = (a: number, b: number) => Number(BigInt(a) ^ BigInt(b));
     const c2Val = xorNum(Number.parseInt(xlMid(code, 38, 8), 36), xorNum(u1 * 193 + u2, 608472915341));
     const d2Val = xorNum(Number.parseInt(xlMid(code, 47, 8), 36), xorNum(u3 * 197 + u4, 839164720519));
+    const [vMaj, vMin, vPat] = CURRENT_GAME_VERSION.split('.').map(Number);
+    const expectedVerDigits = `${vMaj}${String(vMin).padStart(2, '0')}${String(vPat).padStart(2, '0')}`;
     expect(String(c2Val).padStart(12, '0')).toBe('116511191405');
-    expect(String(d2Val).padStart(12, '0')).toBe('105190142739');
+    expect(String(d2Val).padStart(12, '0')).toBe(`${expectedVerDigits}0142739`);
     const sigSum = u1 * 3 + u2 * 5 + u3 * 7 + u4 * 11 + c2Val * 17 + d2Val * 29 + 948271635;
     expect(Number.isSafeInteger(sigSum)).toBe(true);
     const expectedSig = (sigSum % 1679609).toString(36).toUpperCase().padStart(4, '0');
@@ -4544,6 +4561,654 @@ describe('Battlefield framework, weapon ban, regulations & tournament/league run
     checkOwnGoalBlock('east', 135, true);
     checkOwnGoalBlock('east', 0, false);
     checkOwnGoalBlock('east', 270, false);
+  });
+
+  it('defines and applies curated recommended map presets for 4-tank and 8-tank modes', () => {
+    const ruleIds = [
+      'elimination',
+      'ramming_derby',
+      'balloon_hunt',
+      'domination',
+      'tank_soccer',
+    ] as const;
+
+    for (const ruleId of ruleIds) {
+      expect(BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][4].summary.length).toBeGreaterThan(0);
+      expect(BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][8].summary.length).toBeGreaterThan(0);
+    }
+
+    // User-specified defaults and benchmarked curated seeds
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.elimination[4]).toMatchObject({
+      arenaSize: 'medium',
+      obstacleMode: 'few',
+      maxSeconds: 120,
+      obstacleSeed: 224,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.elimination[8]).toMatchObject({
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      maxSeconds: 180,
+      obstacleSeed: 198,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.ramming_derby[4]).toMatchObject({
+      arenaSize: 'small',
+      obstacleMode: 'none',
+      outerWallMode: 'bounce',
+      maxSeconds: 120,
+      disableWeapons: true,
+      obstacleSeed: -1,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.ramming_derby[8]).toMatchObject({
+      arenaSize: 'small',
+      obstacleMode: 'none',
+      outerWallMode: 'damage_bounce',
+      maxSeconds: 120,
+      disableWeapons: true,
+      obstacleSeed: -1,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.balloon_hunt[4]).toMatchObject({
+      arenaSize: 'medium',
+      obstacleMode: 'few',
+      outerWallMode: 'bounce',
+      maxSeconds: 60,
+      obstacleSeed: 106,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.balloon_hunt[8]).toMatchObject({
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      outerWallMode: 'bounce',
+      maxSeconds: 60,
+      obstacleSeed: -1,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.domination[4]).toMatchObject({
+      arenaSize: 'small',
+      obstacleMode: 'few',
+      maxSeconds: 60,
+      obstacleSeed: 188,
+    });
+    expect(BATTLEFIELD_RECOMMENDED_PRESETS.domination[8]).toMatchObject({
+      arenaSize: 'large',
+      obstacleMode: 'few',
+      maxSeconds: 120,
+      obstacleSeed: 250,
+    });
+    for (const tier of [4, 8] as const) {
+      expect(BATTLEFIELD_RECOMMENDED_PRESETS.tank_soccer[tier]).toMatchObject({
+        arenaSize: 'medium',
+        obstacleMode: 'none',
+        outerWallMode: 'bounce',
+        maxSeconds: 60,
+        obstacleSeed: -1,
+      });
+    }
+
+    // Tier resolution considers competition format (single/pair up to 4 on field) vs open roster size
+    expect(resolveRecommendedTankTier('battle_royale', 1, 4)).toBe(4);
+    expect(resolveRecommendedTankTier('battle_royale', 1, 5)).toBe(4);
+    expect(resolveRecommendedTankTier('battle_royale', 1, 6)).toBe(8);
+    expect(resolveRecommendedTankTier('team_match', 1, 8)).toBe(8);
+    expect(resolveRecommendedTankTier('tournament', 1, 8)).toBe(4);
+    expect(resolveRecommendedTankTier('league', 2, 12)).toBe(4);
+
+    // Pure application & exact preset detection across all rules and tiers
+    const parts = [
+      DEFAULT_PLAYER_BLUEPRINT,
+      ENEMY_DUMMY,
+      ENEMY_PATROL,
+      PRESET_ENEMIES[1],
+    ].map((bp, i) => ({
+      entry: createRosterEntryFromBlueprint(bp, 'CPU', true),
+      teamId: `team_${i % 2}`,
+      teamLabel: `Team ${i % 2 === 0 ? 'A' : 'B'}`,
+      teamColor: i % 2 === 0 ? '#56b4e9' : '#e69f00',
+      slotIndex: Math.floor(i / 2),
+    }));
+
+    for (const ruleId of ruleIds) {
+      for (const tier of [4, 8] as const) {
+        const dirtyCfg = {
+          ...DEFAULT_BATTLEFIELD_CONFIG,
+          format: 'team_match' as const,
+          ruleId,
+          cpuRegulation: 'max_8x8' as const,
+          teamUnitSize: 2 as const,
+          arenaSize: 'tiny' as const,
+          obstacleMode: 'maze' as const,
+          outerWallMode: 'damage' as const,
+          zoneMode: 'mixed' as const,
+          gravityPreset: 'low_2' as const,
+          sandstormPreset: 'extreme' as const,
+          maxSeconds: 300,
+          disableWeapons: ruleId !== 'ramming_derby',
+          disableSubWeapons: true,
+          obstacleSeed: 9999,
+        };
+        const applied = applyRecommendedMapPreset(dirtyCfg, tier);
+        // Does not mutate dirtyCfg and preserves competition settings
+        expect(dirtyCfg.arenaSize).toBe('tiny');
+        expect(applied.format).toBe('team_match');
+        expect(applied.ruleId).toBe(ruleId);
+        expect(applied.cpuRegulation).toBe('max_8x8');
+        expect(applied.teamUnitSize).toBe(2);
+        expect(applied.gravityPreset).toBe('normal');
+        expect(applied.sandstormPreset).toBe('none');
+        expect(applied.zoneMode).toBe('none');
+        expect(isRecommendedMapPresetApplied(applied, tier)).toBe(true);
+        expect(isRecommendedMapPresetApplied({ ...applied, obstacleSeed: 1234 }, tier)).toBe(false);
+
+        const matchState = createBattlefieldMatchState(parts, applied);
+        expect(matchState.arena.sizeId).toBe(BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][tier].arenaSize);
+        expect(matchState.arena.maxTicks).toBe(
+          BATTLEFIELD_RECOMMENDED_PRESETS[ruleId][tier].maxSeconds * 20
+        );
+      }
+    }
+  });
+
+  it('disambiguates colliding Battlefield player names with UUID tail or random 2-digit suffixes', () => {
+    const alice = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Alice', authorUuid: '12345678-aaaa-4bbb-8ccc-1234567890ef' },
+      'file'
+    );
+    const bob = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Bob', authorUuid: '12345678-aaaa-4bbb-8ccc-123456789011' },
+      'file'
+    );
+    const distinct = disambiguateRosterPlayerNames([alice, bob]);
+    expect(distinct.map((e) => e.playerName)).toEqual(['Alice', 'Bob']);
+
+    // Duplicate player names with distinct authorUuids -> suffix with uppercase UUID tail 2 chars
+    const p1 = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Player', authorUuid: '550e8400-e29b-41d4-a716-4466554400a9' },
+      'file'
+    );
+    const p2 = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Player', authorUuid: '550e8400-e29b-41d4-a716-44665544003f' },
+      'file'
+    );
+    // Same name AND same authorUuid as p1 -> first uses UUID tail, second falls back to unique 2-digit number
+    const p3 = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Player', authorUuid: '550e8400-e29b-41d4-a716-4466554400a9' },
+      'file'
+    );
+    const rngSeq = [0.42, 0.42, 0.77];
+    let rIdx = 0;
+    const deterministicRng = () => rngSeq[Math.min(rIdx++, rngSeq.length - 1)];
+
+    const afterThree = disambiguateRosterPlayerNames([p1, p2, p3], deterministicRng);
+    expect(afterThree.map((e) => e.playerName)).toEqual([
+      'Player-A9',
+      'Player-3F',
+      'Player-42',
+    ]);
+
+    // Preserves already-assigned unique suffixes when adding a 4th colliding entry without UUID
+    const p4 = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Player' },
+      'file'
+    );
+    const afterFour = disambiguateRosterPlayerNames([...afterThree, p4], deterministicRng);
+    expect(afterFour[0].playerName).toBe('Player-A9');
+    expect(afterFour[1].playerName).toBe('Player-3F');
+    expect(afterFour[2].playerName).toBe('Player-42');
+    expect(afterFour[3].playerName).toBe('Player-77');
+    expect(new Set(afterFour.map((e) => e.playerName)).size).toBe(4);
+
+    // Preset CPU duplicates receive unique 2-digit numeric suffixes
+    const cpu1 = createRosterEntryFromBlueprint(PRESET_ENEMIES[0], '規定戦車', true);
+    const cpu2 = createRosterEntryFromBlueprint(PRESET_ENEMIES[1], '規定戦車', true);
+    const cpuResult = disambiguateRosterPlayerNames([cpu1, cpu2]);
+    expect(cpuResult[0].playerName).toMatch(/^CPU-\d{2}$/);
+    expect(cpuResult[1].playerName).toMatch(/^CPU-\d{2}$/);
+    expect(cpuResult[0].playerName).not.toBe(cpuResult[1].playerName);
+
+    // Respects maxLength=16 even if an entry already collides with an existing suffixed name
+    const longA = createRosterEntryFromBlueprint(
+      { ...DEFAULT_PLAYER_BLUEPRINT, author: 'Player' },
+      'file'
+    );
+    const longB = {
+      ...createRosterEntryFromBlueprint({ ...DEFAULT_PLAYER_BLUEPRINT, author: 'LongName12345678' }, 'file'),
+      playerName: '1234567890123-05',
+      basePlayerName: '1234567890123',
+    };
+    const longC = {
+      ...createRosterEntryFromBlueprint({ ...DEFAULT_PLAYER_BLUEPRINT, author: 'LongName12345678' }, 'file'),
+      playerName: '1234567890123-05',
+      basePlayerName: '1234567890123',
+    };
+    const safeLong = disambiguateRosterPlayerNames([longA, longB, longC], () => 0.05);
+    expect(safeLong.every((e) => e.playerName.length <= 16)).toBe(true);
+    expect(new Set(safeLong.map((e) => e.playerName)).size).toBe(3);
+  });
+
+  it('generates prioritized live commentary across styles and rules with speech defaulting off', () => {
+    expect(DEFAULT_COMMENTARY_SETTINGS.enabled).toBe(true);
+    expect(DEFAULT_COMMENTARY_SETTINGS.speechEnabled).toBe(false);
+
+    const standbyCfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'elimination' as const };
+    const mkParts = (twoTeams = false) =>
+      [DEFAULT_PLAYER_BLUEPRINT, PRESET_ENEMIES[1], PRESET_ENEMIES[6], PRESET_ENEMIES[7]].map(
+        (bp, i) => ({
+          entry: createRosterEntryFromBlueprint(bp, 'CPU', true),
+          teamId: twoTeams ? `team_${i % 2}` : `solo_${i}`,
+          teamLabel: twoTeams ? (i % 2 === 0 ? 'Team A' : 'Team B') : bp.name,
+          teamColor: i % 2 === 0 ? '#56b4e9' : '#e69f00',
+          slotIndex: i,
+        })
+      );
+
+    // 1. Opening + cooldown suppression + rear critical + low HP pinch + KO (+ Duel) + Finish
+    for (const style of ['standard', 'hype', 'analyst'] as CommentaryStyle[]) {
+      const state = createBattlefieldMatchState(mkParts(false), standbyCfg);
+      const tracker = createCommentaryTracker(state, standbyCfg);
+      const settings = { ...DEFAULT_COMMENTARY_SETTINGS, style };
+
+      expect(createStandbyCommentaryText(state, standbyCfg)).toContain('待機中');
+
+      // Tick 1: opening (B)
+      state.tick = 1;
+      const openEntry = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 1000);
+      expect(openEntry?.category).toBe('opening');
+      expect(openEntry?.speechText).not.toMatch(/[\u{1F000}-\u{1FAFF}]/u);
+
+      // Tick 20 (1200ms): first hit (B) should be suppressed within 1700ms hold window
+      state.tick = 20;
+      state.tanks[0].stats.damageDealt = 12;
+      state.tanks[1].hp -= 12;
+      const suppressedHit = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 1200);
+      expect(suppressedHit).toBeNull();
+
+      // Tick 80 (3200ms): rear critical hit (A)
+      state.tick = 80;
+      state.tanks[0].lastAttackHitTick = 80;
+      state.tanks[1].lastHitZone = 'rear';
+      state.tanks[1].hp = Math.max(10, state.tanks[1].maxHp * 0.5);
+      const rearEntry = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 3200);
+      expect(rearEntry?.category).toBe('critical');
+      expect(rearEntry?.priority).toBe('A');
+
+      // Low HP pinch (A) once elapsed >= 1700ms
+      state.tick = 110;
+      state.tanks[1].hp = 5;
+      const lowEntry = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 5000);
+      expect(lowEntry?.category).toBe('low_hp');
+
+      // Eliminations drop 4 teams -> 2 teams -> triggers S-priority KO immediately (even at +100ms!) with duel suffix
+      state.tick = 112;
+      state.tanks[1].hp = 0;
+      state.tanks[1].killedById = state.tanks[0].id;
+      state.tanks[0].stats.kills = 1;
+      state.tanks[2].hp = 0;
+      state.tanks[2].killedById = state.tanks[0].id;
+      const koEntry = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 5100);
+      expect(koEntry?.priority).toBe('S');
+      expect(koEntry?.category).toBe('ko');
+      expect(koEntry?.text).toContain('一騎打ち');
+
+      // Match Finish (S)
+      state.tick = 150;
+      state.tanks[3].hp = 0;
+      state.status = 'finished';
+      state.winnerId = state.tanks[0].id;
+      state.winType = 'elimination';
+      const finishEntry = evaluateCommentaryStep(tracker, state, standbyCfg, settings, 5200);
+      expect(finishEntry?.priority).toBe('S');
+      expect(finishEntry?.category).toBe('finish');
+    }
+
+    // 2. Disabled commentary updates tracker cleanly without emitting stale lines when turned back ON
+    {
+      const state = createBattlefieldMatchState(mkParts(false), standbyCfg);
+      const tracker = createCommentaryTracker(state, standbyCfg);
+      const offSettings = { ...DEFAULT_COMMENTARY_SETTINGS, enabled: false };
+      state.tick = 10;
+      state.tanks[1].hp = 0;
+      expect(evaluateCommentaryStep(tracker, state, standbyCfg, offSettings, 1000)).toBeNull();
+      state.tick = 11;
+      const onSettings = { ...DEFAULT_COMMENTARY_SETTINGS, enabled: true };
+      expect(evaluateCommentaryStep(tracker, state, standbyCfg, onSettings, 3000)).toBeNull();
+    }
+
+    // 3. Rule-specific commentary: Combat Football goal, Balloon Hunt gold +3pt, Domination wiped-out win
+    {
+      const fbCfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'tank_soccer' as const };
+      const fbState = createBattlefieldMatchState(mkParts(true), fbCfg);
+      const fbTracker = createCommentaryTracker(fbState, fbCfg);
+      fbState.tick = 40;
+      const fb = fbState.football!;
+      fbState.ruleTeamScores = { [fb.westTeamId]: 1, [fb.eastTeamId]: 0 };
+      fb.lastTouchTankId = fbState.tanks[0].id;
+      fb.lastTouchTeamId = fb.westTeamId;
+      fb.lastGoalBanner = {
+        teamId: fb.westTeamId,
+        teamLabel: fb.westTeamLabel,
+        color: fb.westTeamColor,
+        tick: 40,
+      };
+      const goalEntry = evaluateCommentaryStep(fbTracker, fbState, fbCfg, DEFAULT_COMMENTARY_SETTINGS, 2000);
+      expect(goalEntry?.category).toBe('goal');
+      expect(goalEntry?.text).toContain('GOAL');
+      expect(goalEntry?.text).toContain('1 - 0');
+    }
+
+    {
+      const bhCfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'balloon_hunt' as const };
+      const bhState = createBattlefieldMatchState(mkParts(false), bhCfg);
+      const bhTracker = createCommentaryTracker(bhState, bhCfg);
+      bhState.tick = 50;
+      bhState.tanks[0].stats.ruleScore = 3;
+      const goldEntry = evaluateCommentaryStep(bhTracker, bhState, bhCfg, DEFAULT_COMMENTARY_SETTINGS, 3000);
+      expect(goldEntry?.badge).toBe('金風船');
+    }
+
+    {
+      const domCfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'domination' as const };
+      const domState = createBattlefieldMatchState(mkParts(true), domCfg);
+      const domTracker = createCommentaryTracker(domState, domCfg);
+      domState.tick = 200;
+      domState.tanks.forEach((t) => {
+        t.hp = 0;
+      });
+      domState.ruleTeamScores = { team_0: 14, team_1: 6 };
+      domState.status = 'finished';
+      domState.winnerId = domState.tanks[0].id;
+      domState.winType = 'decision';
+      const domFinish = evaluateCommentaryStep(domTracker, domState, domCfg, DEFAULT_COMMENTARY_SETTINGS, 4000);
+      expect(domFinish?.category).toBe('finish');
+      expect(domFinish?.text).toContain('全滅');
+      expect(domFinish?.text).toContain('14マス');
+    }
+  });
+
+  it('decides non-score timeout matches by survivor count then base contribution so #1 aligns with MVP', () => {
+    const cfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'elimination' as const, maxSeconds: 180 };
+    const idleA = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: 'ライト逃げ切り',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'light' as const },
+      program: buildProgram(6, 'relative', []),
+    };
+    const idleB = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: 'エース撃破王',
+      assembly: { ...DEFAULT_PLAYER_BLUEPRINT.assembly, chassis: 'standard' as const },
+      program: buildProgram(6, 'relative', []),
+    };
+    const idleDead = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: '序盤脱落',
+      program: buildProgram(6, 'relative', []),
+    };
+
+    const parts = [idleA, idleB, idleDead].map((bp, i) => ({
+      entry: createRosterEntryFromBlueprint(bp, 'CPU', true),
+      teamId: `solo_${i}`,
+      teamLabel: bp.name,
+      teamColor: ['#56b4e9', '#e69f00', '#009e73'][i],
+      slotIndex: i,
+    }));
+
+    const st = createBattlefieldMatchState(parts, cfg);
+    st.tick = st.arena.maxTicks - 1;
+
+    // Tank 0: higher remaining HP ratio (15/90 = 16.7%) but 0 kills, lower base contribution
+    st.tanks[0].maxHp = 90;
+    st.tanks[0].hp = 15;
+    st.tanks[0].stats.kills = 0;
+    st.tanks[0].stats.damageDealt = 235.6;
+    st.tanks[0].stats.shotsHit = 88;
+    st.tanks[0].stats.shotsFired = 238;
+
+    // Tank 1: lower remaining HP ratio (12/130 = 9.2%) but 3 kills and higher damage/contribution
+    st.tanks[1].maxHp = 130;
+    st.tanks[1].hp = 12;
+    st.tanks[1].stats.kills = 3;
+    st.tanks[1].stats.damageDealt = 272.4;
+    st.tanks[1].stats.shotsHit = 24;
+    st.tanks[1].stats.shotsFired = 118;
+
+    // Tank 2: dead despite strong early stats -> must NEVER win over surviving tanks
+    st.tanks[2].hp = 0;
+    st.tanks[2].stats.eliminatedAtTick = 1000;
+    st.tanks[2].stats.kills = 3;
+    st.tanks[2].stats.damageDealt = 320;
+
+    expect(computeTankBaseContribution(st.tanks[1], st.arena.maxTicks)).toBeGreaterThan(
+      computeTankBaseContribution(st.tanks[0], st.arena.maxTicks)
+    );
+
+    stepBattlefieldTick(st, cfg);
+
+    expect(st.status).toBe('finished');
+    expect(st.winType).toBe('decision');
+    expect(st.winnerId).toBe(st.tanks[1].id);
+    expect(st.endReason).toContain('貢献度判定');
+
+    const report = buildMatchReport(st, parts, cfg);
+    expect(report.tankRows[0].tankId).toBe(st.tanks[1].id);
+    expect(report.tankRows[0].rank).toBe(1);
+    expect(report.tankRows[0].awards).toContain('🏆 MVP');
+
+    // 2v2 team match: 2 survivors beat 1 survivor even if eliminated teammate dealt heavy damage earlier
+    const teamParts = [idleA, idleA, idleB, idleDead].map((bp, i) => ({
+      entry: createRosterEntryFromBlueprint(bp, 'CPU', true),
+      teamId: i < 2 ? 'team_0' : 'team_1',
+      teamLabel: i < 2 ? 'Team A' : 'Team B',
+      teamColor: i < 2 ? '#56b4e9' : '#e69f00',
+      slotIndex: i % 2,
+    }));
+    const teamState = createBattlefieldMatchState(teamParts, { ...cfg, format: 'team_match' });
+    teamState.tick = teamState.arena.maxTicks - 1;
+    teamState.tanks[0].stats.shotsFired = 10;
+    teamState.tanks[0].stats.damageDealt = 80;
+    teamState.tanks[1].stats.shotsFired = 6;
+    teamState.tanks[1].stats.damageDealt = 40;
+    teamState.tanks[2].stats.shotsFired = 20;
+    teamState.tanks[2].stats.damageDealt = 300;
+    teamState.tanks[2].stats.kills = 2;
+    teamState.tanks[3].hp = 0;
+    teamState.tanks[3].stats.eliminatedAtTick = 500;
+    teamState.tanks[3].stats.shotsFired = 15;
+    teamState.tanks[3].stats.damageDealt = 250;
+
+    stepBattlefieldTick(teamState, cfg);
+    expect(teamState.status).toBe('finished');
+    expect(teamState.winType).toBe('decision');
+    expect(teamState.winnerId).toBe(teamState.tanks[0].id);
+    expect(teamState.endReason).toContain('生存数優位');
+  });
+
+  it('builds style-synced post-match system summary and includes it when formatting match report text', () => {
+    const smallGiantSlayer = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: 'ライト新星',
+      program: buildProgram(4, 'relative', []),
+    };
+    const bigBoss = {
+      ...DEFAULT_PLAYER_BLUEPRINT,
+      name: '重装ボス',
+      program: buildProgram(12, 'relative', []),
+    };
+    const parts = [smallGiantSlayer, bigBoss].map((bp, i) => ({
+      entry: createRosterEntryFromBlueprint(bp, i === 0 ? 'file' : 'CPU', i !== 0),
+      teamId: `team_${i}`,
+      teamLabel: i === 0 ? 'Taro' : 'CPU',
+      teamColor: i === 0 ? '#56b4e9' : '#e69f00',
+      slotIndex: 0,
+    }));
+
+    const cfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'elimination' as const, maxSeconds: 180 };
+    const st = createBattlefieldMatchState(parts, cfg);
+    st.tick = 1600;
+    st.status = 'finished';
+    st.winnerId = st.tanks[0].id;
+    st.winType = 'elimination';
+    st.endReason = 'ライト新星 (Player) の撃破勝利！';
+    st.tanks[0].hp = 72;
+    st.tanks[0].stats.kills = 1;
+    st.tanks[0].stats.damageDealt = 210;
+    st.tanks[0].stats.shotsFired = 15;
+    st.tanks[0].stats.shotsHit = 9;
+    st.tanks[1].hp = 0;
+    st.tanks[1].stats.eliminatedAtTick = 1600;
+    st.tanks[1].killedById = st.tanks[0].id;
+    st.tanks[1].stats.damageDealt = 140;
+    st.tanks[1].stats.shotsFired = 25;
+    st.tanks[1].stats.shotsHit = 9; // 36% high accuracy runner-up
+
+    const report = buildMatchReport(st, parts, cfg);
+    const sampleLog = [
+      {
+        id: 'cm_900_1',
+        tick: 900,
+        timeSec: 45,
+        priority: 'A' as const,
+        category: 'critical' as const,
+        badge: '背面直撃',
+        text: '🎯 ライト新星が背面に直撃！',
+        speechText: 'ライト新星が背面に直撃！',
+      },
+    ];
+
+    const std = buildMatchSummaryComment(report, 'standard', sampleLog);
+    const hype = buildMatchSummaryComment(report, 'hype', sampleLog);
+    const analyst = buildMatchSummaryComment(report, 'analyst', sampleLog);
+
+    expect(std.headline).toContain('ジャイアントキリング');
+    expect(hype.headline).toContain('下克上');
+    expect(analyst.headline).toContain('12×12');
+    expect(std.headline).not.toBe(hype.headline);
+    expect(std.highlights.some((h) => h.includes('36.0%'))).toBe(true);
+    expect(std.highlights.some((h) => h.includes('45.0s'))).toBe(true);
+
+    const plainText = formatMatchReportText(report);
+    expect(plainText).not.toContain('[総評]');
+
+    const summaryText = formatMatchReportText(report, hype);
+    expect(summaryText).toContain(`[総評] ${hype.headline}`);
+    for (const hl of hype.highlights) {
+      expect(summaryText).toContain(`  ・${hl}`);
+    }
+
+    // Football shutout summary
+    const fbCfg = { ...DEFAULT_BATTLEFIELD_CONFIG, ruleId: 'tank_soccer' as const };
+    const fbSt = createBattlefieldMatchState(parts, fbCfg);
+    fbSt.tick = 1200;
+    fbSt.ruleTeamScores = { team_0: 3, team_1: 0 };
+    fbSt.status = 'finished';
+    fbSt.winnerId = fbSt.tanks[0].id;
+    fbSt.winType = 'decision';
+    fbSt.endReason = 'Taro 3 - 0 CPU（Taro の勝利！）';
+    const fbRep = buildMatchReport(fbSt, parts, fbCfg);
+    const fbSum = buildMatchSummaryComment(fbRep, 'standard', []);
+    expect(fbSum.headline).toContain('完封勝利');
+  });
+
+  it('lays out Battlefield HP HUD rows at max 4 per row (3+3 for 6) and clusters team members together', () => {
+    const mkSoloTanks = (count: number) => {
+      const parts = Array.from({ length: count }, (_, i) => ({
+        entry: createRosterEntryFromBlueprint(DEFAULT_PLAYER_BLUEPRINT, 'CPU', true),
+        teamId: `ffa_${i}`,
+        teamLabel: `Tank ${i + 1}`,
+        teamColor: '#56b4e9',
+        slotIndex: i,
+      }));
+      return createBattlefieldMatchState(parts, DEFAULT_BATTLEFIELD_CONFIG).tanks;
+    };
+
+    const solo4 = computeBattlefieldHudLayout(mkSoloTanks(4));
+    expect(solo4.isTeamGrouped).toBe(false);
+    expect(solo4.rows.map((r) => r.clusters.length)).toEqual([4]);
+
+    const solo5 = computeBattlefieldHudLayout(mkSoloTanks(5));
+    expect(solo5.rows.map((r) => r.clusters.length)).toEqual([3, 2]);
+    expect(solo5.rows.map((r) => r.columns)).toEqual([3, 3]);
+
+    const solo6 = computeBattlefieldHudLayout(mkSoloTanks(6));
+    expect(solo6.rows.map((r) => r.clusters.length)).toEqual([3, 3]);
+    expect(solo6.rows.map((r) => r.columns)).toEqual([3, 3]);
+
+    const solo7 = computeBattlefieldHudLayout(mkSoloTanks(7));
+    expect(solo7.rows.map((r) => r.clusters.length)).toEqual([4, 3]);
+
+    const solo8 = computeBattlefieldHudLayout(mkSoloTanks(8));
+    expect(solo8.rows.map((r) => r.clusters.length)).toEqual([4, 4]);
+
+    const mkInterleavedTeams = (teamCounts: number[]) => {
+      const parts: Array<{
+        entry: ReturnType<typeof createRosterEntryFromBlueprint>;
+        teamId: string;
+        teamLabel: string;
+        teamColor: string;
+        slotIndex: number;
+      }> = [];
+      const maxLen = Math.max(...teamCounts);
+      for (let slot = 0; slot < maxLen; slot++) {
+        teamCounts.forEach((cnt, tIdx) => {
+          if (slot < cnt) {
+            parts.push({
+              entry: createRosterEntryFromBlueprint(DEFAULT_PLAYER_BLUEPRINT, 'CPU', true),
+              teamId: `team_${tIdx}`,
+              teamLabel: `Team ${String.fromCharCode(65 + tIdx)}`,
+              teamColor: '#56b4e9',
+              slotIndex: slot,
+            });
+          }
+        });
+      }
+      return createBattlefieldMatchState(parts, {
+        ...DEFAULT_BATTLEFIELD_CONFIG,
+        format: 'team_match',
+      }).tanks;
+    };
+
+    // 2v2 (4): single row keeping Team A (2) and Team B (2) grouped contiguously
+    const twoVtwo = computeBattlefieldHudLayout(mkInterleavedTeams([2, 2]));
+    expect(twoVtwo.isTeamGrouped).toBe(true);
+    expect(twoVtwo.rows.length).toBe(1);
+    expect(twoVtwo.rows[0].clusters.map((c) => [c.teamId, c.tankIds.length])).toEqual([
+      ['team_0', 2],
+      ['team_1', 2],
+    ]);
+
+    // 3v3 (6): 3 on Row 1 (Team A) and 3 on Row 2 (Team B)
+    const threeVthree = computeBattlefieldHudLayout(mkInterleavedTeams([3, 3]));
+    expect(threeVthree.isTeamGrouped).toBe(true);
+    expect(threeVthree.rows.map((r) => r.clusters.map((c) => [c.teamId, c.tankIds.length]))).toEqual([
+      [['team_0', 3]],
+      [['team_1', 3]],
+    ]);
+
+    // 4v4 (8): 4 on Row 1 (Team A) and 4 on Row 2 (Team B)
+    const fourVfour = computeBattlefieldHudLayout(mkInterleavedTeams([4, 4]));
+    expect(fourVfour.rows.map((r) => r.clusters.map((c) => [c.teamId, c.tankIds.length]))).toEqual([
+      [['team_0', 4]],
+      [['team_1', 4]],
+    ]);
+
+    // 2v2v2 (6 across 3 teams): packs A+B (2+2) on Row 1, C (2) on Row 2 without splitting any team
+    const threePairs = computeBattlefieldHudLayout(mkInterleavedTeams([2, 2, 2]));
+    expect(threePairs.rows.map((r) => r.clusters.map((c) => [c.teamId, c.tankIds.length]))).toEqual([
+      [
+        ['team_0', 2],
+        ['team_1', 2],
+      ],
+      [['team_2', 2]],
+    ]);
+
+    // 2v2v2v2 (8 across 4 teams): A+B (4) on Row 1, C+D (4) on Row 2
+    const fourPairs = computeBattlefieldHudLayout(mkInterleavedTeams([2, 2, 2, 2]));
+    expect(fourPairs.rows.map((r) => r.clusters.map((c) => [c.teamId, c.tankIds.length]))).toEqual([
+      [
+        ['team_0', 2],
+        ['team_1', 2],
+      ],
+      [
+        ['team_2', 2],
+        ['team_3', 2],
+      ],
+    ]);
   });
 });
 
